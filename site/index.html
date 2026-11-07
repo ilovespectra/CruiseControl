@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>cruise control · keeps your ai buddy driving while you're away</title>
+  <meta name="description" content="cruise control keeps heyclicky and opt-in VS Code tasks moving on mac, with restart recovery, a glowing dashboard indicator, and local Ollama assistance. private preview. not affiliated with heyclicky." />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="unofficial-bar">
+    unofficial fan-made tool · not affiliated with, endorsed by, or connected to heyclicky
+  </div>
+
+  <nav class="nav">
+    <a class="brand" href="#top"><img src="icon.svg" alt="" width="28" height="28" />cruise control</a>
+    <div class="links">
+      <a href="#modes">modes</a>
+      <a href="#continue">keep going</a>
+      <a href="#vscode">vscode</a>
+      <a href="#install">install</a>
+      <a href="#faq">faq</a>
+    </div>
+    <a class="pill pill-primary small" href="#install">get cruise control</a>
+  </nav>
+
+  <header class="hero" id="top">
+    <span class="face f1">^ ω ^</span>
+    <span class="face f2">{ ^-^ }</span>
+    <span class="face f3">(¬_¬)</span>
+    <span class="face f4">¯\_(ツ)_/¯</span>
+
+    <h1>cruise control</h1>
+    <p class="tagline">keeps your ai buddy driving while you're away</p>
+    <div class="cta">
+      <a class="pill pill-primary" href="#install"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M16.4 12.6c0-2.4 2-3.6 2.1-3.7-1.1-1.7-2.9-1.9-3.5-1.9-1.5-.2-2.9.9-3.7.9-.8 0-1.9-.9-3.2-.8-1.6 0-3.1 1-4 2.4-1.7 3-.4 7.4 1.2 9.8.8 1.2 1.8 2.5 3 2.4 1.2 0 1.7-.8 3.1-.8 1.5 0 1.9.8 3.2.8 1.3 0 2.1-1.2 2.9-2.4.9-1.3 1.3-2.7 1.3-2.8 0 0-2.4-1-2.4-3.9zM14 5.5c.7-.8 1.1-1.9 1-3-1 0-2.1.7-2.8 1.5-.6.7-1.2 1.8-1 2.9 1 .1 2.1-.6 2.8-1.4z"/></svg>get it for mac</a>
+      <a class="pill pill-secondary" href="#how">see how it works</a>
+    </div>
+    <p class="fine">private preview · macos sonoma 14 or higher · heyclicky companion with optional vscode automation</p>
+
+    <!-- notch demo -->
+    <div class="stage" id="how" aria-label="animated demo: cruise control approving a drive request">
+      <div class="menubar">
+        <span class="apple"></span><span>Reason</span><span>File</span><span>Edit</span><span>Window</span>
+        <div class="notch"></div>
+        <div class="cc-pill"><img src="icon.svg" alt="" /><i></i>CRUISE</div>
+        <div class="tray"><span></span><span></span><span></span></div>
+      </div>
+
+      <div class="prompt">
+        <div class="prompt-row">
+          <div class="clicky-tile" aria-hidden="true"><span>✦</span></div>
+          <div>
+            <p class="q">May I bring Reason forward and inspect the export state while you watch?</p>
+            <p class="hint">Hands off the mouse while I drive. Esc stops me.</p>
+          </div>
+          <span class="stamp you">YOU</span>
+        </div>
+        <div class="prompt-buttons">
+          <span class="btn go">Go ahead</span>
+          <span class="btn no">Not now</span>
+        </div>
+      </div>
+
+      <div class="toast">approved by cruise control · you're away</div>
+      <div class="dashboard-indicator" aria-label="illuminated Cruise mode indicator">
+        <svg viewBox="0 0 48 48" width="40" height="40" aria-hidden="true"><path d="M7 33a18 18 0 1 1 34 0" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"/><path d="m24 27 10-13-5 17z" fill="currentColor"/><circle cx="24" cy="28" r="3" fill="currentColor"/></svg>
+        <span>CRUISE</span>
+      </div>
+      <svg class="cursor" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M4 2l16 10-7 1.5L9.5 21z" fill="#111" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>
+    </div>
+  </header>
+
+  <section class="section" id="modes">
+    <p class="eyebrow">three modes</p>
+    <h2>pick one from the notch</h2>
+    <p class="lede">cruise control lives right next to your notch whenever heyclicky is open. tap it, choose a mode, walk away.</p>
+
+    <div class="cards">
+      <article class="card">
+        <span class="stamp">MANUAL</span>
+        <h3>manual</h3>
+        <p>you're at your desk. clicky asks, you answer. cruise control just watches.</p>
+      </article>
+      <article class="card">
+        <span class="stamp rest">REST</span>
+        <h3>rest area</h3>
+        <p>stepping out but don't want anything moving the mouse? every “may i drive?” gets a polite “not now”.</p>
+      </article>
+      <article class="card featured">
+        <span class="stamp cruise">CRUISE</span>
+        <h3>cruise control</h3>
+        <p>let it cook. every request gets “go ahead” / “let clicky drive”, so long tasks don't stall waiting for you.</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="section split" id="continue">
+    <div>
+      <p class="eyebrow">keep going</p>
+      <h2>picks up where clicky left off</h2>
+      <p class="lede">when a task stops early and clicky drops a <b>full report</b>, cruise control opens it and sends one line back:</p>
+      <p class="quote">“please continue the users request to implement this particular feature based on your findings”</p>
+      <p class="lede">when clicky stalls with a <b>“needs you”</b> card, cruise control closes it, reads the chat, and has a local ollama model write a short nudge for that task. drafts that pretend you approved something never get sent.</p>
+      <p class="lede">when clicky goes quiet, it waits a few minutes, then nudges unfinished work without inventing consent or answering credential questions.</p>
+      <p class="lede">after a restart or interruption, it inspects the task card and sends a polite “pick up where you left off” message—or presses <b>retry</b> if the chat is unavailable. no <b>working</b> status in the notch? it hovers and checks for itself while you're idle.</p>
+      <p class="lede">when heyclicky has an update, it presses <b>update app</b>, waits for the relaunch, and tells the tasks that were interrupted to pick up where they left off.</p>
+      <p class="lede small">budgets survive restarts: up to 6 nudges per task per hour, sharing a 10-continue hourly budget and a 90-second minimum gap. the glowing dashboard badge shows cruise mode on every display, above ordinary desktop overlays.</p>
+    </div>
+    <div class="chat">
+      <div class="chat-head"><span class="avatar">🎛️</span>rippa repair <span class="stamp done">DONE</span><span class="time">10:55 AM</span></div>
+      <div class="bubble">reason now shows L 3131 / R 3237, but the export did not complete. the save dialog is still open.</div>
+      <div class="chat-actions">
+        <span class="btn go small">Open Rippa</span>
+        <span class="btn no small tapped">📄 Full report</span>
+      </div>
+      <div class="bubble me">please continue the users request to implement this particular feature based on your findings</div>
+      <div class="sent-by">sent by cruise control</div>
+    </div>
+  </section>
+
+  <section class="section" id="vscode">
+    <p class="eyebrow">optional vscode companion</p>
+    <h2>keep the work moving.<br />keep the cost in check.</h2>
+    <div class="cards">
+      <article class="card">
+        <span class="stamp cruise">LOCAL REVIEW</span>
+        <h3>screen tool requests</h3>
+        <p>opt in to “always allow in vscode”. a fixed safety filter and local ollama review inspect each request before pressing “allow once”. flagged requests stay for you; temporary review or click failures are retried.</p>
+      </article>
+      <article class="card">
+        <span class="stamp">ECONOMY FIRST</span>
+        <h3>mai-code flash first</h3>
+        <p>prefer MAI-Code Flash in the active chat. repeated unresolved failures, a regression, or stalled progress can trigger an escalation suggestion—but a pricier model needs your explicit confirmation. the same chat history stays intact.</p>
+      </article>
+      <article class="card">
+        <span class="stamp">TEXT ONLY</span>
+        <h3>a thoughtful follow-up</h3>
+        <p>after five quiet minutes, ollama checks whether the task is actually unfinished. a short, labelled follow-up can help it continue. no screenshots, no draft overwrites, no interrupted tools. fifteen-minute cooldown.</p>
+      </article>
+    </div>
+    <p class="lede small">these options start off. local models can miss risks or misread progress: this is assistance, not a security boundary or a guarantee of github's model routing. auto-approval can cause data loss, secret exposure, malicious installs, or real-world side effects. read the warning before enabling it.</p>
+  </section>
+
+  <section class="section" id="install">
+    <p class="eyebrow">install</p>
+    <h2>three steps, then walk away</h2>
+    <ol class="steps">
+      <li>
+        <span class="num">1</span>
+        <div>
+          <h3>build it</h3>
+          <pre><code>gh repo clone ilovespectra/CruiseControl
+cd CruiseControl
+./scripts/build-app.sh --install</code></pre>
+          <p>private preview: repository access is required. needs GitHub CLI and the Swift command line tools. installs to /Applications with a login agent that keeps it running.</p>
+        </div>
+      </li>
+      <li>
+        <span class="num">2</span>
+        <div>
+          <h3>say yes to two permissions</h3>
+          <p><b>accessibility</b> so it can press clicky's buttons, and <b>screen recording</b> as a backup for reading clicky's notch prompt. that's it.</p>
+        </div>
+      </li>
+      <li>
+        <span class="num">3</span>
+        <div>
+          <h3>pick a mode</h3>
+          <p>tap the pill next to your notch. manual at the desk, rest area or cruise control when you leave. enable vscode features separately if wanted. the green dashboard light means cruise mode is selected—not that permissions or task completion are guaranteed.</p>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <section class="section notes">
+    <p class="eyebrow">notes</p>
+    <div class="note">
+      <p>clicky asks before it drives your computer. that's the right call when you're sitting there.</p>
+      <p>but if you kick off a big task and go make coffee, you come back to a prompt that's been waiting twenty minutes and a task that went nowhere.</p>
+      <p>cruise control is a tiny, opt-in switch for that moment. you decide when it's on. you can flip back to manual from the notch any time, and esc still stops clicky mid-drive.</p>
+      <p class="sig">— the cruise control project</p>
+    </div>
+  </section>
+
+  <section class="section" id="faq">
+    <p class="eyebrow">faq</p>
+    <h2>questions</h2>
+    <details>
+      <summary>is this made by heyclicky?</summary>
+      <p>no. cruise control is an independent, unofficial project. it isn't affiliated with, endorsed by, or supported by heyclicky or its makers. please don't contact them about it.</p>
+    </details>
+    <details>
+      <summary>does it bypass anything?</summary>
+      <p>no. heyclicky still asks every time. cruise control just answers for you, on your own machine, in the mode you picked. it presses the same button you would.</p>
+    </details>
+    <details>
+      <summary>what does it look at?</summary>
+      <p>heyclicky's windows and, with the vscode options enabled, vscode chat controls and recent conversation text. accessibility reads labels; screen capture is an optional fallback for the heyclicky notch. ollama uses your configured endpoint (localhost by default). no screenshots are automatically sent to chats. it also checks heyclicky's public update feed; this webpage loads fonts from google.</p>
+    </details>
+    <details>
+      <summary>do i need ollama?</summary>
+      <p>for heyclicky nudges, <a href="https://ollama.com">ollama</a> is optional: a plain continuation message is the fallback. vscode approval reviews, task follow-ups, and escalation assessments require a successful ollama response. if the review fails, requests remain pending and the selected model stays unchanged.</p>
+    </details>
+    <details>
+      <summary>can i change the wording it looks for?</summary>
+      <p>yes. button labels, the continue prompt, rate limits and more live in <code>~/Library/Application Support/CruiseControl/config.json</code>.</p>
+    </details>
+    <details>
+      <summary>how do i stop it?</summary>
+      <p>switch to manual to stop heyclicky task automation and text follow-ups; turn off the separate vscode approval and model toggles to stop those too. “hide” only hides the notch—it does not disable automation. to remove the app and login agent, run <code>./scripts/build-app.sh --uninstall</code>.</p>
+    </details>
+  </section>
+
+  <footer class="footer">
+    <div class="foot-brand"><img src="icon.svg" alt="" width="22" height="22" /> cruise control</div>
+    <p class="disclaimer">
+      cruise control is an independent private-preview project and is <b>not affiliated with, endorsed by, sponsored by, or
+      connected to heyclicky</b> or its makers. “heyclicky” and “clicky” are names of their respective owners and are used here
+      only to describe compatibility. use at your own risk: in cruise control mode, an ai agent will operate your computer without
+      asking you first.
+    </p>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,441 @@
+import SwiftUI
+import CruiseCore
+
+struct NotchRootView: View {
+    @ObservedObject var store: ConfigStore
+    @ObservedObject var monitor: ClickyMonitor
+    var expanded: Bool
+    var menuBarHeight: CGFloat
+    var side: PillSide
+    var toggle: () -> Void
+
+    var body: some View {
+        Group {
+            if expanded {
+                ExpandedPanel(store: store, monitor: monitor, menuBarHeight: menuBarHeight, toggle: toggle)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxHeight: .infinity, alignment: .top)
+            } else {
+                CollapsedPill(mode: store.config.mode, monitor: monitor, height: menuBarHeight, side: side, toggle: toggle)
+            }
+        }
+        .environment(\.colorScheme, .dark)
+    }
+}
+
+// MARK: Collapsed "notch wing"
+
+struct CollapsedPill: View {
+    var mode: DriveMode
+    @ObservedObject var monitor: ClickyMonitor
+    var height: CGFloat
+    var side: PillSide
+    var toggle: () -> Void
+
+    @State private var pulse = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            CruiseGlyph(size: min(17, height - 12))
+                .scaleEffect(pulse ? 1.18 : 1)
+            Circle()
+                .fill(Brand.accent(for: mode))
+                .frame(width: 6, height: 6)
+                .shadow(color: Brand.accent(for: mode).opacity(0.9), radius: 3)
+                .opacity(monitor.clickyRunning ? 1 : 0.35)
+            Text(mode.shortTitle)
+                .font(BrandFont.inter(10.5, .heavy))
+                .tracking(0.8)
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .fixedSize()
+            Image(systemName: "chevron.down")
+                .font(BrandFont.inter(8, .bold))
+                .foregroundStyle(.white.opacity(0.55))
+        }
+        .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            UnevenRoundedRectangle(
+                bottomLeadingRadius: side == .right ? 6 : 12,
+                bottomTrailingRadius: side == .right ? 12 : 6,
+                style: .continuous
+            )
+            .fill(Color.black)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture(perform: toggle)
+        .help("cruise control · \(mode.title)")
+        .onChange(of: monitor.lastActionAt) { _, _ in
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.4)) { pulse = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                withAnimation(.easeOut(duration: 0.3)) { pulse = false }
+            }
+        }
+    }
+}
+
+// MARK: Expanded dropdown
+
+struct ExpandedPanel: View {
+    @ObservedObject var store: ConfigStore
+    @ObservedObject var monitor: ClickyMonitor
+    var menuBarHeight: CGFloat
+    var toggle: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            header
+            VStack(spacing: 6) {
+                ForEach(DriveMode.allCases) { mode in
+                    ModeRow(mode: mode, selected: store.config.mode == mode) {
+                        store.config.mode = mode
+                    }
+                }
+            }
+            continueToggle
+            updateToggle
+            vscodeToggle
+            modelToggle
+            chatBumpToggle
+            if !monitor.axTrusted || (store.config.ocrFallback && !monitor.screenTrusted) {
+                permissions
+            }
+            stats
+            activity
+            footer
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, menuBarHeight * 0.25)
+        .padding(.bottom, 14)
+        .frame(width: 330)
+        .background(
+            UnevenRoundedRectangle(
+                bottomLeadingRadius: 24,
+                bottomTrailingRadius: 24,
+                style: .continuous
+            )
+            .fill(Color.black)
+        )
+    }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            CruiseGlyph(size: 30)
+                .overlay(alignment: .topLeading) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.white.opacity(0.55))
+                        .frame(width: 13, height: 6)
+                        .rotationEffect(.degrees(-35))
+                        .offset(x: -3, y: -1)
+                }
+            VStack(alignment: .leading, spacing: 1) {
+                Text("cruise control")
+                    .font(BrandFont.serif(22))
+                    .foregroundStyle(.white)
+                Text(monitor.clickyRunning ? "watching heyclicky for you" : "heyclicky isn't open")
+                    .font(BrandFont.inter(11))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+            Spacer()
+            Text(store.config.mode.shortTitle)
+                .font(BrandFont.inter(9.5, .heavy))
+                .tracking(1)
+                .foregroundStyle(Brand.accent(for: store.config.mode))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .strokeBorder(Brand.accent(for: store.config.mode), style: StrokeStyle(lineWidth: 1.5, dash: [3, 1.5]))
+                )
+                .rotationEffect(.degrees(-3))
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: toggle)
+    }
+
+    private var continueToggle: some View {
+        Toggle(isOn: $store.config.autoContinueReports) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("keep unfinished tasks going")
+                    .font(BrandFont.inter(12, .semibold))
+                    .foregroundStyle(.white)
+                Text("full report or “needs you” → nudges clicky to keep going")
+                    .font(BrandFont.inter(10.5))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+        }
+        .toggleStyle(.switch)
+        .controlSize(.mini)
+        .tint(Brand.royal)
+        .disabled(store.config.mode == .manual)
+        .opacity(store.config.mode == .manual ? 0.5 : 1)
+        .padding(.horizontal, 4)
+    }
+
+    private var updateToggle: some View {
+        Toggle(isOn: $store.config.autoUpdateClicky) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("keep heyclicky updated")
+                    .font(BrandFont.inter(12, .semibold))
+                    .foregroundStyle(.white)
+                Text("presses “update app”, then nudges clicky after it relaunches")
+                    .font(BrandFont.inter(10.5))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+        }
+        .toggleStyle(.switch)
+        .controlSize(.mini)
+        .tint(Brand.royal)
+        .padding(.horizontal, 4)
+    }
+
+    private var vscodeToggle: some View {
+        Toggle(isOn: Binding(
+            get: { store.config.vscodeAutoApprove },
+            set: { on in
+                if !on { store.config.vscodeAutoApprove = false }
+                else if VSCodeDisclaimer.confirm() { store.config.vscodeAutoApprove = true }
+            }
+        )) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("always allow in vscode")
+                    .font(BrandFont.inter(12, .semibold))
+                    .foregroundStyle(store.config.vscodeAutoApprove ? Brand.accent(for: .cruise) : .white)
+                Text(store.config.vscodeAutoApprove
+                     ? "ollama screens each request, then “allow once” · \(monitor.stats.vscodeApproved) so far"
+                     : "auto-approve copilot tool requests after a local ollama check")
+                    .font(BrandFont.inter(10.5))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+        }
+        .toggleStyle(.switch)
+        .controlSize(.mini)
+        .tint(Brand.royal)
+        .padding(.horizontal, 4)
+        .help("risky — read the warning that appears when you turn it on")
+    }
+
+    private var modelToggle: some View {
+        Toggle(isOn: $store.config.autoSelectVSCodeModel) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("use cheaper vscode models")
+                    .font(BrandFont.inter(12, .semibold))
+                    .foregroundStyle(.white)
+                Text("mai-code flash first · ask you before any escalation")
+                    .font(BrandFont.inter(10.5))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+        }
+        .toggleStyle(.switch)
+        .controlSize(.mini)
+        .tint(Brand.royal)
+        .padding(.horizontal, 4)
+        .help("changes only the active chat, between turns. same history, no cancellation. 3 unresolved failures, an evidenced regression, or 20 minutes of stalled progress prompts you to approve escalation to GPT-6.1 Sol. never escalates automatically. configure models and limits in config.")
+    }
+
+    private var chatBumpToggle: some View {
+        Toggle(isOn: $store.config.vscodeTaskBumps) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("keep vscode tasks going")
+                    .font(BrandFont.inter(12, .semibold))
+                    .foregroundStyle(.white)
+                Text("quiet unfinished chat → a task-specific text follow-up")
+                    .font(BrandFont.inter(10.5))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+        }
+        .toggleStyle(.switch)
+        .controlSize(.mini)
+        .tint(Brand.royal)
+        .padding(.horizontal, 4)
+        .help("Cruise mode only, after 5 quiet minutes while you're idle. Local Ollama checks for unfinished work. No screenshots, draft overwrites, permission answers or interruption of running tools. 15-minute cooldown.")
+    }
+
+    private var permissions: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if !monitor.axTrusted {
+                PermissionRow(title: "accessibility", detail: "so i can press clicky's buttons") {
+                    monitor.requestPermissionsIfNeeded()
+                    monitor.openPrivacyPane("Privacy_Accessibility")
+                }
+            }
+            if store.config.ocrFallback && !monitor.screenTrusted {
+                PermissionRow(title: "screen recording", detail: "backup for reading clicky's notch prompt") {
+                    monitor.requestPermissionsIfNeeded()
+                    monitor.openPrivacyPane("Privacy_ScreenCapture")
+                }
+            }
+        }
+    }
+
+    private var stats: some View {
+        HStack(spacing: 12) {
+            StatChip(symbol: "checkmark.circle.fill", value: monitor.stats.approved, label: "approved")
+            StatChip(symbol: "hand.raised.fill", value: monitor.stats.declined, label: "declined")
+            StatChip(symbol: "arrow.clockwise.circle.fill", value: monitor.stats.continued, label: "continued")
+        }
+        .padding(.horizontal, 4)
+    }
+
+    private var activity: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(monitor.log.suffix(3).reversed()) { line in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(line.date, format: .dateTime.hour().minute())
+                        .foregroundStyle(.white.opacity(0.35))
+                    Text(line.text)
+                        .foregroundStyle(.white.opacity(0.7))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .font(BrandFont.mono(10.5))
+            }
+        }
+        .padding(.horizontal, 4)
+    }
+
+    private var footer: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 4) {
+                Image(systemName: LaunchAgent.isInstalled ? "bolt.fill" : "bolt.slash")
+                Text(LaunchAgent.isInstalled ? "auto-starts" : "not auto-starting")
+            }
+            .font(BrandFont.inter(10.5))
+            .foregroundStyle(.white.opacity(0.45))
+            .help(LaunchAgent.isInstalled
+                  ? "a launch agent keeps cruise control running. it shows up whenever heyclicky is open."
+                  : "run scripts/build-app.sh --install to keep cruise control running in the background.")
+            Spacer()
+            Button("config") { NSWorkspace.shared.open(store.fileURL) }
+                .buttonStyle(ClickyPillButtonStyle(primary: false))
+            Button("log") { NSWorkspace.shared.open(monitor.logFileURL) }
+                .buttonStyle(ClickyPillButtonStyle(primary: false))
+            Button("hide") { NotificationCenter.default.post(name: LaunchAgent.hideNotification, object: nil) }
+                .buttonStyle(ClickyPillButtonStyle(primary: true))
+                .help("hides the pill until heyclicky launches again (or you open cruise control). your mode keeps working in the background.")
+        }
+        .padding(.top, 2)
+    }
+}
+
+struct ModeRow: View {
+    var mode: DriveMode
+    var selected: Bool
+    var action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: Brand.symbol(for: mode))
+                    .font(BrandFont.inter(13, .semibold))
+                    .foregroundStyle(selected ? Brand.navy : Brand.accent(for: mode))
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(selected ? Color.white.opacity(0.7) : Color.white.opacity(0.08)))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(mode.title)
+                        .font(BrandFont.inter(13, .bold))
+                    Text(mode.subtitle)
+                        .font(BrandFont.inter(10.5))
+                        .opacity(0.65)
+                }
+                .foregroundStyle(selected ? Color.black.opacity(0.85) : .white)
+                Spacer()
+                if selected {
+                    Image(systemName: "checkmark")
+                        .font(BrandFont.inter(11, .heavy))
+                        .foregroundStyle(Brand.navy)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(selected ? AnyShapeStyle(Brand.primaryFill) : AnyShapeStyle(Color.white.opacity(hovering ? 0.10 : 0.05)))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(selected ? Brand.royal : Color.white.opacity(0.08), lineWidth: selected ? 1.5 : 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    }
+}
+
+struct PermissionRow: View {
+    var title: String
+    var detail: String
+    var grant: () -> Void
+
+    var body: some View {
+        HStack {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Brand.youBadge)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title).font(BrandFont.inter(11.5, .semibold)).foregroundStyle(.white)
+                Text(detail).font(BrandFont.inter(10)).foregroundStyle(.white.opacity(0.5))
+            }
+            Spacer()
+            Button("grant", action: grant)
+                .buttonStyle(ClickyPillButtonStyle(primary: true))
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Brand.youBadge.opacity(0.12)))
+    }
+}
+
+struct StatChip: View {
+    var symbol: String
+    var value: Int
+    var label: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: symbol).foregroundStyle(Brand.periwinkle)
+            Text("\(value)").fontWeight(.bold).foregroundStyle(.white)
+            Text(label).foregroundStyle(.white.opacity(0.45))
+        }
+        .font(BrandFont.inter(10.5))
+    }
+}
+
+enum VSCodeDisclaimer {
+    /// Shown every time the toggle is switched on. Returns true only if the user explicitly accepts.
+    @MainActor
+    static func confirm() -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "Let Cruise Control approve VS Code agent requests?"
+        alert.informativeText = """
+        When Copilot (or any VS Code chat agent) asks “Allow?” before running a terminal command or tool, Cruise \
+        Control will read the request, ask your local Ollama model whether it looks malicious, and press “Allow Once” \
+        if it doesn't. You won't see most of these requests.
+
+        What can go wrong — far more than losing a cache:
+        • Data loss: a mistaken rm, git reset/clean, database drop or overwrite can destroy work that isn't backed up.
+        • Secrets: commands can read .env files, tokens, SSH/cloud keys or browser data and send them anywhere.
+        • Prompt injection: a web page, README, issue or package the agent reads can tell it to run hostile commands. \
+        The same text can try to talk the reviewer into saying “safe”.
+        • Supply chain: approved installs (npm/pip/brew/curl) can pull in malware that runs with your permissions.
+        • Money & accounts: deploys, cloud resources, emails, payments, pushes and API calls happen for real.
+        • Ollama is a small local model, not a security product. It misses things and can be wrong both ways. A fixed \
+        blocklist catches only the most obvious disasters (sudo, rm -rf ~, curl | sh, keychain dumps, force-push…).
+
+        Safeguards: it only presses “Allow Once” (never “always”), only in VS Code, only after a review it could \
+        actually run. If Ollama is down, its answer is unclear, or the request is flagged, the prompt stays on screen \
+        for you. Every decision is written to the Cruise Control log.
+
+        Only turn this on for projects you'd be fine restoring from backup, and keep git + Time Machine current.
+        """
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "I understand — turn it on")
+        alert.buttons.first?.keyEquivalent = "\r"
+        alert.buttons.last?.keyEquivalent = ""
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertSecondButtonReturn
+    }
+}

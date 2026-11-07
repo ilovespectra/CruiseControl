@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#0d1446"/>
+      <stop offset="0.6" stop-color="#2a3fd6"/>
+      <stop offset="1" stop-color="#6d8bff"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.62" r="0.5">
+      <stop offset="0" stop-color="#9fb4ff" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#9fb4ff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="230" fill="url(#bg)"/>
+  <rect width="1024" height="1024" rx="230" fill="url(#glow)"/>
+  <!-- speed arc: travelled part solid, remainder faint -->
+  <path d="M 230 703 A 300 300 0 0 1 724 388" fill="none" stroke="#fff" stroke-width="64" stroke-linecap="round"/>
+  <path d="M 724 388 A 300 300 0 0 1 794 703" fill="none" stroke="#fff" stroke-opacity="0.3" stroke-width="64" stroke-linecap="round"/>
+  <!-- needle: a navigation arrow, i.e. autopilot -->
+  <g transform="rotate(45 512 600)">
+    <path d="M 512 330 L 586 528 Q 512 492 438 528 Z" fill="#fff" stroke="#fff" stroke-width="28" stroke-linejoin="round"/>
+  </g>
+  <circle cx="512" cy="600" r="34" fill="#fff"/>
+</svg>
