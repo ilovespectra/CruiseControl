@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var monitor: ClickyMonitor!
     private var notch: NotchController!
     private var indicator: CruiseIndicatorController!
+    private var settings: SettingsController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let id = Bundle.main.bundleIdentifier {
@@ -29,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         monitor = ClickyMonitor(store: store)
         notch = NotchController(store: store, monitor: monitor)
         indicator = CruiseIndicatorController(store: store)
+        settings = SettingsController(store: store, monitor: monitor)
         monitor.setOverlayHidden = { [weak notch] hidden in notch?.setHidden(hidden) }
         monitor.start()
     }

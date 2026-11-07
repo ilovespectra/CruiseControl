@@ -1,6 +1,12 @@
 import AppKit
 import CruiseCore
 
+if CommandLine.arguments.contains("--settings") {
+    DistributedNotificationCenter.default().postNotificationName(
+        SettingsController.openNotification, object: nil, userInfo: nil, deliverImmediately: true)
+    exit(0)
+}
+
 if let index = CommandLine.arguments.firstIndex(of: "--draft-chat-bump") {
     let transcript = CommandLine.arguments.dropFirst(index + 1).joined(separator: " ")
     let done = DispatchSemaphore(value: 0)

@@ -1,5 +1,9 @@
 # cruise control
 
+The notch dropdown contains only **Manual**, **Rest area**, **Cruise control**, and **Settings**. Settings opens a dedicated window with **Automation**, **Activity**, and **App & permissions** tabs. All automation switches, Ollama configuration, permissions, startup information, log/config shortcuts, and the hide control live there.
+
+The Activity tab shows separate live **HeyClicky** (approved, declined, continued) and **VS Code** (approved, held for review, follow-ups, model switches) counts. They are recorded from actual actions and saved in `activity-stats.json` across restarts and reinstalls. Counts begin at the displayed tracking date; older logs are not guessed or backfilled. VS Code safety holds are not declines, and failed submissions do not count as successes.
+
 > unofficial companion for [heyclicky](https://heyclicky.com) on macOS. **not affiliated with, endorsed by, or connected to heyclicky or its makers.**
 
 HeyClicky asks before it drives your computer ("Go ahead" / "Let HeyClicky drive" vs "Not now"). That's fine while you're at your desk, but long tasks stall while you're away. Cruise Control sits next to the notch while HeyClicky is running and answers those prompts for you, using whichever mode you've picked:

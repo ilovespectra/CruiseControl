@@ -11,17 +11,12 @@ final class ClickyMonitor: ObservableObject {
         let text: String
     }
 
-    struct Stats {
-        var approved = 0
-        var declined = 0
-        var continued = 0
-        var vscodeApproved = 0
-    }
-
     @Published private(set) var clickyRunning = false
     @Published private(set) var axTrusted = AXIsProcessTrusted()
     @Published private(set) var screenTrusted = CGPreflightScreenCaptureAccess()
-    @Published private(set) var stats = Stats()
+    @Published private(set) var stats = ActivityStats() {
+        didSet { if stats != oldValue { saveStats() } }
+    }
     @Published private(set) var log: [LogLine] = []
     @Published private(set) var lastActionAt: Date?
 
@@ -34,6 +29,7 @@ final class ClickyMonitor: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
 
     private var consentAttempts = 0
+    private var consentCounted = false
     private var lastConsentActionAt = Date.distantPast
     private var lastSystemDialogAt = Date.distantPast
     private var lastOCRAt = Date.distantPast
@@ -45,6 +41,8 @@ final class ClickyMonitor: ObservableObject {
     private let seenURL = ConfigStore.directory.appendingPathComponent("seen-reports.json")
     /// Rate-limit history survives restarts (launchd relaunches the app whenever it exits).
     private let budgetURL = ConfigStore.directory.appendingPathComponent("nudge-budget.json")
+    private let statsURL = ConfigStore.directory.appendingPathComponent("activity-stats.json")
+    private var loadingStats = false
 
     // HeyClicky self-update
     private let pendingURL = ConfigStore.directory.appendingPathComponent("pending-relaunch.json")
@@ -98,6 +96,16 @@ final class ClickyMonitor: ObservableObject {
         gate = ReportGate(known: Set(seen), continueTimes: budget?.continueTimes ?? [])
         nudgeLimiter = budget?.perTask ?? NudgeLimiter()
         pending = (try? Data(contentsOf: pendingURL)).flatMap { try? JSONDecoder().decode(PendingRelaunch.self, from: $0) }
+        if FileManager.default.fileExists(atPath: statsURL.path) {
+            loadingStats = true
+            do {
+                stats = try JSONDecoder().decode(ActivityStats.self, from: Data(contentsOf: statsURL))
+            } catch {
+                record("couldn't load activity statistics: \(error.localizedDescription)")
+            }
+            loadingStats = false
+        }
+        saveStats()
         if FileManager.default.fileExists(atPath: modelStateURL.path) {
             do {
                 modelStates = try JSONDecoder().decode([String: ModelRouting.State].self, from: Data(contentsOf: modelStateURL))
@@ -273,8 +281,11 @@ final class ClickyMonitor: ObservableObject {
         lastSystemDialogAt = Date()
 
         let subject = Matcher.quotedSubjects(dialog.message)
-        if !(await Worker.run { AX.press(target) }) {
-            _ = await mouseClick(on: target)
+        var pressed = await Worker.run { AX.press(target) }
+        if !pressed { pressed = await mouseClick(on: target) }
+        guard pressed else {
+            record("couldn't press the HeyClicky system permission button")
+            return true
         }
         if allow { stats.approved += 1 } else { stats.declined += 1 }
         lastActionAt = Date()
@@ -299,12 +310,19 @@ final class ClickyMonitor: ObservableObject {
             switch consentAttempts {
             case 1, 2:
                 let pressed = await Worker.run { AX.press(target) }
-                if consentAttempts == 1 {
+                if pressed && !consentCounted {
+                    consentCounted = true
                     if allow { stats.approved += 1 } else { stats.declined += 1 }
-                    record("\(allow ? "approved" : "declined") drive request → “\(label)”\(pressed ? "" : " (AX press failed, retrying)")")
+                    record("\(allow ? "approved" : "declined") drive request → “\(label)”")
+                } else if !pressed {
+                    record("couldn't press “\(label)” via Accessibility — retrying")
                 }
             case 3...5:
                 let clicked = await mouseClick(on: target)
+                if clicked && !consentCounted {
+                    consentCounted = true
+                    if allow { stats.approved += 1 } else { stats.declined += 1 }
+                }
                 record("prompt still showing — \(clicked ? "clicked" : "couldn't locate") “\(label)” with the mouse")
             case 6:
                 record("gave up on this drive prompt after 5 attempts")
@@ -316,6 +334,7 @@ final class ClickyMonitor: ObservableObject {
         }
 
         consentAttempts = 0
+        consentCounted = false
         if !result.orphanConsentLabels.isEmpty, Date().timeIntervalSince(lastOrphanLogAt) > 300 {
             lastOrphanLogAt = Date()
             record("saw “\(result.orphanConsentLabels.joined(separator: "”, “"))” without its partner button — ignoring")
@@ -686,6 +705,7 @@ final class ClickyMonitor: ObservableObject {
         } else if let reason = ApprovalReview.hardBlockReason(pending.request) {
             verdict = ApprovalReview.Verdict(safe: false, reason: reason)
             remember(key, verdict)
+            stats.vscodeHeldForReview += 1
             record("vscode: left for you — \(reason): \(short)")
             return
         } else {
@@ -695,6 +715,7 @@ final class ClickyMonitor: ObservableObject {
                 verdict = review.verdict
                 remember(key, verdict)
                 if !verdict.safe {
+                    stats.vscodeHeldForReview += 1
                     record("vscode: left for you — ollama (\(review.model)) flagged it: \(verdict.reason)")
                     return
                 }
@@ -777,6 +798,7 @@ final class ClickyMonitor: ObservableObject {
             bumpStates[chat.key] = state
             saveBumpStates()
             try await VSCodeModels.sendFollowUp(draft.message, chat: chat, config: config)
+            stats.vscodeContinued += 1
             record("vscode follow-up sent: \(draft.message.prefix(120))")
         } catch {
             record("vscode follow-up unavailable: \(error.localizedDescription)")
@@ -858,6 +880,7 @@ final class ClickyMonitor: ObservableObject {
         }
         do {
             try await VSCodeModels.select(target, chat: chat, config: config)
+            stats.vscodeModelSwitches += 1
             state.lastSwitch = Date()
             if ModelRouting.normalize(target) == ModelRouting.normalize(config.economyModel) {
                 state.cheapSince = Date()
@@ -1251,6 +1274,15 @@ final class ClickyMonitor: ObservableObject {
         setOverlayHidden?(true)
         await body()
         setOverlayHidden?(false)
+    }
+
+    private func saveStats() {
+        guard !loadingStats else { return }
+        do {
+            try JSONEncoder().encode(stats).write(to: statsURL, options: .atomic)
+        } catch {
+            record("couldn't persist activity statistics: \(error.localizedDescription)")
+        }
     }
 
     private func saveBudget() {

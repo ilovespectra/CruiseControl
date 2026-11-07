@@ -84,74 +84,123 @@ struct ExpandedPanel: View {
     var toggle: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            header
-            VStack(spacing: 6) {
-                ForEach(DriveMode.allCases) { mode in
-                    ModeRow(mode: mode, selected: store.config.mode == mode) {
-                        store.config.mode = mode
-                    }
+        VStack(spacing: 8) {
+            ForEach(DriveMode.allCases) { mode in
+                ModeRow(mode: mode, selected: store.config.mode == mode) {
+                    store.config.mode = mode
                 }
             }
-            continueToggle
-            updateToggle
-            vscodeToggle
-            modelToggle
-            chatBumpToggle
-            if !monitor.axTrusted || (store.config.ocrFallback && !monitor.screenTrusted) {
-                permissions
+            Button {
+                toggle()
+                NotificationCenter.default.post(name: SettingsController.openNotification, object: nil)
+            } label: {
+                Label("settings", systemImage: "gearshape")
+                    .font(BrandFont.inter(13, .semibold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
             }
-            stats
-            activity
-            footer
+            .buttonStyle(.plain)
+            .foregroundStyle(.white)
         }
-        .padding(.horizontal, 14)
+        .padding(14)
         .padding(.top, menuBarHeight * 0.25)
-        .padding(.bottom, 14)
         .frame(width: 330)
         .background(
-            UnevenRoundedRectangle(
-                bottomLeadingRadius: 24,
-                bottomTrailingRadius: 24,
-                style: .continuous
-            )
-            .fill(Color.black)
+            UnevenRoundedRectangle(bottomLeadingRadius: 24, bottomTrailingRadius: 24)
+                .fill(Color.black)
         )
     }
+}
 
-    private var header: some View {
-        HStack(spacing: 10) {
-            CruiseGlyph(size: 30)
-                .overlay(alignment: .topLeading) {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(Color.white.opacity(0.55))
-                        .frame(width: 13, height: 6)
-                        .rotationEffect(.degrees(-35))
-                        .offset(x: -3, y: -1)
+struct SettingsContent: View {
+    @ObservedObject var store: ConfigStore
+    @ObservedObject var monitor: ClickyMonitor
+
+    var body: some View {
+        TabView {
+            settingsPage {
+                settingsSection("HeyClicky", detail: "Controls for drive requests, unfinished tasks and app updates.") {
+                    continueToggle
+                    updateToggle
+                    Toggle("Resume interrupted tasks", isOn: $store.config.resumeAfterInterrupt)
+                    Toggle("Reply when HeyClicky goes quiet", isOn: $store.config.replyToStalls)
+                    Toggle("Answer HeyClicky system permission dialogs", isOn: $store.config.autoAnswerSystemDialogs)
                 }
-            VStack(alignment: .leading, spacing: 1) {
-                Text("cruise control")
-                    .font(BrandFont.serif(22))
-                    .foregroundStyle(.white)
-                Text(monitor.clickyRunning ? "watching heyclicky for you" : "heyclicky isn't open")
-                    .font(BrandFont.inter(11))
-                    .foregroundStyle(.white.opacity(0.5))
+                settingsSection("VS Code", detail: "Independent opt-in controls. Higher-cost model switches always require confirmation.") {
+                    vscodeToggle
+                    modelToggle
+                    chatBumpToggle
+                }
+                settingsSection("Local Ollama", detail: "Reviews and drafts use this endpoint. Localhost keeps conversation text on this Mac.") {
+                    Toggle("Use Ollama for HeyClicky nudges", isOn: $store.config.ollamaEnabled)
+                    TextField("Endpoint", text: $store.config.ollamaURL)
+                    TextField("Model (empty uses first installed)", text: $store.config.ollamaModel)
+                }
             }
-            Spacer()
-            Text(store.config.mode.shortTitle)
-                .font(BrandFont.inter(9.5, .heavy))
-                .tracking(1)
-                .foregroundStyle(Brand.accent(for: store.config.mode))
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 4)
-                        .strokeBorder(Brand.accent(for: store.config.mode), style: StrokeStyle(lineWidth: 1.5, dash: [3, 1.5]))
-                )
-                .rotationEffect(.degrees(-3))
+            .tabItem { Label("Automation", systemImage: "steeringwheel") }
+            settingsPage {
+                settingsSection("Recorded activity", detail: "Real action counts since \(monitor.stats.trackingSince.formatted(date: .abbreviated, time: .shortened)). Saved across app restarts; historical logs are not guessed or backfilled.") {
+                    stats
+                }
+                settingsSection("Recent activity", detail: "The complete history is available in the activity log.") {
+                    activity
+                    Button("Open activity log") { NSWorkspace.shared.open(monitor.logFileURL) }
+                }
+            }
+            .tabItem { Label("Activity", systemImage: "chart.bar") }
+            settingsPage {
+                settingsSection("Permissions", detail: "Accessibility is required to read controls and press buttons. Screen recording is an optional HeyClicky OCR fallback.") {
+                    permissionStatus
+                    permissions
+                    Toggle("Screen OCR fallback", isOn: $store.config.ocrFallback)
+                }
+                settingsSection("Appearance & startup", detail: "The dashboard light remains visible in Cruise mode. Hiding the notch does not disable automation.") {
+                    Picker("Notch side", selection: $store.config.pillSide) {
+                        Text("Left").tag(PillSide.left)
+                        Text("Right").tag(PillSide.right)
+                    }
+                    Toggle("Only show notch while HeyClicky is running", isOn: $store.config.showOnlyWithClicky)
+                    footer
+                }
+            }
+            .tabItem { Label("App & permissions", systemImage: "gearshape") }
         }
-        .contentShape(Rectangle())
-        .onTapGesture(perform: toggle)
+        .padding(16)
+        .frame(minWidth: 640, minHeight: 540)
+        .preferredColorScheme(.dark)
+        .tint(Brand.periwinkle)
+    }
+
+    private func settingsPage<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18, content: content)
+                .padding(18)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func settingsSection<Content: View>(_ title: String, detail: String,
+                                                @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title).font(.headline)
+            Text(detail).font(.caption).foregroundStyle(.secondary)
+            Divider()
+            content()
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Brand.card, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var permissionStatus: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(monitor.axTrusted ? "Accessibility granted" : "Accessibility required",
+                  systemImage: monitor.axTrusted ? "checkmark.circle" : "exclamationmark.circle")
+            Label(monitor.screenTrusted ? "Screen recording granted" : "Screen recording not granted",
+                  systemImage: monitor.screenTrusted ? "checkmark.circle" : "exclamationmark.circle")
+            Text(monitor.clickyRunning ? "HeyClicky is running" : "HeyClicky is not running")
+                .foregroundStyle(.secondary)
+        }
     }
 
     private var continueToggle: some View {
@@ -270,24 +319,35 @@ struct ExpandedPanel: View {
     }
 
     private var stats: some View {
-        HStack(spacing: 12) {
-            StatChip(symbol: "checkmark.circle.fill", value: monitor.stats.approved, label: "approved")
-            StatChip(symbol: "hand.raised.fill", value: monitor.stats.declined, label: "declined")
-            StatChip(symbol: "arrow.clockwise.circle.fill", value: monitor.stats.continued, label: "continued")
+        VStack(alignment: .leading, spacing: 16) {
+            Text("HeyClicky").font(.subheadline.bold())
+            HStack(spacing: 24) {
+                StatChip(symbol: "checkmark.circle.fill", value: monitor.stats.approved, label: "approved")
+                StatChip(symbol: "hand.raised.fill", value: monitor.stats.declined, label: "declined")
+                StatChip(symbol: "arrow.clockwise.circle.fill", value: monitor.stats.continued, label: "continued")
+            }
+            Text("VS Code").font(.subheadline.bold())
+            HStack(spacing: 24) {
+                StatChip(symbol: "checkmark.circle.fill", value: monitor.stats.vscodeApproved, label: "approved")
+                StatChip(symbol: "hand.raised.fill", value: monitor.stats.vscodeHeldForReview, label: "held for review")
+                StatChip(symbol: "arrow.clockwise.circle.fill", value: monitor.stats.vscodeContinued, label: "follow-ups")
+                StatChip(symbol: "arrow.triangle.swap", value: monitor.stats.vscodeModelSwitches, label: "model switches")
+            }
+            Text("Held requests are left for you, not clicked Decline. Failed reviews and unsent follow-ups do not count as successful actions.")
+                .font(.caption).foregroundStyle(.secondary)
         }
         .padding(.horizontal, 4)
     }
 
     private var activity: some View {
         VStack(alignment: .leading, spacing: 3) {
-            ForEach(monitor.log.suffix(3).reversed()) { line in
+            ForEach(monitor.log.suffix(30).reversed()) { line in
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(line.date, format: .dateTime.hour().minute())
                         .foregroundStyle(.white.opacity(0.35))
                     Text(line.text)
                         .foregroundStyle(.white.opacity(0.7))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .font(BrandFont.mono(10.5))
             }
