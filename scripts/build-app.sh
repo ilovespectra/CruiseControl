@@ -10,10 +10,18 @@ cd "$(dirname "$0")/.."
 
 ARCH_ARGS=(--arch "$(uname -m)")
 if [[ "${CC_UNIVERSAL:-0}" == "1" ]]; then
-  ARCH_ARGS=(--arch arm64 --arch x86_64)
+  for ARCH in arm64 x86_64; do
+    swift build -c release --product CruiseControl --arch "$ARCH" --scratch-path ".build-$ARCH"
+  done
+  ARM_BIN="$(swift build -c release --show-bin-path --arch arm64 --scratch-path .build-arm64)/CruiseControl"
+  INTEL_BIN="$(swift build -c release --show-bin-path --arch x86_64 --scratch-path .build-x86_64)/CruiseControl"
+  mkdir -p .build/universal
+  lipo -create "$ARM_BIN" "$INTEL_BIN" -output .build/universal/CruiseControl
+  BIN=".build/universal/CruiseControl"
+else
+  swift build -c release --product CruiseControl "${ARCH_ARGS[@]}"
+  BIN="$(swift build -c release --show-bin-path "${ARCH_ARGS[@]}")/CruiseControl"
 fi
-swift build -c release --product CruiseControl "${ARCH_ARGS[@]}"
-BIN="$(swift build -c release --show-bin-path "${ARCH_ARGS[@]}")/CruiseControl"
 
 APP="build/Cruise Control.app"
 rm -rf "$APP"
