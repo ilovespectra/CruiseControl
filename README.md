@@ -36,6 +36,24 @@ HeyClicky sometimes *wrongly* thinks you took over and quietly stops even though
 
 **Always allow in VS Code (off by default, risky):** the **always allow in vscode** toggle in the notch dropdown watches VS Code's chat tool confirmations (*"Run in terminal: … Allow Once · Skip"*). It reads the request through Accessibility, runs it past a fixed blocklist (sudo, `rm -rf ~`/`/` or whole personal folders, `find ~ … -delete`, `curl | sh`, base64-to-shell, keychain dumps, SSH/cloud key access, force-push, disk erase, disabling SIP…), then asks your local Ollama model whether it looks malicious. Only if both pass does it press **Allow Once** (never "always"). If anything is flagged, Ollama is down, or the answer is unclear, the prompt is left on screen for you. Every decision goes to the log. Turning it on shows a warning first; the risks are real and go well beyond losing a cache: data loss, leaked secrets, prompt injection from pages or repos the agent reads (which can also try to fool the reviewer), malicious packages, and real-world side effects like deploys or pushes. A small local model is not a security boundary. Test the reviewer without pressing anything: `"/Applications/Cruise Control.app/Contents/MacOS/CruiseControl" --review "rm -rf build && swift build"`.
 
+**Other VS Code threads:** terminal approvals in the Agents window's Sessions sidebar
+are reviewed and pressed directly through Accessibility, including while another app is
+foreground. The full `Allow once: <command>` accessibility label is used, not the clipped
+preview. The owning thread and exact command are re-scanned after review; duplicate thread
+names, ambiguous buttons, clipped/oversized commands, and generic questions without tool
+inputs are not approved through this path. In Cruise mode, a detected pending sidebar
+request can briefly bring VS Code forward and open its thread when the full chat dialog
+is necessary or a direct press fails, without waiting for user idle time. The original
+thread and foreground app are restored unless real keyboard/mouse input interrupts inspection.
+Dock bounces and sounds alone are not treated as approval evidence. A failed Accessibility
+approval never falls back to a global mouse click; thread navigation clicks require VS Code
+to be foreground. Success is counted only when the owning sidebar row is still present
+and its reviewed request is no longer pending. Read-only diagnostics: `CruiseControl --scan-vscode`.
+For a one-request live check, pass that diagnostic's exact key to
+`CruiseControl --approve-vscode-sidebar '<key>'`. This uses the normal approval pipeline,
+requires the toggle to be enabled, and reports whether the selected chat, foreground app
+and pointer remained unchanged; it never enables automation itself.
+
 **Cost-aware VS Code models (off by default):** turn on **use cheaper vscode models** in the Cruise Control dropdown. The active, unambiguous VS Code chat starts with **MAI-Code-1.1-Flash**. Switching preserves that conversation and its history; it does not create another agent, cancel work, resend the task, or interrupt a terminal command. Automatic switches wait for the turn to finish and an empty composer. Other windows and manually selected models are left alone.
 
 **Cruise indicator:** in Cruise mode, a softly illuminated green speedometer and **CRUISE** badge (224 × 96 points) appears at the lower-right of every connected display, above the Dock. Its window level is above ordinary app windows, menus, and desktop overlays, including full-screen spaces. macOS secure system screens can still take precedence. It stays visible when the notch is hidden, follows display and Dock-layout changes, and lets clicks pass through. Manual and Rest modes turn it off. This indicates the selected mode, not that HeyClicky is currently working or that macOS permissions have been granted.
@@ -61,6 +79,12 @@ swift test                         # unit tests (Swift Testing)
 Signing uses `$CC_SIGN_IDENTITY` if set, otherwise the first codesigning identity in your keychain. A stable identity keeps your permission grants across rebuilds.
 
 ## binary releases & updates
+
+The landing page displays total GitHub installer-package downloads across all published
+releases (including update downloads), not verified installs or unique users. It fetches the
+public releases API with pagination and excludes metadata/checksum assets. A private repository,
+API failure or rate limit shows an explicit unavailable state, never a fabricated zero.
+Validate the counter with `node --test Tests/site/downloads.test.mjs`.
 
 **Copilot usage guard:** Settings → Automation → VS Code includes an optional cutoff
 (25%, 50%, 75%, 90%, 95%, 100%; off by default). Accessible VS Code notification containers

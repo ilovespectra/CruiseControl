@@ -9,6 +9,8 @@ struct VSCodeConfirmation {
     /// What the agent wants to do, e.g. "Run in terminal: Build the app: swift build".
     let request: String
     let key: String
+    let window: AXUIElement
+    let sidebarThread: String?
 }
 
 struct VSCodeAttentionThread {
@@ -72,7 +74,8 @@ struct VSCodeScanner {
             let role = values[0] as? String ?? ""
             let title = values[1] as? String ?? ""
             let description = values[2] as? String ?? ""
-            lines.append("\(String(repeating: " ", count: depth))\(role) | \(title.prefix(250)) | \(description.prefix(700))")
+            let detail = description.hasPrefix("Allow once: ") ? description : String(description.prefix(700))
+            lines.append("\(String(repeating: " ", count: depth))\(role) | \(title.prefix(250)) | \(detail)")
             for child in values[3] as? [AXUIElement] ?? [] { visit(child, depth: depth + 1) }
         }
         for id in config.vscodeBundleIDs {
@@ -124,16 +127,81 @@ struct VSCodeScanner {
                 var w = Walk()
                 walk(window, depth: 0, &w)
                 let windowTitle: String = AX.attr(window, kAXTitleAttribute) ?? ""
+                let rows = sidebarRows(in: window)
+                for row in rows {
+                    guard rows.filter({ $0.title == row.title }).count == 1,
+                          row.buttons.count == 1, let button = row.buttons.first,
+                          AX.isEnabled(button.0),
+                          let request = VSCodeApprovalContext.sidebarRequest(button.1) else { continue }
+                    confirmations.append(VSCodeConfirmation(
+                        allow: button.0, allowLabel: "Allow once", request: request,
+                        key: "\(app.processIdentifier)|\(windowTitle)|sidebar|\(row.title)|\(request)",
+                        window: window, sidebarThread: row.title))
+                }
                 for (allow, label, title) in w.confirmations {
                     if let request = Self.request(matching: title, in: w.requests) {
                         confirmations.append(VSCodeConfirmation(
                             allow: allow, allowLabel: label, request: request,
-                            key: "\(app.processIdentifier)|\(windowTitle)|\(w.session)|\(Matcher.normalize(request))"))
+                            key: "\(app.processIdentifier)|\(windowTitle)|\(w.session)|\(Matcher.normalize(request))",
+                            window: window, sidebarThread: nil))
                     }
                 }
             }
         }
         return confirmations
+    }
+
+    /// Nil means the owning row/window disappeared, not that the approval succeeded.
+    func isResolved(_ confirmation: VSCodeConfirmation) -> Bool? {
+        guard let thread = confirmation.sidebarThread else {
+            return !scanAll().contains { $0.key == confirmation.key }
+        }
+        let rows = sidebarRows(in: confirmation.window).filter { $0.title == thread }
+        guard rows.count == 1, let row = rows.first else { return nil }
+        return !row.buttons.contains {
+            VSCodeApprovalContext.sidebarRequest($0.1) == confirmation.request
+        }
+    }
+
+    private struct SidebarRow {
+        let title: String
+        var buttons: [(AXUIElement, String)] = []
+    }
+
+    private func sidebarRows(in window: AXUIElement) -> [SidebarRow] {
+        var rows: [SidebarRow] = []
+        var visited = 0
+        var complete = true
+        func visit(_ element: AXUIElement, depth: Int, inSessions: Bool, rowIndex: Int?) {
+            guard depth < 70, visited < 15000 else {
+                complete = false
+                return
+            }
+            visited += 1
+            let values = AX.multi(element, Self.attrNames)
+            let role = values[0] as? String ?? ""
+            let title = values[1] as? String ?? ""
+            let description = values[2] as? String ?? ""
+            let label = title.isEmpty ? description : title
+            let inside = inSessions || (role == kAXOutlineRole && label == "Sessions")
+            var current = rowIndex
+            if inside, role == kAXRowRole {
+                current = nil
+                if let title = VSCodeApprovalContext.threadTitle(label) {
+                    current = rows.count
+                    rows.append(SidebarRow(title: title))
+                }
+            }
+            if inside, let current, role == kAXButtonRole,
+               description.hasPrefix("Allow once: ") {
+                rows[current].buttons.append((element, description))
+            }
+            for child in values[3] as? [AXUIElement] ?? [] {
+                visit(child, depth: depth + 1, inSessions: inside, rowIndex: current)
+            }
+        }
+        visit(window, depth: 0, inSessions: false, rowIndex: nil)
+        return complete ? rows : []
     }
 
     /// VS Code appends the keyboard hint and then the rest of the chat transcript to the accessible description.

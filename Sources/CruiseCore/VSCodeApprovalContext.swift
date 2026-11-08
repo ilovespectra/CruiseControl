@@ -1,6 +1,29 @@
 import Foundation
 
 public enum VSCodeApprovalContext {
+    /// The sidebar preview is clipped, but the Allow button's aria-label includes the entire command.
+    public static func sidebarRequest(_ label: String) -> String? {
+        let prefix = "Allow once: "
+        guard label.hasPrefix(prefix) else { return nil }
+        let command = String(label.dropFirst(prefix.count))
+        let request = "Run in terminal:\n\(command)"
+        guard !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              request.count <= 4000,
+              !command.contains("…"), !command.contains("...") else { return nil }
+        // Generic approval questions contain no tool inputs. Leave those for the full dialog.
+        let executable = command.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? ""
+        let knownCommands: Set<String> = [
+            "cd", "pwd", "ls", "cat", "head", "tail", "grep", "rg", "find", "git",
+            "swift", "xcrun", "xcodebuild", "python", "python3", "node", "npm", "npx",
+            "pnpm", "yarn", "bun", "go", "cargo", "make", "cmake", "bash", "sh",
+            "zsh", "env", "curl", "wget", "gh", "mkdir", "cp", "mv", "rm", "echo",
+            "printf", "sed", "awk", "test", "uname", "date", "which", "command",
+        ]
+        guard knownCommands.contains(executable)
+                || executable.hasPrefix("/") || executable.hasPrefix("./") else { return nil }
+        return request
+    }
+
     public static func request(matching title: String, in requests: [String]) -> String? {
         let normalized = Matcher.normalize(title)
         guard !normalized.isEmpty else { return nil }

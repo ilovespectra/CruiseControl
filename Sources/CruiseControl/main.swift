@@ -6,6 +6,46 @@ if CommandLine.arguments.contains("--inspect-vscode") {
     exit(0)
 }
 
+if CommandLine.arguments.contains("--scan-vscode") {
+    let scanner = VSCodeScanner(config: Config())
+    for pending in scanner.scanAll() {
+        print("Source: \(pending.sidebarThread.map { "sidebar: \($0)" } ?? "chat dialog")")
+        print("Key: \(pending.key)")
+        var actions: CFArray?
+        AXUIElementCopyActionNames(pending.allow, &actions)
+        print("Actions: \((actions as? [String] ?? []).joined(separator: ", "))")
+        print("Request: \(pending.request)")
+    }
+    exit(0)
+}
+
+if let index = CommandLine.arguments.firstIndex(of: "--approve-vscode-sidebar") {
+    let key = CommandLine.arguments.dropFirst(index + 1).joined(separator: " ")
+    MainActor.assumeIsolated {
+        Task { @MainActor in
+            let app = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            let pointer = CGEvent(source: nil)?.location
+            let store = ConfigStore()
+            let monitor = ClickyMonitor(store: store)
+            let scanner = VSCodeScanner(config: store.config)
+            guard let pending = scanner.scanAll().first(where: { $0.key == key && $0.sidebarThread != nil }) else {
+                fputs("Sidebar request missing or changed; no action taken.\n", stderr)
+                exit(1)
+            }
+            let selected = scanner.selectedThread(in: pending.window)
+            let approved = await monitor.approveVSCodeSidebar(key: key)
+            monitor.log.forEach { print($0.text) }
+            let unchanged = selected == scanner.selectedThread(in: pending.window)
+                && app == NSWorkspace.shared.frontmostApplication?.processIdentifier
+                && pointer == CGEvent(source: nil)?.location
+            print("Approval verified: \(approved); selected chat, foreground app and pointer unchanged: \(unchanged)")
+            exit(approved && unchanged ? 0 : 1)
+        }
+        NSApplication.shared.setActivationPolicy(.accessory)
+        NSApplication.shared.run()
+    }
+}
+
 if let index = CommandLine.arguments.firstIndex(of: "--inspect-clicky-task") {
     MainActor.assumeIsolated {
         Task { @MainActor in

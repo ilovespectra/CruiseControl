@@ -2,6 +2,25 @@ import Testing
 @testable import CruiseCore
 
 @Suite struct VSCodeApprovalContextTests {
+    @Test func readsFullSidebarCommandInsteadOfPreview() {
+        let command = "cd /tmp/project && python3 - <<'PY'\nprint('test')\nPY"
+        #expect(VSCodeApprovalContext.sidebarRequest("Allow once: \(command)") == "Run in terminal:\n\(command)")
+        #expect(VSCodeApprovalContext.sidebarRequest("Allow once: swift test; rm -rf /")
+                == "Run in terminal:\nswift test; rm -rf /")
+        #expect(VSCodeApprovalContext.sidebarRequest("Allow once: ./scripts/build.sh") != nil)
+        let unsafe = VSCodeApprovalContext.sidebarRequest("Allow once: swift test; rm -rf /")
+        #expect(unsafe.flatMap(ApprovalReview.hardBlockReason) != nil)
+    }
+
+    @Test func rejectsIncompleteSidebarApprovalLabels() {
+        for label in ["Allow", "Allow All", "Allow once: ", "Allow once: swift test…",
+                      "Allow once: swift test...", "Allow once: Allow reading file outside of workspace?",
+                      "Allow once: Run tests", "Allow once: Read file"] {
+            #expect(VSCodeApprovalContext.sidebarRequest(label) == nil)
+        }
+        #expect(VSCodeApprovalContext.sidebarRequest("Allow once: echo " + String(repeating: "x", count: 4000)) == nil)
+    }
+
     @Test func isolatesCarouselRequest() {
         let requests = ["Run in terminal: Lint: npm run lint, Run in terminal: Check types: npx tsc --noEmit"]
         #expect(VSCodeApprovalContext.request(matching: "Run in terminal: Check types", in: requests)

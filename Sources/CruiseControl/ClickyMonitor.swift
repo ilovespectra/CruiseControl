@@ -879,10 +879,21 @@ final class ClickyMonitor: ObservableObject {
         }
     }
 
-    private func handleVSCode(config: Config, permitAction: () -> Bool = { true }) async -> Bool {
+    func approveVSCodeSidebar(key: String) async -> Bool {
+        guard store.config.vscodeAutoApprove, axTrusted else {
+            record("vscode: sidebar check requires enabled automation and Accessibility permission")
+            return false
+        }
+        let count = stats.vscodeApproved
+        _ = await handleVSCode(config: store.config, onlyKey: key)
+        return stats.vscodeApproved > count
+    }
+
+    private func handleVSCode(config: Config, onlyKey: String? = nil, permitAction: () -> Bool = { true }) async -> Bool {
         let now = Date()
         let pendingRequests = await Worker.run { VSCodeScanner(config: config).scanAll() }
         guard let pending = pendingRequests.first(where: { pending in
+            if let onlyKey, pending.key != onlyKey || pending.sidebarThread == nil { return false }
             guard now.timeIntervalSince(approvalAttempts[pending.key] ?? .distantPast) >= 5 else { return false }
             if let cached = reviews[pending.key] {
                 return cached.verdict?.safe != false && (cached.verdict != nil || now.timeIntervalSince(cached.at) >= 60)
@@ -924,33 +935,34 @@ final class ClickyMonitor: ObservableObject {
               still.request == pending.request, store.config.vscodeAutoApprove, permitAction() else { return true }
         approvalAttempts[key] = Date()
         let allow = still.allow
-        var pressed = await Worker.run { AX.press(allow) }
-        if !pressed { pressed = await mouseClick(on: allow) }
+        let pressed = await Worker.run { AX.press(allow) }
         if pressed {
             try? await Task.sleep(nanoseconds: 500_000_000)
-            let remaining = await Worker.run { VSCodeScanner(config: config).scanAll().contains { $0.key == key } }
-            if remaining {
+            let resolved = await Worker.run { VSCodeScanner(config: config).isResolved(still) }
+            if resolved == nil {
+                record("vscode: owning sidebar row unavailable after pressing — success not verified: \(short)")
+            } else if resolved == false {
                 record("vscode: approval still pending after pressing — will retry: \(short)")
+                return false
             } else {
                 stats.vscodeApproved += 1
                 lastActionAt = Date()
                 record("vscode: \(still.allowLabel.lowercased()) → \(short) (\(verdict.reason))")
             }
         } else {
-            record("vscode: couldn't press “\(still.allowLabel)”")
+            record("vscode: couldn't press “\(still.allowLabel)” through Accessibility — no mouse fallback")
+            return false
         }
         return true
     }
 
     private func inspectVSCodeThreads(config: Config) async {
         guard config.mode == .cruise, store.config.vscodeAutoApprove,
-              Self.idleSeconds() >= config.awayIdleSeconds,
-              Date().timeIntervalSince(lastVSCodeThreadProbeAt) >= 30 else { return }
+              Date().timeIntervalSince(lastVSCodeThreadProbeAt) >= 5 else { return }
         lastVSCodeThreadProbeAt = Date()
         let threads = await Worker.run { VSCodeScanner(config: config).attentionThreads() }
         for thread in threads.prefix(3) {
-            guard store.config.mode == .cruise, store.config.vscodeAutoApprove,
-                  Self.idleSeconds() >= config.awayIdleSeconds else { return }
+            guard store.config.mode == .cruise, store.config.vscodeAutoApprove else { return }
             let previousApp = NSWorkspace.shared.frontmostApplication
             let interaction = InputSynth.UserInteractionWatch()
             defer { interaction.stop() }
@@ -989,7 +1001,9 @@ final class ClickyMonitor: ObservableObject {
         var pid: pid_t = 0
         guard AXUIElementGetPid(window, &pid) == .success else { return false }
         NSRunningApplication(processIdentifier: pid)?.activate()
-        guard AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success,
+        guard AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success else { return false }
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
               let frame = AX.frame(row), let bounds = AX.frame(window),
               bounds.contains(CGPoint(x: frame.midX, y: frame.midY)) else { return false }
         return await mouseClick(on: row)
