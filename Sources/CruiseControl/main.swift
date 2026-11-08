@@ -1,6 +1,11 @@
 import AppKit
 import CruiseCore
 
+if CommandLine.arguments.contains("--inspect-vscode") {
+    VSCodeScanner(config: Config()).diagnosticTree().forEach { print($0) }
+    exit(0)
+}
+
 if let index = CommandLine.arguments.firstIndex(of: "--inspect-clicky-task") {
     MainActor.assumeIsolated {
         Task { @MainActor in

@@ -1,55 +1,29 @@
 #!/usr/bin/env bash
+# Downloads a version-pinned package; does not execute downloaded scripts or disable macOS security.
 set -euo pipefail
-
-REPO_OWNER="ilovespectra"
-REPO_NAME="CruiseControl"
-REPO_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}.git"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-
-version_from_plist() {
-  if [[ -f "${REPO_DIR}/Resources/Info.plist" ]]; then
-    /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${REPO_DIR}/Resources/Info.plist" 2>/dev/null || echo "1.0.0"
-    return
-  fi
-  echo "1.0.0"
-}
-
-APP_VERSION="$(version_from_plist)"
-
-if ! xcode-select -p >/dev/null 2>&1; then
-  echo "Xcode Command Line Tools are required. Install them with: xcode-select --install" >&2
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "Cruise Control requires macOS 14 or later." >&2
   exit 1
 fi
-
-if ! command -v git >/dev/null 2>&1; then
-  echo "git is required to install Cruise Control." >&2
+REPO="https://github.com/ilovespectra/CruiseControl"
+RELEASE="$(curl --proto '=https' --tlsv1.2 -fsSL -o /dev/null -w '%{url_effective}' "$REPO/releases/latest")"
+if ! printf '%s\n' "$RELEASE" | grep -Eq '^https://github.com/ilovespectra/CruiseControl/releases/tag/v[0-9]+\.[0-9]+\.[0-9]+$'; then
+  echo "No valid public binary release is available." >&2
   exit 1
 fi
-
-if ! command -v curl >/dev/null 2>&1; then
-  echo "curl is required to install Cruise Control." >&2
+DOWNLOAD="${RELEASE/\/tag\//\/download\/}"
+STAGE="$(mktemp -d -t cruise-download)"
+trap 'rm -rf "$STAGE"' EXIT
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL "$DOWNLOAD/SHA256SUMS" -o "$STAGE/SHA256SUMS"
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL "$DOWNLOAD/CruiseControl.pkg" -o "$STAGE/CruiseControl.pkg"
+if ! grep -Eq '^[0-9a-f]{64}  CruiseControl\.pkg$' "$STAGE/SHA256SUMS" || [[ "$(wc -l < "$STAGE/SHA256SUMS" | tr -d ' ')" != 1 ]]; then
+  echo "Invalid checksum metadata. Download cancelled." >&2
   exit 1
 fi
-
-tmp_dir="$(mktemp -d)"
-trap 'rm -rf "${tmp_dir}"' EXIT
-
-if [[ -d "${REPO_DIR}/.git" ]]; then
-  echo "Using the checked-out repo at ${REPO_DIR}"
-  repo_path="${REPO_DIR}"
-else
-  echo "Downloading Cruise Control v${APP_VERSION} from GitHub..."
-  git clone --depth 1 "${REPO_URL}" "${tmp_dir}/${REPO_NAME}"
-  repo_path="${tmp_dir}/${REPO_NAME}"
-fi
-
-if [[ -f "${repo_path}/scripts/build-app.sh" ]]; then
-  echo "Installing Cruise Control v${APP_VERSION} to /Applications..."
-  (cd "${repo_path}" && ./scripts/build-app.sh --install)
-  echo "Installed: /Applications/Cruise Control.app"
-  echo "Version: ${APP_VERSION}"
-else
-  echo "The source bundle is missing scripts/build-app.sh; download failed or the repo layout changed." >&2
-  exit 1
-fi
+(cd "$STAGE" && shasum -a 256 -c SHA256SUMS)
+DESTINATION="$HOME/Downloads/CruiseControl-${RELEASE##*/}.pkg"
+mkdir -p "$HOME/Downloads"
+cp "$STAGE/CruiseControl.pkg" "$DESTINATION"
+echo "Verified package saved to: $DESTINATION"
+echo "Unsigned releases trigger macOS warnings. Review the source before approving in Privacy & Security."
+open "$DESTINATION"

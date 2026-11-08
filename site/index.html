@@ -155,8 +155,10 @@
         <span class="num">1</span>
         <div>
           <h3>download + install</h3>
-          <pre><code>curl -fsSL https://raw.githubusercontent.com/ilovespectra/CruiseControl/main/scripts/install-cruisecontrol.sh | bash</code></pre>
-          <p>current version: 1.0.0. downloads the current repo, builds the app, and installs it to /Applications with a login agent so it stays running.</p>
+          <p><a class="pill pill-primary" href="https://github.com/ilovespectra/CruiseControl/releases/latest/download/CruiseControl.pkg">download mac installer</a></p>
+          <p><a href="https://raw.githubusercontent.com/ilovespectra/CruiseControl/main/scripts/install-cruisecontrol.sh" download="install-cruisecontrol.sh">download checksum-verifying install script</a> — inspect it, then run <code>bash ~/Downloads/install-cruisecontrol.sh</code>.</p>
+          <p>downloads the latest published universal binary for macOS 14+. no Swift or GitHub CLI needed. installs to /Applications and restarts the login agent, preserving your settings. downloads become available once the first release is published and the repository is public.</p>
+          <p>unsigned and not notarized: macOS will warn or block installation. review the project before approving in System Settings → Privacy &amp; Security. checksums detect changed downloads; they do not certify the publisher. installed versions with the updater show <b>Update Available</b> in settings.</p>
         </div>
       </li>
       <li>

@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings = SettingsController(store: store, monitor: monitor)
         monitor.setOverlayHidden = { [weak notch] hidden in notch?.setHidden(hidden) }
         monitor.start()
+        AppUpdates.shared.start()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

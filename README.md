@@ -49,7 +49,9 @@ Ollama reviews only newly observed progress on the cheap model, at most once eve
 Needs macOS 14+ and the Swift toolchain (Command Line Tools are enough).
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ilovespectra/CruiseControl/main/scripts/install-cruisecontrol.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ilovespectra/CruiseControl/main/scripts/install-cruisecontrol.sh -o ~/Downloads/install-cruisecontrol.sh
+# Inspect the downloaded script before running:
+bash ~/Downloads/install-cruisecontrol.sh
 ./scripts/build-app.sh             # builds build/Cruise Control.app
 ./scripts/build-app.sh --install   # copies to /Applications + installs a LaunchAgent (always running; launchd restarts it if it exits)
 ./scripts/build-app.sh --uninstall # removes both
@@ -57,6 +59,45 @@ swift test                         # unit tests (Swift Testing)
 ```
 
 Signing uses `$CC_SIGN_IDENTITY` if set, otherwise the first codesigning identity in your keychain. A stable identity keeps your permission grants across rebuilds.
+
+## binary releases & updates
+
+Settings → **Updates** checks the latest public GitHub release on launch and every six hours.
+**Update Available** also appears on the dropdown's Settings entry. **Download update** verifies
+the package SHA-256 against the release metadata and opens macOS Installer. Installation is
+explicit, restarts the login agent, and preserves configuration. Older builds without this
+updater must install the first updater-enabled package manually.
+
+For the maintainer, use **Updates → Publisher: update binaries**, choose this source checkout,
+then **Build preview** or **Build & publish unsigned release**. The equivalent script is:
+
+```sh
+bash scripts/repackage-binaries.sh --preview
+bash scripts/repackage-binaries.sh --publish --unsigned
+```
+
+Commit and push changes to the repository's default production branch first. The script fetches
+that branch, refuses dirty or out-of-date checkouts, archives the exact production SHA into a
+new temporary workspace, runs tests, builds arm64 + x86_64, and packages the app and login-agent
+installer. It cleans only its own temporary workspace. Artifacts and `release.json` remain in
+`build/releases/<version>/`; metadata and the app's Info.plist record the source commit.
+The next patch version is based only on successfully published, non-prerelease releases
+(the first is one patch above the source baseline). Failed builds do not advance it. If an
+upload fails or leaves a draft, inspect the draft and preserved output before retrying; the
+script refuses to skip a reserved version or overwrite existing output.
+
+Unsigned publishing is an explicit option: macOS warnings are expected, SHA-256 is not publisher
+authentication, and nothing disables Gatekeeper. For signed/notarized distribution omit
+`--unsigned` and set `CC_SIGN_IDENTITY`, `CC_INSTALLER_IDENTITY`, and `CC_NOTARY_PROFILE`.
+GitHub CLI authentication is required only for publishing. Public downloads require a public
+repository. Installing a local rebuild alone does not publish an update to other users.
+
+VS Code's Agents window is also scanned for attention-needed threads. While in Cruise mode and
+idle, auto-approval opens up to three visible attention threads every 30 seconds, verifies the
+selected thread, reviews each full request, and restores the original thread unless the user
+returns. Sidebar summaries are never enough to approve a request. Confirmation carousels are
+handled individually (never Allow All); a held request does not block reviews in other windows.
+`--inspect-vscode` prints Accessibility evidence without clicking or approving anything.
 
 ## permissions
 

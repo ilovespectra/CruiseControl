@@ -8,14 +8,23 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-swift build -c release --product CruiseControl
-BIN="$(swift build -c release --show-bin-path)/CruiseControl"
+ARCH_ARGS=(--arch "$(uname -m)")
+if [[ "${CC_UNIVERSAL:-0}" == "1" ]]; then
+  ARCH_ARGS=(--arch arm64 --arch x86_64)
+fi
+swift build -c release --product CruiseControl "${ARCH_ARGS[@]}"
+BIN="$(swift build -c release --show-bin-path "${ARCH_ARGS[@]}")/CruiseControl"
 
 APP="build/Cruise Control.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/CruiseControl"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+if [[ -n "${CC_VERSION:-}" ]]; then
+  /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $CC_VERSION" "$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${CC_BUILD:?CC_BUILD is required}" "$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :CruiseControlSourceCommit string ${CC_SOURCE_COMMIT:?CC_SOURCE_COMMIT is required}" "$APP/Contents/Info.plist"
+fi
 mkdir -p "$APP/Contents/Resources/Fonts"
 cp Resources/Fonts/*.ttf Resources/Fonts/OFL-*.txt "$APP/Contents/Resources/Fonts/"
 [[ -f Resources/AppIcon.icns ]] && cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
@@ -24,7 +33,11 @@ IDENTITY="${CC_SIGN_IDENTITY:-}"
 if [[ -z "$IDENTITY" ]]; then
   IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/"/ {print $2; exit}')"
 fi
-codesign --force --sign "${IDENTITY:--}" --identifier com.ilovespectra.cruisecontrol "$APP"
+SIGN_ARGS=(--force)
+if [[ "$IDENTITY" == "Developer ID Application:"* ]]; then
+  SIGN_ARGS=(--force --options runtime --timestamp)
+fi
+codesign "${SIGN_ARGS[@]}" --sign "${IDENTITY:--}" --identifier com.ilovespectra.cruisecontrol "$APP"
 echo "Built $APP (signed with: ${IDENTITY:-ad-hoc})"
 
 if [[ "${1:-}" == "--install" ]]; then

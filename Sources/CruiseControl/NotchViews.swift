@@ -78,6 +78,7 @@ struct CollapsedPill: View {
 // MARK: Expanded dropdown
 
 struct ExpandedPanel: View {
+    @ObservedObject private var updates = AppUpdates.shared
     @ObservedObject var store: ConfigStore
     @ObservedObject var monitor: ClickyMonitor
     var menuBarHeight: CGFloat
@@ -94,7 +95,7 @@ struct ExpandedPanel: View {
                 toggle()
                 NotificationCenter.default.post(name: SettingsController.openNotification, object: nil)
             } label: {
-                Label("settings", systemImage: "gearshape")
+                Label(updates.available == nil ? "settings" : "settings · Update Available", systemImage: "gearshape")
                     .font(BrandFont.inter(13, .semibold))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
@@ -113,11 +114,39 @@ struct ExpandedPanel: View {
 }
 
 struct SettingsContent: View {
+    @ObservedObject private var updates = AppUpdates.shared
+    @StateObject private var publisher = BinaryPublisher()
     @ObservedObject var store: ConfigStore
     @ObservedObject var monitor: ClickyMonitor
 
     var body: some View {
         TabView {
+            settingsPage {
+                settingsSection("Cruise Control updates", detail: "Installed: \(updates.installedVersion). Public GitHub releases are checked on launch and every six hours.") {
+                    Text(updates.status).textSelection(.enabled)
+                    HStack {
+                        Button("Check for updates") { Task { await updates.check() } }.disabled(updates.busy)
+                        if updates.available != nil {
+                            Button("Download update…") { Task { await updates.install() } }.disabled(updates.busy)
+                        }
+                    }
+                    Text("Packages are unsigned unless the publisher configures Developer ID signing. macOS warnings are expected; no security protections are disabled.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                settingsSection("Publisher: update binaries", detail: "For the project maintainer. Commit and push source changes to the production branch first. Builds use an isolated temporary checkout that is cleaned afterward.") {
+                    HStack {
+                        TextField("CruiseControl source folder", text: $publisher.repositoryPath)
+                        Button("Choose…") { publisher.chooseRepository() }
+                    }.disabled(publisher.running)
+                    HStack {
+                        Button("Build preview") { publisher.publish(preview: true) }
+                        Button("Build & publish unsigned release…") { publisher.publish(preview: false) }
+                    }.disabled(publisher.running)
+                    Text(publisher.log.isEmpty ? "Requires Swift, Python 3 and authenticated GitHub CLI. No GitHub credentials are stored in the app." : publisher.log)
+                        .font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                }
+            }
+            .tabItem { Label("Updates", systemImage: "arrow.down.circle") }
             settingsPage {
                 settingsSection("HeyClicky", detail: "Controls for drive requests, unfinished tasks and app updates.") {
                     continueToggle

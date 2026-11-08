@@ -82,6 +82,7 @@ final class ClickyMonitor: ObservableObject {
     private var bumpStates: [String: ChatBump.State] = [:]
     private let bumpStateURL = ConfigStore.directory.appendingPathComponent("chat-bumps.json")
     private var approvalAttempts: [String: Date] = [:]
+    private var lastVSCodeThreadProbeAt = Date.distantPast
     private var lastTaskAuditAt = Date.distantPast
     private var taskAuditStates: [String: ChatBump.State] = [:]
     private let taskAuditURL = ConfigStore.directory.appendingPathComponent("clicky-task-audits.json")
@@ -840,22 +841,25 @@ final class ClickyMonitor: ObservableObject {
         lastVSCodeCheckAt = Date()
         vscodeBusy = true
         Task {
-            await handleVSCode(config: config)
+            if await handleVSCode(config: config) == false {
+                await inspectVSCodeThreads(config: config)
+            }
             vscodeBusy = false
         }
     }
 
-    private func handleVSCode(config: Config) async {
-        guard let pending = await Worker.run({ VSCodeScanner(config: config).scan() }) else { return }
-        let key = Matcher.normalize(pending.request)
-        let short = pending.request.replacingOccurrences(of: "\n", with: " ").prefix(110)
+    private func handleVSCode(config: Config) async -> Bool {
         let now = Date()
-
-        guard now.timeIntervalSince(approvalAttempts[key] ?? .distantPast) >= 5 else { return }
-        if let cached = reviews[key] {
-            // Unsafe verdicts stick; a failed review is retried after a minute.
-            if cached.verdict?.safe == false || (cached.verdict == nil && now.timeIntervalSince(cached.at) < 60) { return }
-        }
+        let pendingRequests = await Worker.run { VSCodeScanner(config: config).scanAll() }
+        guard let pending = pendingRequests.first(where: { pending in
+            guard now.timeIntervalSince(approvalAttempts[pending.key] ?? .distantPast) >= 5 else { return false }
+            if let cached = reviews[pending.key] {
+                return cached.verdict?.safe != false && (cached.verdict != nil || now.timeIntervalSince(cached.at) >= 60)
+            }
+            return true
+        }) else { return false }
+        let key = pending.key
+        let short = pending.request.replacingOccurrences(of: "\n", with: " ").prefix(110)
         let verdict: ApprovalReview.Verdict
         if let cached = reviews[key]?.verdict {
             verdict = cached
@@ -864,7 +868,7 @@ final class ClickyMonitor: ObservableObject {
             remember(key, verdict)
             stats.vscodeHeldForReview += 1
             record("vscode: left for you — \(reason): \(short)")
-            return
+            return true
         } else {
             record("vscode: reviewing with ollama → \(short)")
             do {
@@ -874,26 +878,26 @@ final class ClickyMonitor: ObservableObject {
                 if !verdict.safe {
                     stats.vscodeHeldForReview += 1
                     record("vscode: left for you — ollama (\(review.model)) flagged it: \(verdict.reason)")
-                    return
+                    return true
                 }
             } catch {
                 remember(key, nil)
                 record("vscode: couldn't review (\(error.localizedDescription)) — leaving it for you")
-                return
+                return true
             }
         }
 
         // Only press if the very same request is still waiting (the review can take a few seconds).
-        guard let still = await Worker.run({ VSCodeScanner(config: config).scan() }),
-              Matcher.normalize(still.request) == key, store.config.vscodeAutoApprove else { return }
+        guard let still = await Worker.run({ VSCodeScanner(config: config).scanAll().first { $0.key == key } }),
+              still.request == pending.request, store.config.vscodeAutoApprove else { return true }
         approvalAttempts[key] = Date()
         let allow = still.allow
         var pressed = await Worker.run { AX.press(allow) }
         if !pressed { pressed = await mouseClick(on: allow) }
         if pressed {
             try? await Task.sleep(nanoseconds: 500_000_000)
-            let remaining = await Worker.run { VSCodeScanner(config: config).scan() }
-            if remaining.map({ Matcher.normalize($0.request) == key }) == true {
+            let remaining = await Worker.run { VSCodeScanner(config: config).scanAll().contains { $0.key == key } }
+            if remaining {
                 record("vscode: approval still pending after pressing — will retry: \(short)")
             } else {
                 stats.vscodeApproved += 1
@@ -902,6 +906,43 @@ final class ClickyMonitor: ObservableObject {
             }
         } else {
             record("vscode: couldn't press “\(still.allowLabel)”")
+        }
+        return true
+    }
+
+    private func inspectVSCodeThreads(config: Config) async {
+        guard config.mode == .cruise, store.config.vscodeAutoApprove,
+              Self.idleSeconds() >= config.awayIdleSeconds,
+              Date().timeIntervalSince(lastVSCodeThreadProbeAt) >= 30 else { return }
+        lastVSCodeThreadProbeAt = Date()
+        let threads = await Worker.run { VSCodeScanner(config: config).attentionThreads() }
+        for thread in threads.prefix(3) {
+            guard store.config.mode == .cruise, store.config.vscodeAutoApprove,
+                  Self.idleSeconds() >= config.awayIdleSeconds else { return }
+            let previousApp = NSWorkspace.shared.frontmostApplication
+            guard AX.press(thread.row) else {
+                record("vscode: couldn't open attention thread “\(thread.title)”")
+                continue
+            }
+            do {
+                try await Task.sleep(nanoseconds: 700_000_000)
+                let selected = await Worker.run { VSCodeScanner(config: config).selectedThread(in: thread.window) }
+                guard selected == thread.title else {
+                    record("vscode: selected thread could not be verified — no request approved")
+                    _ = AX.press(thread.previousRow)
+                    continue
+                }
+                record("vscode: inspecting attention thread “\(thread.title)”")
+                _ = await handleVSCode(config: config)
+            } catch {
+                record("vscode: thread inspection interrupted: \(error.localizedDescription)")
+            }
+            // Do not change the user's newly selected thread after they return to the keyboard or mouse.
+            if Self.idleSeconds() >= config.awayIdleSeconds,
+               await Worker.run({ VSCodeScanner(config: config).selectedThread(in: thread.window) }) == thread.title {
+                if !AX.press(thread.previousRow) { record("vscode: couldn't restore “\(thread.previousTitle)”") }
+                previousApp?.activate()
+            }
         }
     }
 
