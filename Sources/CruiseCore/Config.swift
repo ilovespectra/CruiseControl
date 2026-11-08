@@ -125,6 +125,9 @@ public struct Config: Codable, Equatable, Sendable {
     public var vscodeTaskBumps = false
     public var vscodeBumpQuietMinutes: Double = 5
     public var vscodeBumpCooldownMinutes: Double = 15
+    public var auditClickyTasks = true
+    public var trackedClickyTasks: [String] = []
+    public var clickyTaskAuditMinutes: Double = 5
 
     public var pillSide: PillSide = .right
     /// Only show the notch pill while HeyClicky is running.
@@ -193,6 +196,9 @@ public struct Config: Codable, Equatable, Sendable {
         vscodeTaskBumps = try c.decodeIfPresent(Bool.self, forKey: .vscodeTaskBumps) ?? d.vscodeTaskBumps
         vscodeBumpQuietMinutes = max(1, try c.decodeIfPresent(Double.self, forKey: .vscodeBumpQuietMinutes) ?? d.vscodeBumpQuietMinutes)
         vscodeBumpCooldownMinutes = max(5, try c.decodeIfPresent(Double.self, forKey: .vscodeBumpCooldownMinutes) ?? d.vscodeBumpCooldownMinutes)
+        auditClickyTasks = try c.decodeIfPresent(Bool.self, forKey: .auditClickyTasks) ?? d.auditClickyTasks
+        trackedClickyTasks = try c.decodeIfPresent([String].self, forKey: .trackedClickyTasks) ?? d.trackedClickyTasks
+        clickyTaskAuditMinutes = max(1, try c.decodeIfPresent(Double.self, forKey: .clickyTaskAuditMinutes) ?? d.clickyTaskAuditMinutes)
         pillSide = try c.decodeIfPresent(PillSide.self, forKey: .pillSide) ?? d.pillSide
         showOnlyWithClicky = try c.decodeIfPresent(Bool.self, forKey: .showOnlyWithClicky) ?? d.showOnlyWithClicky
     }

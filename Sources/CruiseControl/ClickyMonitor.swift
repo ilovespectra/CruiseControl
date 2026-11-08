@@ -55,6 +55,7 @@ final class ClickyMonitor: ObservableObject {
     private var lastRelaunchAttemptAt = Date.distantPast
     private var lastTaskLabels: [String] = []
     private var updateHintAt = Date.distantPast
+    private var autoContinueReportsEnabled = true
 
     // Quiet-conversation replies
     private var stall = StallTracker()
@@ -81,6 +82,9 @@ final class ClickyMonitor: ObservableObject {
     private var bumpStates: [String: ChatBump.State] = [:]
     private let bumpStateURL = ConfigStore.directory.appendingPathComponent("chat-bumps.json")
     private var approvalAttempts: [String: Date] = [:]
+    private var lastTaskAuditAt = Date.distantPast
+    private var taskAuditStates: [String: ChatBump.State] = [:]
+    private let taskAuditURL = ConfigStore.directory.appendingPathComponent("clicky-task-audits.json")
 
     private struct Budget: Codable {
         var continueTimes: [Date]
@@ -91,6 +95,7 @@ final class ClickyMonitor: ObservableObject {
 
     init(store: ConfigStore) {
         self.store = store
+        self.autoContinueReportsEnabled = store.config.autoContinueReports
         let seen = (try? Data(contentsOf: seenURL)).flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? []
         let budget = (try? Data(contentsOf: budgetURL)).flatMap { try? JSONDecoder().decode(Budget.self, from: $0) }
         gate = ReportGate(known: Set(seen), continueTimes: budget?.continueTimes ?? [])
@@ -106,6 +111,13 @@ final class ClickyMonitor: ObservableObject {
             loadingStats = false
         }
         saveStats()
+        if FileManager.default.fileExists(atPath: taskAuditURL.path) {
+            do {
+                taskAuditStates = try JSONDecoder().decode([String: ChatBump.State].self, from: Data(contentsOf: taskAuditURL))
+            } catch {
+                record("couldn't load HeyClicky task-audit history: \(error.localizedDescription)")
+            }
+        }
         if FileManager.default.fileExists(atPath: modelStateURL.path) {
             do {
                 modelStates = try JSONDecoder().decode([String: ModelRouting.State].self, from: Data(contentsOf: modelStateURL))
@@ -224,6 +236,14 @@ final class ClickyMonitor: ObservableObject {
 
     private func cycle() async {
         let config = store.config
+        if config.autoContinueReports && !autoContinueReportsEnabled {
+            lastInterruptedProbeAt = .distantPast
+            lastNotchInspectionAt = .distantPast
+            lastStallProbeAt = .distantPast
+            gate.coolDown()
+            record("keep unfinished tasks going was re-enabled — checking heyclicky immediately")
+        }
+        autoContinueReportsEnabled = config.autoContinueReports
         if await handleSystemDialog(config: config) { return }
         var result = await Worker.run { ClickyScanner(config: config).scan() }
         guard result.clickyRunning else {
@@ -258,6 +278,7 @@ final class ClickyMonitor: ObservableObject {
         if await handleConsent(result, config: config) { return }
         if await resumeAfterRelaunch(result, config: config) { return }
         if await handleUpdate(result, config: config) { return }
+        if await auditOtherClickyTasks(config: config) { return }
         if await handleNeedsYou(result, config: config) { return }
         if await handleInterruptedCards(result, config: config) { return }
         await handleReports(result, config: config)
@@ -397,16 +418,45 @@ final class ClickyMonitor: ObservableObject {
         try? await Task.sleep(nanoseconds: 1_200_000_000)
 
         let rescan = await Worker.run { ClickyScanner(config: config).scan() }
+        guard !report.header.isEmpty,
+              let task = rescan.selectedTask,
+              Matcher.isTaskRow(report.header, title: task) || report.header.hasPrefix(task + ", ") else {
+            record("report task could not be verified — not sending a continuation into an unrelated chat")
+            return
+        }
         guard let composer = rescan.composer else {
             record("couldn't find HeyClicky's chat box — is the chat window closed?")
             return
         }
 
-        if await send(config.continuePrompt, via: composer) {
-            stats.continued += 1
-            record("sent continue prompt")
-        } else {
-            record("failed to send continue prompt")
+        guard let latestReport = rescan.latestReport else {
+            record("report has no readable task-specific context — not sending a generic continuation")
+            return
+        }
+        do {
+            let draft = try await Ollama.draftChatBump(
+                TaskAudit.context(task: task, transcript: rescan.transcript.joined(separator: "\n")),
+                config: config, system: TaskAudit.system, taskName: task, latestReport: latestReport)
+            guard draft.unfinished else {
+                record("report for “\(task)” has no actionable unfinished work")
+                return
+            }
+            let fresh = await Worker.run { ClickyScanner(config: config).scan() }
+            let input = composer.input
+            guard fresh.selectedTask == task, fresh.transcript == rescan.transcript,
+                  store.config.mode != .manual, store.config.autoContinueReports,
+                  await Worker.run({ (AX.stringValue(input) ?? "").isEmpty }) else {
+                record("report context changed — continuation not sent")
+                return
+            }
+            if await send(draft.message, via: composer) {
+                stats.continued += 1
+                record("sent task-specific report continuation to “\(task)”")
+            } else {
+                record("failed to send task-specific report continuation")
+            }
+        } catch {
+            record("couldn't assess task report: \(error.localizedDescription) — no generic fallback sent")
         }
 
         if let previousApp, previousApp.bundleIdentifier.map({ !config.clickyBundleIDs.contains($0) }) ?? true {
@@ -450,14 +500,8 @@ final class ClickyMonitor: ObservableObject {
             return true
         }
 
-        // Open that task's conversation from the sidebar.
-        if let row = chat.chatButtons.first(where: { Matcher.isTaskRow($0.label, title: task) }) {
-            let element = row.element
-            if await Worker.run({ AX.press(element) }) {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                chat = await Worker.run { ClickyScanner(config: config).scan() }
-            }
-        }
+        guard let selected = await selectTask(task, from: chat, config: config) else { return true }
+        chat = selected
         guard let composer = chat.composer else {
             record("couldn't find heyclicky's chat box — nudge not sent")
             return true
@@ -493,7 +537,6 @@ final class ClickyMonitor: ObservableObject {
             if pressed, let ready = await waitForComposer(config: config) { return ready }
         }
 
-        // Older builds: a reopen event (like clicking the app in Finder) brings the chat window back.
         if let app = config.clickyBundleIDs.lazy.compactMap({ NSRunningApplication.runningApplications(withBundleIdentifier: $0).first }).first,
            let url = app.bundleURL {
             let configuration = NSWorkspace.OpenConfiguration()
@@ -503,6 +546,130 @@ final class ClickyMonitor: ObservableObject {
         return await waitForComposer(config: config)
     }
 
+    private func selectTask(_ task: String, from chat: ScanResult, config: Config) async -> ScanResult? {
+        if chat.selectedTask.map({ Matcher.normalize($0) == Matcher.normalize(task) }) == true { return chat }
+        guard
+            let row = chat.chatButtons.first(where: {
+                Matcher.normalize($0.label) == Matcher.normalize(task) || Matcher.isTaskRow($0.label, title: task)
+            })
+        else {
+            record("couldn't find HeyClicky task “\(task)” — leaving other chats alone")
+            return nil
+        }
+        let element = row.element
+        guard await Worker.run({ AX.press(element) }) else {
+            record("couldn't select HeyClicky task “\(task)”")
+            return nil
+        }
+        for _ in 0..<10 {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            let scan = await Worker.run { ClickyScanner(config: config).scan() }
+            if scan.selectedTask.map({ Matcher.normalize($0) == Matcher.normalize(task) }) == true { return scan }
+        }
+        record("HeyClicky didn't confirm task “\(task)” — no message sent")
+        return nil
+    }
+
+    private func auditOtherClickyTasks(config: Config) async -> Bool {
+        let now = Date()
+        guard config.auditClickyTasks, config.mode == .cruise, config.autoContinueReports,
+            Self.idleSeconds() >= config.awayIdleSeconds,
+            now.timeIntervalSince(lastTaskAuditAt) >= config.clickyTaskAuditMinutes * 60
+        else { return false }
+        lastTaskAuditAt = now
+        let previousApp = NSWorkspace.shared.frontmostApplication
+        guard let original = await revealChat(config: config) else {
+            record("task audit couldn't open HeyClicky — will retry later")
+            return false
+        }
+        let tasks = TaskAudit.candidates(tracked: config.trackedClickyTasks, recent: original.recentTasks)
+        var sent = false
+        for task in tasks {
+            guard store.config.auditClickyTasks, store.config.mode == .cruise,
+                Self.idleSeconds() >= config.awayIdleSeconds
+            else { break }
+            let limits = ReportGate.Limits(config: config)
+            guard gate.canContinue(now: Date(), limits: limits),
+                nudgeLimiter.allow(task: task, now: Date(), maxPerHour: config.maxNudgesPerTaskPerHour)
+            else { continue }
+            let scan = await Worker.run { ClickyScanner(config: config).scan() }
+            guard let chat = await selectTask(task, from: scan, config: config),
+                let composer = chat.composer
+            else { continue }
+            guard let status = chat.selectedStatus, !StallTracker.isBusy(status),
+                let latestReport = chat.latestReport
+            else { continue }
+            let input = composer.input
+            guard await Worker.run({ (AX.stringValue(input) ?? "").isEmpty }) else {
+                record("task “\(task)” has a draft — audit will not overwrite it")
+                continue
+            }
+            var state = taskAuditStates[task] ?? ChatBump.State()
+            let transcript = chat.transcript.joined(separator: "\n")
+            state.observe(transcript, now: Date())
+            guard transcript != state.answeredTranscript,
+                Date().timeIntervalSince(state.lastAttempt) >= config.clickyTaskAuditMinutes * 60,
+                !transcript.isEmpty
+            else { continue }
+            state.lastAttempt = Date()
+            taskAuditStates[task] = state
+            saveTaskAudits()
+            do {
+                let draft = try await Ollama.draftChatBump(
+                    TaskAudit.context(task: task, transcript: transcript), config: config, system: TaskAudit.system, taskName: task,
+                    latestReport: latestReport)
+                state.answeredTranscript = transcript
+                taskAuditStates[task] = state
+                guard saveTaskAudits() else { break }
+                guard draft.unfinished else {
+                    record("task audit: “\(task)” has no actionable unfinished work")
+                    continue
+                }
+                let fresh = await Worker.run { ClickyScanner(config: config).scan() }
+                guard fresh.selectedTask == chat.selectedTask, fresh.transcript == chat.transcript,
+                    let freshComposer = fresh.composer,
+                    store.config.mode == .cruise, store.config.auditClickyTasks,
+                    Self.idleSeconds() >= config.awayIdleSeconds
+                else {
+                    record("task changed during audit of “\(task)” — no message sent")
+                    continue
+                }
+                let freshInput = freshComposer.input
+                guard await Worker.run({ (AX.stringValue(freshInput) ?? "").isEmpty }) else { continue }
+                nudgeLimiter.record(task: task, at: Date())
+                gate.recordContinue(at: Date())
+                saveBudget()
+                if await send(draft.message, via: freshComposer) {
+                    stats.continued += 1
+                    sent = true
+                    record("task audit resumed “\(task)”: \(draft.message.prefix(160))")
+                } else {
+                    record("task audit couldn't send to “\(task)” — not redirecting to another task")
+                }
+            } catch {
+                record("task audit failed for “\(task)”: \(error.localizedDescription)")
+            }
+        }
+        if let task = original.selectedTask {
+            let scan = await Worker.run { ClickyScanner(config: config).scan() }
+            _ = await selectTask(task, from: scan, config: config)
+        }
+        if let previousApp, previousApp.bundleIdentifier.map({ !config.clickyBundleIDs.contains($0) }) ?? true {
+            previousApp.activate()
+        }
+        return sent
+    }
+
+    @discardableResult
+    private func saveTaskAudits() -> Bool {
+        do {
+            try JSONEncoder().encode(taskAuditStates).write(to: taskAuditURL, options: .atomic)
+            return true
+        } catch {
+            record("couldn't persist HeyClicky task-audit history: \(error.localizedDescription)")
+            return false
+        }
+    }
     private func waitForComposer(config: Config) async -> ScanResult? {
         for _ in 0..<8 {
             try? await Task.sleep(nanoseconds: 500_000_000)
@@ -580,13 +747,8 @@ final class ClickyMonitor: ObservableObject {
             record("couldn't open heyclicky's chat window — apology not sent")
             return true
         }
-        if let row = chat.chatButtons.first(where: { Matcher.isTaskRow($0.label, title: task) }) {
-            let element = row.element
-            if await Worker.run({ AX.press(element) }) {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                chat = await Worker.run { ClickyScanner(config: config).scan() }
-            }
-        }
+        guard let selected = await selectTask(task, from: chat, config: config) else { return true }
+        chat = selected
         guard let composer = chat.composer else {
             record("couldn't find heyclicky's chat box — apology not sent")
             return true
@@ -640,13 +802,8 @@ final class ClickyMonitor: ObservableObject {
             }
         }
         if var chat = await revealChat(config: config) {
-            if let row = chat.chatButtons.first(where: { Matcher.isTaskRow($0.label, title: task) }) {
-                let element = row.element
-                if await Worker.run({ AX.press(element) }) {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    chat = await Worker.run { ClickyScanner(config: config).scan() }
-                }
-            }
+            guard let selected = await selectTask(task, from: chat, config: config) else { return true }
+            chat = selected
             if let composer = chat.composer {
                 if await send(config.interruptedCardNudge, via: composer) {
                     stats.continued += 1
@@ -964,13 +1121,8 @@ final class ClickyMonitor: ObservableObject {
             record("couldn't open heyclicky's chat window — reply not sent")
             return true
         }
-        if let row = chat.chatButtons.first(where: { Matcher.isTaskRow($0.label, title: task) }) {
-            let element = row.element
-            if await Worker.run({ AX.press(element) }) {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                chat = await Worker.run { ClickyScanner(config: config).scan() }
-            }
-        }
+        guard let selected = await selectTask(task, from: chat, config: config) else { return true }
+        chat = selected
         guard let composer = chat.composer else {
             record("couldn't find heyclicky's chat box — reply not sent")
             return true
@@ -1170,14 +1322,10 @@ final class ClickyMonitor: ObservableObject {
             return true
         }
         let note = Nudge.relaunchNote(fromVersion: p.fromVersion, toVersion: now)
-        for task in (p.tasks.isEmpty ? [""] : p.tasks) {
-            if !task.isEmpty, let row = chat.chatButtons.first(where: { Matcher.isTaskRow($0.label, title: task) }) {
-                let element = row.element
-                if await Worker.run({ AX.press(element) }) {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    chat = await Worker.run { ClickyScanner(config: config).scan() }
-                }
-            }
+        let tasks = p.tasks.isEmpty ? chat.selectedTask.map { [$0] } ?? [] : p.tasks
+        for task in tasks {
+            guard let selected = await selectTask(task, from: chat, config: config) else { continue }
+            chat = selected
             guard let composer = chat.composer else {
                 record("couldn't find heyclicky's chat box after the update")
                 break

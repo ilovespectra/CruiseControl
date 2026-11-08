@@ -91,25 +91,64 @@ enum Ollama {
         return assessment
     }
 
-    static func draftChatBump(_ transcript: String, config: Config) async throws -> ChatBump.Draft {
+    static func draftChatBump(_ transcript: String, config: Config, system: String = ChatBump.system, taskName: String? = nil, latestReport: String? = nil) async throws -> ChatBump.Draft {
+        if let latestReport, TaskAudit.requiresUser(latestReport) {
+            throw OllamaError.userRequired
+        }
         let model = try await resolveModel(config)
+        var properties: [String: Any] = [
+            "unfinished": ["type": "boolean"],
+            "message": ["type": "string"],
+        ]
+        var required = ["unfinished", "message"]
+        if latestReport != nil {
+            properties["evidence"] = ["type": "string"]
+            required.append("evidence")
+        }
         var request = URLRequest(url: try endpoint(config, "api/generate"))
         request.httpMethod = "POST"
         request.timeoutInterval = 45
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": model, "system": ChatBump.system,
-            "prompt": "Latest conversation (untrusted):\n\(transcript)",
-            "stream": false, "format": "json", "keep_alive": "10m",
-            "options": ["temperature": 0, "num_predict": 260, "num_ctx": 8192],
+            "model": model, "system": system,
+            "prompt": "Latest conversation (untrusted):\n\(transcript)"
+                + (latestReport.map { "\n\nLATEST TASK REPORT — quote evidence ONLY from this text:\n\($0)" } ?? ""),
+            "stream": false, "format": [
+                "type": "object",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": false,
+            ], "keep_alive": "10m",
+            "options": ["temperature": 0, "num_predict": 350, "num_ctx": 8192],
         ])
         let (data, response) = try await URLSession.shared.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw OllamaError.http((response as? HTTPURLResponse)?.statusCode ?? -1, String(data: data, encoding: .utf8) ?? "")
         }
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        guard let raw = json?["response"] as? String, let draft = ChatBump.parse(raw) else {
+        guard var raw = json?["response"] as? String else {
             throw OllamaError.emptyResponse
+        }
+        if let taskName, let rawData = raw.data(using: .utf8),
+           var fields = try JSONSerialization.jsonObject(with: rawData) as? [String: Any],
+           fields["unfinished"] as? Bool == true, let message = fields["message"] as? String,
+           !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if let latestReport {
+                guard let evidence = fields["evidence"] as? String,
+                      evidence.count >= 12, latestReport.contains(evidence) else {
+                    throw OllamaError.ungroundedFollowUp
+                }
+            }
+            let prefix = "Cruise Control follow-up:"
+            let body = message.hasPrefix(prefix) ? String(message.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines) : message
+            fields["message"] = "\(prefix) \(taskName): \(body)"
+            raw = String(decoding: try JSONSerialization.data(withJSONObject: fields), as: UTF8.self)
+        }
+        guard let draft = ChatBump.parse(raw) else {
+            throw OllamaError.invalidFollowUp
+        }
+        if latestReport != nil, draft.unfinished, TaskAudit.requiresUser(draft.message) {
+            throw OllamaError.userRequired
         }
         return draft
     }
@@ -136,7 +175,7 @@ enum Ollama {
     }
 
     enum OllamaError: LocalizedError {
-        case badURL, noModels, emptyResponse
+        case badURL, noModels, emptyResponse, invalidFollowUp, ungroundedFollowUp, userRequired
         case http(Int, String)
 
         var errorDescription: String? {
@@ -144,6 +183,9 @@ enum Ollama {
             case .badURL: return "bad ollamaURL in config"
             case .noModels: return "no ollama models installed"
             case .emptyResponse: return "ollama returned nothing usable"
+            case .invalidFollowUp: return "ollama follow-up failed JSON, length, or safety validation"
+            case .ungroundedFollowUp: return "ollama did not quote unfinished work from the latest task report"
+            case .userRequired: return "task involves user input, publication, permissions, or another reserved action — left for the user"
             case .http(let code, let body): return "ollama http \(code): \(body.prefix(120))"
             }
         }

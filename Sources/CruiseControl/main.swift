@@ -1,6 +1,39 @@
 import AppKit
 import CruiseCore
 
+if let index = CommandLine.arguments.firstIndex(of: "--inspect-clicky-task") {
+    MainActor.assumeIsolated {
+        Task { @MainActor in
+            do {
+                let task = CommandLine.arguments.dropFirst(index + 1).joined(separator: " ")
+                let config = Config()
+                let scan = ClickyScanner(config: config).scan()
+                guard let row = scan.chatButtons.first(where: {
+                    Matcher.normalize($0.label) == Matcher.normalize(task) || Matcher.isTaskRow($0.label, title: task)
+                }), AX.press(row.element) else {
+                    throw VSCodeModels.ModelError.action("task sidebar row is unavailable")
+                }
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+                let selected = ClickyScanner(config: config).scan()
+                guard selected.selectedTask == task else {
+                    throw VSCodeModels.ModelError.action("selected task could not be verified")
+                }
+                print("Verified task: \(task); status: \(selected.selectedStatus ?? "unknown")")
+                print(selected.transcript.suffix(12).joined(separator: "\n"))
+                let draft = try await Ollama.draftChatBump(
+                    TaskAudit.context(task: task, transcript: selected.transcript.joined(separator: "\n")),
+                    config: config, system: TaskAudit.system, taskName: task, latestReport: selected.latestReport)
+                print("Unfinished: \(draft.unfinished); draft (not sent): \(draft.message)")
+                exit(0)
+            } catch {
+                fputs("Task inspection failed: \(error.localizedDescription)\n", stderr)
+                exit(1)
+            }
+        }
+        NSApplication.shared.run()
+    }
+}
+
 if CommandLine.arguments.contains("--settings") {
     DistributedNotificationCenter.default().postNotificationName(
         SettingsController.openNotification, object: nil, userInfo: nil, deliverImmediately: true)

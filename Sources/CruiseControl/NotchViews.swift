@@ -123,6 +123,13 @@ struct SettingsContent: View {
                     continueToggle
                     updateToggle
                     Toggle("Resume interrupted tasks", isOn: $store.config.resumeAfterInterrupt)
+                    Toggle("Check other recent tasks for unfinished work", isOn: $store.config.auditClickyTasks)
+                    Text("Checks up to three recent tasks and explicitly tracked tasks while idle. A Done badge is not proof of completion.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    TextField("Tracked tasks (comma separated)", text: Binding(
+                        get: { store.config.trackedClickyTasks.joined(separator: ", ") },
+                        set: { store.config.trackedClickyTasks = $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } }
+                    ))
                     Toggle("Reply when HeyClicky goes quiet", isOn: $store.config.replyToStalls)
                     Toggle("Answer HeyClicky system permission dialogs", isOn: $store.config.autoAnswerSystemDialogs)
                 }

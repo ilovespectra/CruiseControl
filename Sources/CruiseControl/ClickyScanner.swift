@@ -64,6 +64,10 @@ struct ScanResult {
     var transcript: [String] = []
     /// Labelled buttons in the chat window, e.g. sidebar rows like "Rippa Repair, working".
     var chatButtons: [(element: AXUIElement, label: String)] = []
+    var recentTasks: [String] = []
+    var selectedTask: String?
+    var selectedStatus: String?
+    var latestReport: String? { transcript.last(where: { $0.count > 200 }) }
 }
 
 /// Walks HeyClicky's Accessibility tree looking for the drive consent prompt, "Full report" buttons and the chat composer.
@@ -99,6 +103,10 @@ struct ClickyScanner {
         var openChat: AXUIElement?
         var lastCard: (task: String, status: String)?
         var workingCount: Int?
+        var inRecents = false
+        var recentTasks: [String] = []
+        var selectedTask: String?
+        var selectedStatus: String?
     }
 
     func scan() -> ScanResult {
@@ -137,6 +145,9 @@ struct ClickyScanner {
                     result.chatButtons = ctx.buttons
                     result.conversation = ctx.texts
                     result.lastCard = ctx.lastCard
+                    result.selectedTask = ctx.selectedTask
+                    result.selectedStatus = ctx.selectedStatus
+                    result.recentTasks = ctx.recentTasks
                 }
                 if let open = ctx.openChat {
                     result.openChat = open
@@ -214,6 +225,10 @@ struct ClickyScanner {
                 ctx.dismiss = e
             }
             if !label.isEmpty { ctx.buttons.append((e, label)) }
+            if ctx.inRecents, ctx.recentTasks.count < 3,
+               !label.contains(", "), !label.isEmpty {
+                ctx.recentTasks.append(label)
+            }
             if Matcher.hasTimestamp(label) {
                 if let card = StallTracker.headerCard(label) { ctx.lastCard = card }
                 ctx.lastHeader = label
@@ -223,6 +238,15 @@ struct ClickyScanner {
             if !label.isEmpty { return }
         case kAXStaticTextRole:
             if let value, !value.isEmpty {
+                if ctx.selectedStatus == nil, ctx.texts.count < 3, StallTracker.cardStatuses.contains(Matcher.normalize(value)) {
+                    ctx.selectedStatus = value
+                }
+                if value == "RECENTS" { ctx.inRecents = true }
+                if let task = TaskAudit.composerTask(value) {
+                    ctx.selectedTask = task
+                    ctx.inRecents = false
+                    ctx.texts = []
+                }
                 if Matcher.isNeedsYou(value, config: config) {
                     ctx.needsYouTask = ctx.lastText
                 }

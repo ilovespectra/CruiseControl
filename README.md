@@ -14,9 +14,9 @@ HeyClicky asks before it drives your computer ("Go ahead" / "Let HeyClicky drive
 | rest area | `REST` | every drive request gets **Not now** |
 | cruise control | `CRUISE` | every drive request gets **Go ahead** / **Let Clicky Drive** |
 
-In rest and cruise modes it also watches HeyClicky's chat window for a new **Full report** button, which shows up when a task didn't finish. When one appears, Cruise Control clicks it, then types and sends:
+In rest and cruise modes it also watches HeyClicky's chat window for a new **Full report** button. It opens the report, verifies the selected task identity, and asks local Ollama whether the latest report contains actionable unfinished work. Only a validated, task-specific continuation is sent; completed reports, ambiguous chats, drafts, and failed assessments are left alone.
 
-> Please continue the users request to implement this particular feature based on your findings
+**Other task instances:** in Cruise mode, while idle, it opens HeyClicky's full chat and follows the same task selection path as the notch cards using the accessible sidebar. Every five minutes it checks up to three recent named tasks, plus the explicitly tracked names in Settings. It does not sweep historical/new task cards. A **Done** badge means a turn ended, not that the original goal was verified: source-only fixes and manual workarounds do not demonstrate a successful automated run. Ollama must quote unfinished work from that task's latest report before a goal-preserving follow-up can be sent. Busy tasks, user-input blockers, and draft composers are left alone. Task identity is verified again immediately before sending; recovery never falls through to an unrelated current composer. Per-task audit history is saved in `clicky-task-audits.json`, with existing global and per-task nudge budgets. The original selected chat is restored after inspection. Configure `auditClickyTasks`, `trackedClickyTasks`, and `clickyTaskAuditMinutes`; add important unfinished tasks to the tracked list so they remain checked after leaving Recents.
 
 When a **"{task} Needs you"** card shows up in the notch (usually because the task stalled), Cruise Control closes the card, opens that task's chat, and asks a local [Ollama](https://ollama.com) model to draft a short nudge from the conversation. Then it sends the nudge. If Ollama isn't running, it sends `fallbackNudge` instead. Every draft goes through a safety filter: anything that claims you approved something ("assume I selected always allow"), mentions passwords or keys, or tells HeyClicky to skip a permission prompt is redrafted once, and if it's still unsafe the fallback is sent.
 
@@ -49,6 +49,7 @@ Ollama reviews only newly observed progress on the cheap model, at most once eve
 Needs macOS 14+ and the Swift toolchain (Command Line Tools are enough).
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/ilovespectra/CruiseControl/main/scripts/install-cruisecontrol.sh | bash
 ./scripts/build-app.sh             # builds build/Cruise Control.app
 ./scripts/build-app.sh --install   # copies to /Applications + installs a LaunchAgent (always running; launchd restarts it if it exits)
 ./scripts/build-app.sh --uninstall # removes both
