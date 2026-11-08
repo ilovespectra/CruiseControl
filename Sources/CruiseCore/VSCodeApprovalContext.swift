@@ -1,15 +1,22 @@
 import Foundation
 
 public enum VSCodeApprovalContext {
-    /// The sidebar preview is clipped, but the Allow button's aria-label includes the entire command.
+    /// The sidebar preview is clipped, but the Allow button's aria-label includes the entire approval label.
     public static func sidebarRequest(_ label: String) -> String? {
         let prefix = "Allow once: "
         guard label.hasPrefix(prefix) else { return nil }
         let command = String(label.dropFirst(prefix.count))
-        let request = "Run in terminal:\n\(command)"
+        let structured = command.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("{")
+        let request = structured ? "Tool approval inputs (operation unspecified):\n\(command)" : "Run in terminal:\n\(command)"
         guard !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               request.count <= 4000,
               !command.contains("…"), !command.contains("...") else { return nil }
+        if structured {
+            guard let data = command.data(using: .utf8),
+                  let inputs = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  !inputs.isEmpty else { return nil }
+            return request
+        }
         // Generic approval questions contain no tool inputs. Leave those for the full dialog.
         let executable = command.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? ""
         let knownCommands: Set<String> = [

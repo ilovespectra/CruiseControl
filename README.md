@@ -39,7 +39,9 @@ HeyClicky sometimes *wrongly* thinks you took over and quietly stops even though
 **Other VS Code threads:** terminal approvals in the Agents window's Sessions sidebar
 are reviewed and pressed directly through Accessibility, including while another app is
 foreground. The full `Allow once: <command>` accessibility label is used, not the clipped
-preview. The owning thread and exact command are re-scanned after review; duplicate thread
+preview. Complete nonempty JSON-object labels are also reviewed as tool inputs, with the
+operation explicitly marked unspecified; no tool identity is invented. Escaped input strings
+are decoded for the fixed blocklist. The owning thread and exact label are re-scanned after review; duplicate thread
 names, ambiguous buttons, clipped/oversized commands, and generic questions without tool
 inputs are not approved through this path. In Cruise mode, a detected pending sidebar
 request can briefly bring VS Code forward and open its thread when the full chat dialog

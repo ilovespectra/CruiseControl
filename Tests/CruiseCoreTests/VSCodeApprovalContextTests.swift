@@ -2,6 +2,17 @@ import Testing
 @testable import CruiseCore
 
 @Suite struct VSCodeApprovalContextTests {
+    @Test func reviewsStructuredSidebarInputsWithoutInventingToolName() {
+        let input = #"{"url":"http://127.0.0.1:11434/api/tags"}"#
+        #expect(VSCodeApprovalContext.sidebarRequest("Allow once: \(input)")
+                == "Tool approval inputs (operation unspecified):\n\(input)")
+        let unsafe = VSCodeApprovalContext.sidebarRequest(#"Allow once: {"command":"rm\u0020-rf\u0020/"}"#)
+        #expect(unsafe.flatMap(ApprovalReview.hardBlockReason) != nil)
+        for input in ["{}", "{invalid}", #"{"url":"http://localhost"} trailing"#] {
+            #expect(VSCodeApprovalContext.sidebarRequest("Allow once: \(input)") == nil)
+        }
+    }
+
     @Test func readsFullSidebarCommandInsteadOfPreview() {
         let command = "cd /tmp/project && python3 - <<'PY'\nprint('test')\nPY"
         #expect(VSCodeApprovalContext.sidebarRequest("Allow once: \(command)") == "Run in terminal:\n\(command)")

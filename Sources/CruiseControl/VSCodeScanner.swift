@@ -2,7 +2,7 @@ import AppKit
 import ApplicationServices
 import CruiseCore
 
-/// A pending VS Code chat tool confirmation ("Run in terminal: … [Allow Once] [Skip]").
+/// A pending VS Code tool confirmation from a chat dialog or the Sessions sidebar.
 struct VSCodeConfirmation {
     let allow: AXUIElement
     let allowLabel: String
