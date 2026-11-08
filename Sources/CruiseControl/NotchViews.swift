@@ -196,6 +196,15 @@ struct SettingsContent: View {
             }
             .tabItem { Label("Activity", systemImage: "chart.bar") }
             settingsPage {
+                settingsSection("Documentation & safety", detail: "Cruise Control is an independent open-source project, not affiliated with HeyClicky.") {
+                    Text("Auto-approval removes a human checkpoint. Agents can delete files, expose secrets, install malware, spend money, or change accounts. Ollama review and rate limits are not a security boundary. Use backups and restricted accounts; supervise important work.")
+                    Text("To stop automation, select Manual and disable the separate VS Code approval and model switches. Hiding the notch does not stop automation, and switching modes does not cancel already-running agents.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        Link("Documentation & warnings", destination: URL(string: "https://cruise.kolektivkrog.si/docs.html")!)
+                        Link("GitHub source", destination: URL(string: "https://github.com/ilovespectra/CruiseControl")!)
+                    }
+                }
                 settingsSection("Permissions", detail: "Accessibility is required to read controls and press buttons. Screen recording is an optional HeyClicky OCR fallback.") {
                     permissionStatus
                     permissions

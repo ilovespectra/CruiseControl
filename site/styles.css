@@ -273,6 +273,32 @@ details code { background: var(--soft); padding: 1px 6px; border-radius: 5px; fo
 .foot-brand { display: flex; align-items: center; gap: 8px; font-weight: 600; }
 .disclaimer { font-size: 13px; color: var(--muted); max-width: 760px; }
 
+.footer-links { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 16px 0; }
+.footer-links a, .fine a, .safety-warning a, .docs a:not(.pill):not(.brand) {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.safety-warning {
+  max-width: 760px; margin: 28px auto; padding: 22px;
+  background: #fff8e8; border: 2px solid #b57713; border-radius: 16px;
+  color: #44300f; text-align: left;
+}
+.safety-warning h2 { font: 600 22px var(--sans); margin: 0 0 10px; }
+.safety-warning p { margin: 0 0 12px; }
+.docs { max-width: 900px; margin: 0 auto; padding: 48px 24px 0; overflow-wrap: anywhere; }
+.docs h1 { font: 400 clamp(52px, 8vw, 88px)/1 var(--serif); margin: 0 0 16px; }
+.docs h2 { font: 400 38px/1.1 var(--serif); margin: 0 0 16px; }
+.docs h3 { font-size: 20px; }
+.docs section { padding-top: 40px; }
+.docs [id], #automation-warning { scroll-margin-top: 100px; }
+.docs .safety-warning { max-width: none; margin: 28px 0 0; }
+.docs .safety-warning h2 { font: 600 24px var(--sans); }
+.docs li { margin-bottom: 10px; }
+.docs code { font-size: .9em; }
+.docs pre { margin: 16px 0; }
+.docs-toc { display: flex; flex-wrap: wrap; gap: 12px 24px; margin-top: 24px; }
+a:focus-visible { outline: 2px solid var(--blue); outline-offset: 4px; }
+
 @media (max-width: 820px) {
   .links { display: none; }
   .cards, .split { grid-template-columns: 1fr; }

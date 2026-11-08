@@ -1,5 +1,9 @@
 # cruise control
 
+[Documentation & safety warnings](https://cruise.kolektivkrog.si/docs.html) · [GitHub source](https://github.com/ilovespectra/CruiseControl)
+
+**Warning:** auto-approval removes a human checkpoint. Agents can delete data, expose secrets, install malware, spend money, or change accounts. Ollama review and rate limits are not a security boundary or a spending guarantee. Use backups and restricted environments; supervise important work. To stop automation, select Manual and disable the separate VS Code approval and model toggles. Hiding the notch does not stop automation or cancel running agents.
+
 The notch dropdown contains only **Manual**, **Rest area**, **Cruise control**, and **Settings**. Settings opens a dedicated window with **Automation**, **Activity**, and **App & permissions** tabs. All automation switches, Ollama configuration, permissions, startup information, log/config shortcuts, and the hide control live there.
 
 The Activity tab shows separate live **HeyClicky** (approved, declined, continued) and **VS Code** (approved, held for review, follow-ups, model switches) counts. They are recorded from actual actions and saved in `activity-stats.json` across restarts and reinstalls. Counts begin at the displayed tracking date; older logs are not guessed or backfilled. VS Code safety holds are not declines, and failed submissions do not count as successes.
@@ -227,7 +231,7 @@ The explicit `--select-model` diagnostic may change the selection during a runni
 
 ## landing page
 
-`site/` holds a static page (`index.html`, `styles.css`, `icon.svg`). Open it directly or host it anywhere.
+`site/` holds the landing page (`index.html`) and [documentation & warnings](site/docs.html), sharing `styles.css` and `icon.svg`. Open them directly or host them together. The app links to `https://cruise.kolektivkrog.si/docs.html` from Settings → App & permissions.
 
 ## fonts
 

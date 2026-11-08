@@ -25,6 +25,8 @@
       <a href="#vscode">vscode</a>
       <a href="#install">install</a>
       <a href="#faq">faq</a>
+      <a href="docs.html">docs</a>
+      <a href="https://github.com/ilovespectra/CruiseControl">github</a>
     </div>
     <a class="pill pill-primary small" href="#install">get cruise control</a>
   </nav>
@@ -42,6 +44,12 @@
       <a class="pill pill-secondary" href="#how">see how it works</a>
     </div>
     <p class="fine">public beta · macos sonoma 14 or higher · heyclicky companion with optional vscode automation</p>
+    <p class="fine">open source · <a href="https://github.com/ilovespectra/CruiseControl">view the code on github</a> · <a href="docs.html">read the documentation</a></p>
+    <aside class="safety-warning" aria-labelledby="automation-warning">
+      <h2 id="automation-warning">auto-approval has real risks</h2>
+      <p>an agent can delete files, expose secrets, install malicious software, spend money, or change accounts without another human checkpoint. local ollama review and rate limits do not make this safe. use a backed-up, restricted environment and supervise important work.</p>
+      <a href="docs.html#safety">read the warnings and how to stop automation →</a>
+    </aside>
 
     <!-- notch demo -->
     <div class="stage" id="how" aria-label="animated demo: cruise control approving a drive request">
@@ -199,7 +207,7 @@
     </details>
     <details>
       <summary>does it bypass anything?</summary>
-      <p>no. heyclicky still asks every time. cruise control just answers for you, on your own machine, in the mode you picked. it presses the same button you would.</p>
+      <p>it presses the normal approval buttons rather than disabling macOS protections, but automatic approval removes the human checkpoint those prompts provide. in cruise mode it can also grant HeyClicky control of other apps through macOS permission dialogs. this can expose their documents and data. <a href="docs.html#safety">read the safety warnings</a> before enabling it.</p>
     </details>
     <details>
       <summary>what does it look at?</summary>
@@ -221,11 +229,15 @@
 
   <footer class="footer">
     <div class="foot-brand"><img src="icon.svg" alt="" width="22" height="22" /> cruise control</div>
+    <nav class="footer-links" aria-label="project links">
+      <a href="docs.html">documentation &amp; safety</a>
+      <a href="https://github.com/ilovespectra/CruiseControl">github · source code</a>
+    </nav>
     <p class="disclaimer">
-      cruise control is an independent private-preview project and is <b>not affiliated with, endorsed by, sponsored by, or
+      cruise control is an independent open-source public-beta project and is <b>not affiliated with, endorsed by, sponsored by, or
       connected to heyclicky</b> or its makers. “heyclicky” and “clicky” are names of their respective owners and are used here
       only to describe compatibility. use at your own risk: in cruise control mode, an ai agent will operate your computer without
-      asking you first.
+      asking you first. no guarantee of safety, task completion, or spending limits is provided.
     </p>
   </footer>
   <script type="module" src="downloads.mjs"></script>
