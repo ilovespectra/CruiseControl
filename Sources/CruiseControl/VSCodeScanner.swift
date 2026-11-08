@@ -24,6 +24,46 @@ struct VSCodeAttentionThread {
 struct VSCodeScanner {
     let config: Config
 
+    /// Only notification containers are read; conversation text must not trigger the spending guard.
+    func usageNotificationPercentage() -> Double? {
+        var highest: Double?
+        for id in config.vscodeBundleIDs {
+            for app in NSRunningApplication.runningApplications(withBundleIdentifier: id) where !app.isTerminated {
+                let root = AXUIElementCreateApplication(app.processIdentifier)
+                AXUIElementSetMessagingTimeout(root, 1)
+                AXUIElementSetAttributeValue(root, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+                let windows: [AXUIElement] = AX.attr(root, kAXWindowsAttribute) ?? []
+                for window in windows {
+                    var visited = 0
+                    func visit(_ element: AXUIElement, depth: Int, inNotification: Bool) {
+                        guard depth < 70, visited < 15000 else { return }
+                        visited += 1
+                        let values = AX.multi(element, Self.attrNames)
+                        let role = values[0] as? String ?? ""
+                        let title = values[1] as? String ?? ""
+                        let description = values[2] as? String ?? ""
+                        let label = title.isEmpty ? description : title
+                        let normalized = label.lowercased()
+                        let inside = inNotification || role == "AXAlert"
+                            || ((role == kAXGroupRole || role == kAXListRole)
+                                && (normalized == "notifications" || normalized.hasPrefix("notification:") || normalized == "notification"))
+                        if inside {
+                            let value = AX.stringValue(element) ?? ""
+                            if let percentage = CopilotUsage.percentage(in: "\(title)\n\(description)\n\(value)") {
+                                highest = max(highest ?? 0, percentage)
+                            }
+                        }
+                        for child in values[3] as? [AXUIElement] ?? [] {
+                            visit(child, depth: depth + 1, inNotification: inside)
+                        }
+                    }
+                    visit(window, depth: 0, inNotification: false)
+                }
+            }
+        }
+        return highest
+    }
+
     func diagnosticTree() -> [String] {
         var lines: [String] = []
         func visit(_ element: AXUIElement, depth: Int) {

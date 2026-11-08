@@ -114,6 +114,25 @@ public struct Config: Codable, Equatable, Sendable {
     public var vscodeBundleIDs = ["com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.vscodium"]
     public var vscodeAllowLabels = ["Allow Once", "Allow", "Continue", "Run"]
     public var vscodeCheckSeconds: Double = 1.5
+    public var vscodeUsageCutoff: Int?
+    public var vscodeObservedUsage: Double?
+
+    public var usageCutoffReached: Bool {
+        guard let cutoff = vscodeUsageCutoff, let usage = vscodeObservedUsage else { return false }
+        return usage >= Double(cutoff)
+    }
+
+    @discardableResult
+    public mutating func stopAtUsageCutoff() -> Bool {
+        guard usageCutoffReached else { return false }
+        let changed = mode != .manual || vscodeAutoApprove || vscodeTaskBumps || autoSelectVSCodeModel || autoUpdateClicky
+        mode = .manual
+        vscodeAutoApprove = false
+        vscodeTaskBumps = false
+        autoSelectVSCodeModel = false
+        autoUpdateClicky = false
+        return changed
+    }
 
     public var autoSelectVSCodeModel = false
     public var economyModel = "MAI-Code-1.1-Flash"
@@ -186,6 +205,14 @@ public struct Config: Codable, Equatable, Sendable {
         vscodeBundleIDs = try c.decodeIfPresent([String].self, forKey: .vscodeBundleIDs) ?? d.vscodeBundleIDs
         vscodeAllowLabels = try c.decodeIfPresent([String].self, forKey: .vscodeAllowLabels) ?? d.vscodeAllowLabels
         vscodeCheckSeconds = max(0.5, try c.decodeIfPresent(Double.self, forKey: .vscodeCheckSeconds) ?? d.vscodeCheckSeconds)
+        vscodeUsageCutoff = try c.decodeIfPresent(Int.self, forKey: .vscodeUsageCutoff)
+        if let cutoff = vscodeUsageCutoff, !CopilotUsage.cutoffs.contains(cutoff) {
+            throw DecodingError.dataCorruptedError(forKey: .vscodeUsageCutoff, in: c, debugDescription: "Unsupported Copilot usage cutoff.")
+        }
+        vscodeObservedUsage = try c.decodeIfPresent(Double.self, forKey: .vscodeObservedUsage)
+        if let usage = vscodeObservedUsage, !usage.isFinite || !(0...100).contains(usage) {
+            throw DecodingError.dataCorruptedError(forKey: .vscodeObservedUsage, in: c, debugDescription: "Copilot usage must be between 0 and 100.")
+        }
         autoSelectVSCodeModel = try c.decodeIfPresent(Bool.self, forKey: .autoSelectVSCodeModel) ?? d.autoSelectVSCodeModel
         economyModel = try c.decodeIfPresent(String.self, forKey: .economyModel) ?? d.economyModel
         escalationModel = try c.decodeIfPresent(String.self, forKey: .escalationModel) ?? d.escalationModel

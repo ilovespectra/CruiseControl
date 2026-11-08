@@ -83,6 +83,8 @@ final class ClickyMonitor: ObservableObject {
     private let bumpStateURL = ConfigStore.directory.appendingPathComponent("chat-bumps.json")
     private var approvalAttempts: [String: Date] = [:]
     private var lastVSCodeThreadProbeAt = Date.distantPast
+    private var usageScanBusy = false
+    private var lastUsageScanAt = Date.distantPast
     private var lastTaskAuditAt = Date.distantPast
     private var taskAuditStates: [String: ChatBump.State] = [:]
     private let taskAuditURL = ConfigStore.directory.appendingPathComponent("clicky-task-audits.json")
@@ -187,6 +189,17 @@ final class ClickyMonitor: ObservableObject {
         axTrusted = AXIsProcessTrusted()
         screenTrusted = CGPreflightScreenCaptureAccess()
         refreshClickyRunning()
+        guard !usageScanBusy else { return }
+        if axTrusted, Date().timeIntervalSince(lastUsageScanAt) >= 5 {
+            lastUsageScanAt = Date()
+            usageScanBusy = true
+            Task {
+                await refreshUsageGuard()
+                usageScanBusy = false
+            }
+            return
+        }
+        guard !enforceUsageGuard() else { return }
         checkAppcastIfDue()
         relaunchClickyIfStuck()
         tickVSCode()
@@ -203,6 +216,24 @@ final class ClickyMonitor: ObservableObject {
             await cycle()
             busy = false
         }
+    }
+
+    private func refreshUsageGuard() async {
+        let config = store.config
+        if let percentage = await Worker.run({ VSCodeScanner(config: config).usageNotificationPercentage() }) {
+            // Keep the highest warning until the user resets it after credits renew.
+            store.config.vscodeObservedUsage = max(store.config.vscodeObservedUsage ?? 0, percentage)
+        }
+        _ = enforceUsageGuard()
+    }
+
+    @discardableResult
+    private func enforceUsageGuard() -> Bool {
+        guard store.config.usageCutoffReached else { return false }
+        if store.config.stopAtUsageCutoff() {
+            record("Copilot usage cutoff reached (\(store.config.vscodeObservedUsage ?? 0)% / \(store.config.vscodeUsageCutoff ?? 100)%): Cruise Control stopped; VS Code approvals, follow-ups, model routing and HeyClicky updates disabled. Running agents are not cancelled.")
+        }
+        return true
     }
 
     private func refreshClickyRunning() {
@@ -888,6 +919,7 @@ final class ClickyMonitor: ObservableObject {
         }
 
         // Only press if the very same request is still waiting (the review can take a few seconds).
+        await refreshUsageGuard()
         guard let still = await Worker.run({ VSCodeScanner(config: config).scanAll().first { $0.key == key } }),
               still.request == pending.request, store.config.vscodeAutoApprove, permitAction() else { return true }
         approvalAttempts[key] = Date()

@@ -62,35 +62,29 @@ Signing uses `$CC_SIGN_IDENTITY` if set, otherwise the first codesigning identit
 
 ## binary releases & updates
 
+**Copilot usage guard:** Settings → Automation → VS Code includes an optional cutoff
+(25%, 50%, 75%, 90%, 95%, 100%; off by default). Accessible VS Code notification containers
+are scanned every five seconds, even in background windows, and immediately before approving
+a reviewed request. Chat transcripts and unrelated percentages are not used as billing evidence.
+At or above the limit, Cruise Control switches to Manual and disables VS Code auto-approval,
+follow-ups, model routing and HeyClicky self-updates. It does not cancel already-running agents.
+The highest observed usage warning is saved across restarts; dismissed warnings do not re-enable
+automation. Reset the recorded usage explicitly after credits renew, then re-enable the desired
+automation controls. This is a notification-based safeguard, not live billing telemetry or a
+guaranteed spending cap: already-running work can continue consuming credits and warnings may
+be delayed, inaccessible or missed while the app is stopped.
+
 Settings → **Updates** checks the latest public GitHub release on launch and every six hours.
 **Update Available** also appears on the dropdown's Settings entry. **Download update** verifies
 the package SHA-256 against the release metadata and opens macOS Installer. Installation is
 explicit, restarts the login agent, and preserves configuration. Older builds without this
 updater must install the first updater-enabled package manually.
 
-For the maintainer, use **Updates → Publisher: update binaries**, choose this source checkout,
-then **Build preview** or **Build & publish unsigned release**. The equivalent script is:
-
-```sh
-bash scripts/repackage-binaries.sh --preview
-bash scripts/repackage-binaries.sh --publish --unsigned
-```
-
-Commit and push changes to the repository's default production branch first. The script fetches
-that branch, refuses dirty or out-of-date checkouts, archives the exact production SHA into a
-new temporary workspace, runs tests, builds arm64 + x86_64, and packages the app and login-agent
-installer. It cleans only its own temporary workspace. Artifacts and `release.json` remain in
-`build/releases/<version>/`; metadata and the app's Info.plist record the source commit.
-The next patch version is based only on successfully published, non-prerelease releases
-(the first is one patch above the source baseline). Failed builds do not advance it. If an
-upload fails or leaves a draft, inspect the draft and preserved output before retrying; the
-script refuses to skip a reserved version or overwrite existing output.
-
-Unsigned publishing is an explicit option: macOS warnings are expected, SHA-256 is not publisher
-authentication, and nothing disables Gatekeeper. For signed/notarized distribution omit
-`--unsigned` and set `CC_SIGN_IDENTITY`, `CC_INSTALLER_IDENTITY`, and `CC_NOTARY_PROFILE`.
-GitHub CLI authentication is required only for publishing. Public downloads require a public
-repository. Installing a local rebuild alone does not publish an update to other users.
+Publishing tools are personal developer utilities kept outside this repository. Neither the
+dashboard nor repackaging scripts are included in the public application or source tree.
+GitHub repository permissions control who can upload releases; no publishing credentials
+are shipped to users. Public downloads require a public repository. Installing a local
+rebuild alone does not publish an update to other users.
 
 VS Code's Agents window is also scanned for attention-needed threads and inline Allow buttons,
 even when a row still says In Progress. While in Cruise mode and

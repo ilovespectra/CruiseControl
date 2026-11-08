@@ -115,7 +115,6 @@ struct ExpandedPanel: View {
 
 struct SettingsContent: View {
     @ObservedObject private var updates = AppUpdates.shared
-    @StateObject private var publisher = BinaryPublisher()
     @ObservedObject var store: ConfigStore
     @ObservedObject var monitor: ClickyMonitor
 
@@ -132,18 +131,6 @@ struct SettingsContent: View {
                     }
                     Text("Packages are unsigned unless the publisher configures Developer ID signing. macOS warnings are expected; no security protections are disabled.")
                         .font(.caption).foregroundStyle(.secondary)
-                }
-                settingsSection("Publisher: update binaries", detail: "For the project maintainer. Commit and push source changes to the production branch first. Builds use an isolated temporary checkout that is cleaned afterward.") {
-                    HStack {
-                        TextField("CruiseControl source folder", text: $publisher.repositoryPath)
-                        Button("Choose…") { publisher.chooseRepository() }
-                    }.disabled(publisher.running)
-                    HStack {
-                        Button("Build preview") { publisher.publish(preview: true) }
-                        Button("Build & publish unsigned release…") { publisher.publish(preview: false) }
-                    }.disabled(publisher.running)
-                    Text(publisher.log.isEmpty ? "Requires Swift, Python 3 and authenticated GitHub CLI. No GitHub credentials are stored in the app." : publisher.log)
-                        .font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
                 }
             }
             .tabItem { Label("Updates", systemImage: "arrow.down.circle") }
@@ -166,6 +153,30 @@ struct SettingsContent: View {
                     vscodeToggle
                     modelToggle
                     chatBumpToggle
+                    Picker("Stop Cruise Control at Copilot usage", selection: $store.config.vscodeUsageCutoff) {
+                        Text("Off").tag(Int?.none)
+                        ForEach(CopilotUsage.cutoffs, id: \.self) { cutoff in
+                            Text("\(cutoff)%").tag(Optional(cutoff))
+                        }
+                    }
+                    Text(store.config.vscodeObservedUsage.map { "Highest observed usage warning: \($0.formatted())%." }
+                         ?? "No Copilot usage warning observed yet.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if store.config.usageCutoffReached {
+                        Label("Usage cutoff reached — automation disabled", systemImage: "hand.raised.fill")
+                    }
+                    if store.config.vscodeObservedUsage != nil {
+                        Button("Reset observed usage for a new billing period…") {
+                            let alert = NSAlert()
+                            alert.messageText = "Reset the recorded Copilot usage?"
+                            alert.informativeText = "Only reset this after your credits renew. This clears the spending guard's recorded warning, not your actual GitHub usage. Automation stays off until you enable it again."
+                            alert.addButton(withTitle: "Cancel")
+                            alert.addButton(withTitle: "Reset recorded usage")
+                            if alert.runModal() == .alertSecondButtonReturn { store.config.vscodeObservedUsage = nil }
+                        }
+                    }
+                    Text("Watches accessible VS Code usage notifications, including background windows. At the selected limit, switches to Manual and disables VS Code approvals, follow-ups, model selection and HeyClicky updates. Running agents are not cancelled. Warnings can arrive late or be missed: this is not a hard billing cap.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 settingsSection("Local Ollama", detail: "Reviews and drafts use this endpoint. Localhost keeps conversation text on this Mac.") {
                     Toggle("Use Ollama for HeyClicky nudges", isOn: $store.config.ollamaEnabled)
