@@ -8,6 +8,16 @@ if [[ "$USER_NAME" == "root" || "$USER_NAME" == "loginwindow" ]]; then
 fi
 USER_ID="$(id -u "$USER_NAME")"
 USER_HOME="$(dscl . -read "/Users/$USER_NAME" NFSHomeDirectory | sed 's/^NFSHomeDirectory: //')"
+if [[ -z "$USER_HOME" || "$USER_HOME" != /* ]]; then
+  echo "Could not resolve the logged-in user's home directory." >&2
+  exit 1
+fi
+# Installer runs as root; all user-owned filesystem operations run with the user's permissions.
+exec launchctl asuser "$USER_ID" /usr/bin/sudo -u "$USER_NAME" /bin/bash -s -- "$USER_HOME" "$USER_ID" <<'SETUP'
+set -euo pipefail
+USER_HOME="$1"
+USER_ID="$2"
+LABEL="com.ilovespectra.cruisecontrol"
 AGENT_DIR="$USER_HOME/Library/LaunchAgents"
 AGENT="$AGENT_DIR/$LABEL.plist"
 launchctl bootout "gui/$USER_ID/$LABEL" 2>/dev/null || true
@@ -27,6 +37,6 @@ cat > "$AGENT" <<PLIST
 <key>LimitLoadToSessionType</key><string>Aqua</string>
 </dict></plist>
 PLIST
-chown "$USER_ID" "$AGENT"
 chmod 644 "$AGENT"
 launchctl bootstrap "gui/$USER_ID" "$AGENT"
+SETUP
