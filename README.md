@@ -92,7 +92,8 @@ authentication, and nothing disables Gatekeeper. For signed/notarized distributi
 GitHub CLI authentication is required only for publishing. Public downloads require a public
 repository. Installing a local rebuild alone does not publish an update to other users.
 
-VS Code's Agents window is also scanned for attention-needed threads. While in Cruise mode and
+VS Code's Agents window is also scanned for attention-needed threads and inline Allow buttons,
+even when a row still says In Progress. While in Cruise mode and
 idle, auto-approval opens up to three visible attention threads every 30 seconds, verifies the
 selected thread, reviews each full request, and restores the original thread unless the user
 returns. Sidebar summaries are never enough to approve a request. Confirmation carousels are

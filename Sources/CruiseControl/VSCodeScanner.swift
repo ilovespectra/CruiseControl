@@ -159,30 +159,37 @@ struct VSCodeScanner {
                 let windows: [AXUIElement] = AX.attr(root, kAXWindowsAttribute) ?? []
                 for window in windows {
                     var rows: [(AXUIElement, String)] = []
+                    var inlineApprovalRows = Set<Int>()
                     var session: String?
                     var visited = 0
-                    func visit(_ element: AXUIElement, depth: Int, inSessions: Bool) {
+                    func visit(_ element: AXUIElement, depth: Int, inSessions: Bool, rowIndex: Int?) {
                         guard depth < 70, visited < 15000 else { return }
                         visited += 1
                         let values = AX.multi(element, Self.attrNames)
                         let role = values[0] as? String ?? ""
                         let label = (values[1] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (values[2] as? String ?? "")
                         let inside = inSessions || (role == kAXOutlineRole && label == "Sessions")
+                        var currentRow = rowIndex
                         if role == kAXGroupRole, label.hasPrefix("Session: ") {
                             session = String(label.dropFirst("Session: ".count))
                         }
                         if inside, role == kAXRowRole, VSCodeApprovalContext.threadTitle(label) != nil {
+                            currentRow = rows.count
                             rows.append((element, label))
                         }
+                        if inside, let currentRow, role == kAXButtonRole,
+                           Matcher.isVSCodeAllow(label, config: config), AX.isEnabled(element) {
+                            inlineApprovalRows.insert(currentRow)
+                        }
                         for child in values[3] as? [AXUIElement] ?? [] {
-                            visit(child, depth: depth + 1, inSessions: inside)
+                            visit(child, depth: depth + 1, inSessions: inside, rowIndex: currentRow)
                         }
                     }
-                    visit(window, depth: 0, inSessions: false)
+                    visit(window, depth: 0, inSessions: false, rowIndex: nil)
                     guard let session else { continue }
                     let previous = rows.filter { VSCodeApprovalContext.threadTitle($0.1) == session }
                     guard previous.count == 1, let original = previous.first else { continue }
-                    for row in rows where VSCodeApprovalContext.needsAttention(row.1) {
+                    for (index, row) in rows.enumerated() where VSCodeApprovalContext.needsInspection(row.1, hasInlineApproval: inlineApprovalRows.contains(index)) {
                         guard let title = VSCodeApprovalContext.threadTitle(row.1), title != session,
                               rows.filter({ VSCodeApprovalContext.threadTitle($0.1) == title }).count == 1 else { continue }
                         threads.append(VSCodeAttentionThread(window: window, row: row.0, previousRow: original.0,

@@ -27,4 +27,8 @@ public enum VSCodeApprovalContext {
         let status = Matcher.normalize(String(label[state.upperBound...]))
         return ["attention needed", "needs input", "input needed", "needs attention"].contains(status)
     }
+
+    public static func needsInspection(_ label: String, hasInlineApproval: Bool) -> Bool {
+        threadTitle(label) != nil && (needsAttention(label) || hasInlineApproval)
+    }
 }

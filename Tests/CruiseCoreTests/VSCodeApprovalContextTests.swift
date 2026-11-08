@@ -26,4 +26,10 @@ import Testing
         #expect(!VSCodeApprovalContext.needsAttention("A task, State: Completed"))
         #expect(VSCodeApprovalContext.threadTitle("CruiseControl, 2") == nil)
     }
+
+    @Test func inlineApprovalOverridesStaleRunningStatus() {
+        #expect(VSCodeApprovalContext.needsInspection("Twitter agent, State: In Progress", hasInlineApproval: true))
+        #expect(!VSCodeApprovalContext.needsInspection("Twitter agent, State: In Progress", hasInlineApproval: false))
+        #expect(!VSCodeApprovalContext.needsInspection("CruiseControl, 2", hasInlineApproval: true))
+    }
 }
