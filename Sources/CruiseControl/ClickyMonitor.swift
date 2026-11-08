@@ -848,7 +848,7 @@ final class ClickyMonitor: ObservableObject {
         }
     }
 
-    private func handleVSCode(config: Config) async -> Bool {
+    private func handleVSCode(config: Config, permitAction: () -> Bool = { true }) async -> Bool {
         let now = Date()
         let pendingRequests = await Worker.run { VSCodeScanner(config: config).scanAll() }
         guard let pending = pendingRequests.first(where: { pending in
@@ -889,7 +889,7 @@ final class ClickyMonitor: ObservableObject {
 
         // Only press if the very same request is still waiting (the review can take a few seconds).
         guard let still = await Worker.run({ VSCodeScanner(config: config).scanAll().first { $0.key == key } }),
-              still.request == pending.request, store.config.vscodeAutoApprove else { return true }
+              still.request == pending.request, store.config.vscodeAutoApprove, permitAction() else { return true }
         approvalAttempts[key] = Date()
         let allow = still.allow
         var pressed = await Worker.run { AX.press(allow) }
@@ -920,30 +920,47 @@ final class ClickyMonitor: ObservableObject {
             guard store.config.mode == .cruise, store.config.vscodeAutoApprove,
                   Self.idleSeconds() >= config.awayIdleSeconds else { return }
             let previousApp = NSWorkspace.shared.frontmostApplication
-            guard AX.press(thread.row) else {
+            let interaction = InputSynth.UserInteractionWatch()
+            defer { interaction.stop() }
+            guard await openVSCodeRow(thread.row, window: thread.window) else {
                 record("vscode: couldn't open attention thread “\(thread.title)”")
                 continue
             }
             do {
                 try await Task.sleep(nanoseconds: 700_000_000)
                 let selected = await Worker.run { VSCodeScanner(config: config).selectedThread(in: thread.window) }
-                guard selected == thread.title else {
+                guard selected == thread.title, !interaction.interrupted else {
                     record("vscode: selected thread could not be verified — no request approved")
-                    _ = AX.press(thread.previousRow)
+                    if !interaction.interrupted { _ = await openVSCodeRow(thread.previousRow, window: thread.window) }
                     continue
                 }
                 record("vscode: inspecting attention thread “\(thread.title)”")
-                _ = await handleVSCode(config: config)
+                _ = await handleVSCode(config: config, permitAction: {
+                    !interaction.interrupted && self.store.config.mode == .cruise
+                })
             } catch {
                 record("vscode: thread inspection interrupted: \(error.localizedDescription)")
             }
             // Do not change the user's newly selected thread after they return to the keyboard or mouse.
-            if Self.idleSeconds() >= config.awayIdleSeconds,
+            if !interaction.interrupted,
                await Worker.run({ VSCodeScanner(config: config).selectedThread(in: thread.window) }) == thread.title {
-                if !AX.press(thread.previousRow) { record("vscode: couldn't restore “\(thread.previousTitle)”") }
+                if await openVSCodeRow(thread.previousRow, window: thread.window) == false {
+                    record("vscode: couldn't restore “\(thread.previousTitle)”")
+                }
                 previousApp?.activate()
             }
         }
+    }
+
+    private func openVSCodeRow(_ row: AXUIElement, window: AXUIElement) async -> Bool {
+        if AX.press(row) { return true }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(window, &pid) == .success else { return false }
+        NSRunningApplication(processIdentifier: pid)?.activate()
+        guard AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success,
+              let frame = AX.frame(row), let bounds = AX.frame(window),
+              bounds.contains(CGPoint(x: frame.midX, y: frame.midY)) else { return false }
+        return await mouseClick(on: row)
     }
 
     private func remember(_ key: String, _ verdict: ApprovalReview.Verdict?) {

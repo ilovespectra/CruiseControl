@@ -98,6 +98,9 @@ idle, auto-approval opens up to three visible attention threads every 30 seconds
 selected thread, reviews each full request, and restores the original thread unless the user
 returns. Sidebar summaries are never enough to approve a request. Confirmation carousels are
 handled individually (never Allow All); a held request does not block reviews in other windows.
+Electron rows do not expose AXPress, so navigation falls back to a cursor-restoring click in
+the raised target window. Real input is monitored separately from synthetic clicks; returning
+to the mouse or keyboard cancels the review action and prevents unwanted thread restoration.
 `--inspect-vscode` prints Accessibility evidence without clicking or approving anything.
 
 ## permissions

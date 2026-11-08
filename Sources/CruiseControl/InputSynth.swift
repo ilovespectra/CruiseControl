@@ -18,6 +18,35 @@ enum InputSynth {
         }
     }
 
+    @MainActor
+    final class UserInteractionWatch {
+        private(set) var interrupted = false
+        private var global: Any?
+        private var local: Any?
+
+        init() {
+            let mask: NSEvent.EventTypeMask = [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown,
+                                               .mouseMoved, .leftMouseDragged, .scrollWheel]
+            global = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+                guard event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) != Int64(getpid()) else { return }
+                Task { @MainActor in self?.interrupted = true }
+            }
+            local = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+                if event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) != Int64(getpid()) {
+                    self?.interrupted = true
+                }
+                return event
+            }
+        }
+
+        func stop() {
+            if let global { NSEvent.removeMonitor(global) }
+            if let local { NSEvent.removeMonitor(local) }
+            global = nil
+            local = nil
+        }
+    }
+
     static func move(to point: CGPoint) {
         post(.mouseMoved, at: point)
     }
