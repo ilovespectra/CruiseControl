@@ -1,12 +1,12 @@
 # Cruise Control
 
-A macOS notch companion that keeps HeyClicky tasks moving while you're away. Choose **Manual** to answer prompts yourself, **Rest** to deny driving, or **Cruise** to approve it. Optional local Ollama nudges help stalled tasks continue; VS Code automation is opt-in.
+A macOS companion that can automatically approve HeyClicky's normal drive prompts while you're away. Use **Manual** to answer yourself, **Rest** to deny prompts, or **Cruise** to approve them. Optional VS Code automation is separate and opt-in.
 
 Independent, open-source public beta. **Not affiliated with HeyClicky.**
 
 **Warning:** auto-approval removes human review. Agents can delete files, expose secrets, or spend money. Use backups and supervise important work. Hiding the notch does not stop automation.
 
-Release versions use the project's digit-rollover policy: `1.0.8` → `1.0.9` → `1.1.0`, and `1.9.9` → `2.0.0`. The download link below always follows the latest published GitHub release; local preview builds are not public releases. The current public release remains `1.0.11` until a newer release is explicitly published.
+Release versions follow the digit-rollover policy: `1.0.8` → `1.0.9` → `1.1.0`, and `1.9.9` → `2.0.0`. The latest public release is `1.0.11`. The `1.1.0` candidate is unverified and unreleased; the download link below follows published GitHub releases only.
 
 In **Cruise** mode the notch dropdown stays visible even when HeyClicky is closed, keeping VS Code automation controls accessible. The HeyClicky-only visibility preference applies to Manual and Rest modes. Explicitly hiding the notch and briefly hiding it for synthetic clicks still work.
 
