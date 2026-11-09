@@ -88,6 +88,9 @@ final class ClickyMonitor: ObservableObject {
     private var lastTaskAuditAt = Date.distantPast
     private var taskAuditStates: [String: ChatBump.State] = [:]
     private let taskAuditURL = ConfigStore.directory.appendingPathComponent("clicky-task-audits.json")
+    private var taskRecovery = TaskRecovery()
+    private var recoveryHistoryReadable = true
+    private let taskRecoveryURL = ConfigStore.directory.appendingPathComponent("stopped-tasks.json")
 
     private struct Budget: Codable {
         var continueTimes: [Date]
@@ -114,6 +117,14 @@ final class ClickyMonitor: ObservableObject {
             loadingStats = false
         }
         saveStats()
+        if FileManager.default.fileExists(atPath: taskRecoveryURL.path) {
+            do {
+                taskRecovery = try JSONDecoder().decode(TaskRecovery.self, from: Data(contentsOf: taskRecoveryURL))
+            } catch {
+                recoveryHistoryReadable = false
+                record("couldn't load stopped-task history: \(error.localizedDescription) — automatic HeyClicky recovery disabled")
+            }
+        }
         if FileManager.default.fileExists(atPath: taskAuditURL.path) {
             do {
                 taskAuditStates = try JSONDecoder().decode([String: ChatBump.State].self, from: Data(contentsOf: taskAuditURL))
@@ -189,15 +200,13 @@ final class ClickyMonitor: ObservableObject {
         axTrusted = AXIsProcessTrusted()
         screenTrusted = CGPreflightScreenCaptureAccess()
         refreshClickyRunning()
-        guard !usageScanBusy else { return }
-        if axTrusted, Date().timeIntervalSince(lastUsageScanAt) >= 5 {
+        if axTrusted, !usageScanBusy, Date().timeIntervalSince(lastUsageScanAt) >= 5 {
             lastUsageScanAt = Date()
             usageScanBusy = true
             Task {
                 await refreshUsageGuard()
                 usageScanBusy = false
             }
-            return
         }
         guard !enforceUsageGuard() else { return }
         checkAppcastIfDue()
@@ -303,6 +312,7 @@ final class ClickyMonitor: ObservableObject {
         }
         let rows = result.chatButtons.map(\.label).filter { TaskRow.parse($0) != nil }
         if !rows.isEmpty { lastTaskLabels = rows }
+        _ = recoveryAllowed(result)
         if result.conversation.suffix(6).contains(where: { $0.contains("Please update HeyClicky") || $0.contains("agent_turn_lease_required") }) {
             updateHintAt = Date()
         }
@@ -310,9 +320,9 @@ final class ClickyMonitor: ObservableObject {
         if await handleConsent(result, config: config) { return }
         if await resumeAfterRelaunch(result, config: config) { return }
         if await handleUpdate(result, config: config) { return }
-        if await auditOtherClickyTasks(config: config) { return }
-        if await handleNeedsYou(result, config: config) { return }
         if await handleInterruptedCards(result, config: config) { return }
+        if await handleNeedsYou(result, config: config) { return }
+        if await auditOtherClickyTasks(config: config) { return }
         await handleReports(result, config: config)
         if await handleInterrupt(result, config: config) { return }
         _ = await handleStall(result, config: config)
@@ -413,6 +423,7 @@ final class ClickyMonitor: ObservableObject {
     // MARK: "Full report" → continue the task
 
     private func handleReports(_ result: ScanResult, config: Config) async {
+        if result.selectedTask != nil, !recoveryAllowed(result) { return }
         let before = gate.known.count
         let decision = gate.evaluate(
             fingerprints: result.reports.map(\.fingerprint),
@@ -450,6 +461,7 @@ final class ClickyMonitor: ObservableObject {
         try? await Task.sleep(nanoseconds: 1_200_000_000)
 
         let rescan = await Worker.run { ClickyScanner(config: config).scan() }
+        guard recoveryAllowed(rescan) else { return }
         guard !report.header.isEmpty,
               let task = rescan.selectedTask,
               Matcher.isTaskRow(report.header, title: task) || report.header.hasPrefix(task + ", ") else {
@@ -481,7 +493,7 @@ final class ClickyMonitor: ObservableObject {
                 record("report context changed — continuation not sent")
                 return
             }
-            if await send(draft.message, via: composer) {
+            if await send(draft.message, via: composer, task: task) {
                 stats.continued += 1
                 record("sent task-specific report continuation to “\(task)”")
             } else {
@@ -534,13 +546,14 @@ final class ClickyMonitor: ObservableObject {
 
         guard let selected = await selectTask(task, from: chat, config: config) else { return true }
         chat = selected
+        guard recoveryAllowed(chat) else { return true }
         guard let composer = chat.composer else {
             record("couldn't find heyclicky's chat box — nudge not sent")
             return true
         }
 
         let message = await draftNudge(task: task, transcript: chat.transcript, config: config)
-        if await send(message, via: composer) {
+        if await send(message, via: composer, task: task) {
             stats.continued += 1
             record("nudged “\(task)”: \(message.prefix(90))\(message.count > 90 ? "…" : "")")
         } else {
@@ -628,6 +641,7 @@ final class ClickyMonitor: ObservableObject {
             guard let chat = await selectTask(task, from: scan, config: config),
                 let composer = chat.composer
             else { continue }
+            guard recoveryAllowed(chat) else { continue }
             guard let status = chat.selectedStatus, !StallTracker.isBusy(status),
                 let latestReport = chat.latestReport
             else { continue }
@@ -671,7 +685,7 @@ final class ClickyMonitor: ObservableObject {
                 nudgeLimiter.record(task: task, at: Date())
                 gate.recordContinue(at: Date())
                 saveBudget()
-                if await send(draft.message, via: freshComposer) {
+                if await send(draft.message, via: freshComposer, task: task) {
                     stats.continued += 1
                     sent = true
                     record("task audit resumed “\(task)”: \(draft.message.prefix(160))")
@@ -781,11 +795,12 @@ final class ClickyMonitor: ObservableObject {
         }
         guard let selected = await selectTask(task, from: chat, config: config) else { return true }
         chat = selected
+        guard recoveryAllowed(chat) else { return true }
         guard let composer = chat.composer else {
             record("couldn't find heyclicky's chat box — apology not sent")
             return true
         }
-        if await send(config.interruptedNudge, via: composer) {
+        if await send(config.interruptedNudge, via: composer, task: task) {
             stats.continued += 1
             record("told “\(task)” to keep going after the accidental interrupt")
         } else {
@@ -799,20 +814,21 @@ final class ClickyMonitor: ObservableObject {
 
     // MARK: "Interrupted · It was cut off before it finished" → polite bump
 
-    /// A restart (or crash) leaves HeyClicky's task cards saying "Interrupted" with a Retry button, and HeyClicky just
-    /// sits idle. While you're away, open that task's chat and politely ask it to carry on; if the chat can't be
-    /// opened, press the card's Retry instead. Checks right after launch, then every `stallCheckMinutes`.
+    /// Prefer the task's own Retry control over sending a new message. Failed attempts never consume nudge budget.
     private func handleInterruptedCards(_ result: ScanResult, config: Config) async -> Bool {
-        guard config.resumeAfterInterrupt, config.autoContinueReports, config.mode != .manual,
-              Self.idleSeconds() >= config.awayIdleSeconds else { return false }
+        guard config.resumeAfterInterrupt, config.autoContinueReports, config.mode == .cruise else { return false }
         let now = Date()
         var cards = result.interrupted
         if cards.isEmpty {
-            guard now.timeIntervalSince(lastInterruptedProbeAt) > config.stallCheckMinutes * 60 else { return false }
+            guard Self.idleSeconds() >= config.awayIdleSeconds,
+                  now.timeIntervalSince(lastInterruptedProbeAt) > config.stallCheckMinutes * 60 else { return false }
             lastInterruptedProbeAt = now
             cards = await hoverNotch(config: config, until: { !$0.interrupted.isEmpty })?.interrupted ?? []
         }
-        guard let card = cards.first(where: { now.timeIntervalSince(lastInterruptedBump[$0.task] ?? .distantPast) > 1800 }) else {
+        guard let card = cards.first(where: {
+            !taskRecovery.isStopped(task: $0.task)
+                && now.timeIntervalSince(lastInterruptedBump[$0.task] ?? .distantPast) >= 5
+        }) else {
             return false
         }
         let task = card.task
@@ -821,46 +837,54 @@ final class ClickyMonitor: ObservableObject {
               gate.canContinue(now: now, limits: limits) else { return false }
 
         lastInterruptedBump[task] = now
-        nudgeLimiter.record(task: task, at: now)
-        gate.recordContinue(at: now)
-        saveBudget()
-        lastActionAt = now
-        record("“\(task)” was interrupted and heyclicky is idle — giving it a polite bump")
-
         let previousApp = NSWorkspace.shared.frontmostApplication
         defer {
             if let previousApp, previousApp.bundleIdentifier.map({ !config.clickyBundleIDs.contains($0) }) ?? true {
                 previousApp.activate()
             }
         }
-        if var chat = await revealChat(config: config) {
-            guard let selected = await selectTask(task, from: chat, config: config) else { return true }
+        var chat = await Worker.run { ClickyScanner(config: config).scan() }
+        if chat.selectedTask.map({ Matcher.normalize($0) == Matcher.normalize(task) }) != true {
+            guard Self.idleSeconds() >= config.awayIdleSeconds else { return false }
+            guard let opened = await revealChat(config: config),
+                  let selected = await selectTask(task, from: opened, config: config) else { return false }
             chat = selected
-            if let composer = chat.composer {
-                if await send(config.interruptedCardNudge, via: composer) {
-                    stats.continued += 1
-                    record("asked “\(task)” to pick up where it left off")
-                    return true
-                }
-                record("couldn't type into heyclicky's chat — trying Retry on the card")
-            } else {
-                record("heyclicky's chat box isn't reachable — trying Retry on the card")
-            }
-        } else {
-            record("heyclicky's chat window didn't open — trying Retry on the card")
         }
-        // No chat box: the card's own Retry button re-runs the turn.
+        guard recoveryAllowed(chat), store.config.mode == .cruise,
+              store.config.resumeAfterInterrupt, store.config.autoContinueReports else { return false }
+
         var retried = false
-        _ = await hoverNotch(config: config, until: { $0.interrupted.contains { $0.task == task && $0.retry != nil } }) { scan in
-            if let retry = scan.interrupted.first(where: { $0.task == task })?.retry { retried = AX.press(retry) }
+        if let retry = chat.interrupted.first(where: { $0.task == task && $0.retry != nil })?.retry {
+            retried = await Worker.run { AX.press(retry) }
+        } else if card.retry == nil, Self.idleSeconds() >= config.awayIdleSeconds {
+            _ = await hoverNotch(config: config, until: { $0.interrupted.contains { $0.task == task && $0.retry != nil } }) { scan in
+                guard scan.selectedTask.map({ Matcher.normalize($0) == Matcher.normalize(task) }) == true,
+                      !TaskRecovery.isStopped(scan.selectedStatus),
+                      !TaskRecovery.isStopped(scan.latestTurnStatus) else { return }
+                if let retry = scan.interrupted.first(where: { $0.task == task })?.retry { retried = AX.press(retry) }
+            }
         }
+        var recovered = false
         if retried {
-            stats.continued += 1
-            record("pressed Retry on “\(task)”")
-        } else {
-            record("couldn't bump “\(task)” — chat box and Retry both unavailable")
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            let after = await Worker.run { ClickyScanner(config: config).scan() }
+            recovered = after.selectedTask == chat.selectedTask
+                && !after.interrupted.contains(where: { $0.task == task && $0.retry != nil })
+            record(recovered ? "pressed Retry on “\(task)” — prompt cleared" : "Retry on “\(task)” is still pending — will retry")
+        } else if card.retry != nil {
+            record("couldn't press Retry on “\(task)” — will retry without consuming continuation budget")
+        } else if Self.idleSeconds() >= config.awayIdleSeconds, let composer = chat.composer {
+            recovered = await send(config.interruptedCardNudge, via: composer, task: task)
+            record(recovered ? "asked “\(task)” to pick up where it left off" : "couldn't send recovery to “\(task)” — will retry")
         }
-        return true
+        if recovered {
+            nudgeLimiter.record(task: task, at: Date())
+            gate.recordContinue(at: Date())
+            saveBudget()
+            lastActionAt = Date()
+            stats.continued += 1
+        }
+        return recovered || retried
     }
 
     // MARK: VS Code chat tool confirmations → Ollama safety check → Allow Once
@@ -892,6 +916,7 @@ final class ClickyMonitor: ObservableObject {
     private func handleVSCode(config: Config, onlyKey: String? = nil, permitAction: () -> Bool = { true }) async -> Bool {
         let now = Date()
         let pendingRequests = await Worker.run { VSCodeScanner(config: config).scanAll() }
+            .sorted { (approvalAttempts[$0.key] ?? .distantPast) < (approvalAttempts[$1.key] ?? .distantPast) }
         guard let pending = pendingRequests.first(where: { pending in
             if let onlyKey, pending.key != onlyKey || pending.sidebarThread == nil { return false }
             guard now.timeIntervalSince(approvalAttempts[pending.key] ?? .distantPast) >= 5 else { return false }
@@ -901,6 +926,7 @@ final class ClickyMonitor: ObservableObject {
             return true
         }) else { return false }
         let key = pending.key
+        approvalAttempts[key] = now
         let short = pending.request.replacingOccurrences(of: "\n", with: " ").prefix(110)
         let verdict: ApprovalReview.Verdict
         if let cached = reviews[key]?.verdict {
@@ -934,8 +960,7 @@ final class ClickyMonitor: ObservableObject {
         guard let still = await Worker.run({ VSCodeScanner(config: config).scanAll().first { $0.key == key } }),
               still.request == pending.request, store.config.vscodeAutoApprove, permitAction() else { return true }
         approvalAttempts[key] = Date()
-        let allow = still.allow
-        let pressed = await Worker.run { AX.press(allow) }
+        let pressed = await pressVSCodeConfirmation(still, config: config, permitAction: permitAction)
         if pressed {
             try? await Task.sleep(nanoseconds: 500_000_000)
             let resolved = await Worker.run { VSCodeScanner(config: config).isResolved(still) }
@@ -950,10 +975,48 @@ final class ClickyMonitor: ObservableObject {
                 record("vscode: \(still.allowLabel.lowercased()) → \(short) (\(verdict.reason))")
             }
         } else {
-            record("vscode: couldn't press “\(still.allowLabel)” through Accessibility — no mouse fallback")
+            record("vscode: couldn't press “\(still.allowLabel)” — will retry other pending requests first")
             return false
         }
         return true
+    }
+
+    private func pressVSCodeConfirmation(_ pending: VSCodeConfirmation, config: Config,
+                                        permitAction: () -> Bool) async -> Bool {
+        if await Worker.run({ AX.press(pending.allow) }) { return true }
+        // Inline sidebar approvals stay background-only. A dialog fallback must not fight active input.
+        guard pending.sidebarThread == nil, !busy,
+              Self.idleSeconds() >= config.awayIdleSeconds else { return false }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(pending.window, &pid) == .success else { return false }
+        let previousApp = NSWorkspace.shared.frontmostApplication
+        let interaction = InputSynth.UserInteractionWatch()
+        defer {
+            interaction.stop()
+            if !interaction.interrupted { previousApp?.activate() }
+        }
+        NSRunningApplication(processIdentifier: pid)?.activate()
+        guard AXUIElementPerformAction(pending.window, kAXRaiseAction as CFString) == .success else { return false }
+        try? await Task.sleep(nanoseconds: 250_000_000)
+        guard !interaction.interrupted, permitAction(), store.config.vscodeAutoApprove,
+              !store.config.usageCutoffReached,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return false }
+        var clicked = false
+        await withOverlayHidden {
+            guard !interaction.interrupted, permitAction(), store.config.vscodeAutoApprove else { return }
+            clicked = await Worker.run {
+                guard let fresh = VSCodeScanner(config: config).scanAll().first(where: { $0.key == pending.key }),
+                      fresh.request == pending.request, AX.isEnabled(fresh.allow),
+                      let frame = AX.frame(fresh.allow), let bounds = AX.frame(fresh.window),
+                      bounds.contains(frame) else { return false }
+                let point = CGPoint(x: frame.midX, y: frame.midY)
+                guard Self.idleSeconds() >= config.awayIdleSeconds,
+                      AX.isUnderPointer(fresh.allow, at: point) else { return false }
+                InputSynth.click(at: point)
+                return true
+            }
+        }
+        return clicked
     }
 
     private func inspectVSCodeThreads(config: Config) async {
@@ -1227,6 +1290,7 @@ final class ClickyMonitor: ObservableObject {
         }
         guard let selected = await selectTask(task, from: chat, config: config) else { return true }
         chat = selected
+        guard recoveryAllowed(chat) else { return true }
         guard let composer = chat.composer else {
             record("couldn't find heyclicky's chat box — reply not sent")
             return true
@@ -1234,7 +1298,7 @@ final class ClickyMonitor: ObservableObject {
         let context = chat.transcript.isEmpty ? conversation : chat.transcript
         let message = await draftNudge(task: task, transcript: context, config: config,
                                        note: Nudge.stallNote(lastLine: lastLine, minutes: quietMinutes))
-        if await send(message, via: composer) {
+        if await send(message, via: composer, task: task) {
             stats.continued += 1
             record("replied on “\(task)”: \(message.prefix(90))\(message.count > 90 ? "…" : "")")
         } else {
@@ -1269,9 +1333,51 @@ final class ClickyMonitor: ObservableObject {
         }
     }
 
-    private func send(_ text: String, via composer: Composer) async -> Bool {
+    /// Shared by every HeyClicky continuation path, including delayed Ollama drafts.
+    private func recoveryAllowed(_ scan: ScanResult) -> Bool {
+        let previous = taskRecovery
+        for row in scan.chatButtons.compactMap({ TaskRow.parse($0.label) }) where TaskRecovery.isStopped(row.status) {
+            taskRecovery.observe(task: row.name, status: row.status, latestTurnStatus: nil)
+        }
+        if let task = scan.selectedTask {
+            taskRecovery.observe(task: task, status: scan.selectedStatus, latestTurnStatus: scan.latestTurnStatus)
+        }
+        if taskRecovery != previous {
+            do {
+                try JSONEncoder().encode(taskRecovery).write(to: taskRecoveryURL, options: .atomic)
+            } catch {
+                recoveryHistoryReadable = false
+                record("couldn't persist stopped-task history: \(error.localizedDescription) — automatic HeyClicky recovery disabled")
+            }
+        }
+        guard recoveryHistoryReadable else { return false }
+        guard let task = scan.selectedTask else { return false }
+        if taskRecovery.isStopped(task: task) {
+            if !previous.isStopped(task: task) {
+                record("“\(task)” was stopped by you — leaving it stopped until you resume it")
+            }
+            return false
+        }
+        return true
+    }
+
+    private func send(_ text: String, via composer: Composer, task: String) async -> Bool {
+        let config = store.config
+        let fresh = await Worker.run { ClickyScanner(config: config).scan() }
+        guard recoveryAllowed(fresh),
+              fresh.selectedTask.map({ Matcher.normalize($0) == Matcher.normalize(task) }) == true,
+              let current = fresh.composer, current.pid == composer.pid,
+              CFEqual(current.input, composer.input) else {
+            record("recovery for “\(task)” blocked: task stopped or chat could not be verified")
+            return false
+        }
         if await Worker.run({ Self.sendViaAccessibility(composer, text: text) }) { return true }
-        return await sendViaPaste(composer, text: text)
+        let retry = await Worker.run { ClickyScanner(config: config).scan() }
+        guard recoveryAllowed(retry), retry.selectedTask == fresh.selectedTask else {
+            record("task stopped or changed — paste fallback not sent")
+            return false
+        }
+        return await sendViaPaste(composer, text: text, task: task)
     }
 
     nonisolated private static func sendViaAccessibility(_ composer: Composer, text: String) -> Bool {
@@ -1290,7 +1396,7 @@ final class ClickyMonitor: ObservableObject {
         return !remaining.contains(text.prefix(24))
     }
 
-    private func sendViaPaste(_ composer: Composer, text: String) async -> Bool {
+    private func sendViaPaste(_ composer: Composer, text: String, task: String) async -> Bool {
         let pasteboard = NSPasteboard.general
         let saved = pasteboard.string(forType: .string)
         pasteboard.clearContents()
@@ -1299,6 +1405,17 @@ final class ClickyMonitor: ObservableObject {
         NSRunningApplication(processIdentifier: composer.pid)?.activate()
         try? await Task.sleep(nanoseconds: 400_000_000)
 
+        let config = store.config
+        let fresh = await Worker.run { ClickyScanner(config: config).scan() }
+        guard recoveryAllowed(fresh),
+              fresh.selectedTask.map({ Matcher.normalize($0) == Matcher.normalize(task) }) == true,
+              let current = fresh.composer,
+              CFEqual(current.input, composer.input) else {
+            pasteboard.clearContents()
+            if let saved { pasteboard.setString(saved, forType: .string) }
+            record("task stopped or changed before paste — continuation not sent")
+            return false
+        }
         let input = composer.input
         await withOverlayHidden {
             await Worker.run {
@@ -1430,6 +1547,7 @@ final class ClickyMonitor: ObservableObject {
         for task in tasks {
             guard let selected = await selectTask(task, from: chat, config: config) else { continue }
             chat = selected
+            guard recoveryAllowed(chat) else { continue }
             guard let composer = chat.composer else {
                 record("couldn't find heyclicky's chat box after the update")
                 break
@@ -1441,7 +1559,7 @@ final class ClickyMonitor: ObservableObject {
             nudgeLimiter.record(task: name, at: sentAt)
             gate.recordContinue(at: sentAt)
             saveBudget()
-            if await send(message, via: composer) {
+            if await send(message, via: composer, task: task) {
                 stats.continued += 1
                 lastActionAt = sentAt
                 record("nudged “\(name)” after the update: \(message.prefix(90))\(message.count > 90 ? "…" : "")")

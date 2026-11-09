@@ -104,9 +104,10 @@ struct VSCodeScanner {
         var requests: [String] = []
         /// The dialog's own title, "Run in terminal: <title>" — identifies which request the Allow button belongs to.
         var dialogTitle: String?
+        var dialogDescription = ""
         var allow: (AXUIElement, String)?
         var inDialog = false
-        var confirmations: [(AXUIElement, String, String)] = []
+        var confirmations: [(AXUIElement, String, String, String)] = []
         var session = ""
     }
 
@@ -127,6 +128,7 @@ struct VSCodeScanner {
                 var w = Walk()
                 walk(window, depth: 0, &w)
                 let windowTitle: String = AX.attr(window, kAXTitleAttribute) ?? ""
+                let windowKey = "\(app.processIdentifier)|\(CFHash(window))|\(windowTitle)"
                 let rows = sidebarRows(in: window)
                 for row in rows {
                     guard rows.filter({ $0.title == row.title }).count == 1,
@@ -135,14 +137,14 @@ struct VSCodeScanner {
                           let request = VSCodeApprovalContext.sidebarRequest(button.1) else { continue }
                     confirmations.append(VSCodeConfirmation(
                         allow: button.0, allowLabel: "Allow once", request: request,
-                        key: "\(app.processIdentifier)|\(windowTitle)|sidebar|\(row.title)|\(request)",
+                        key: "\(windowKey)|sidebar|\(row.title)|\(request)",
                         window: window, sidebarThread: row.title))
                 }
-                for (allow, label, title) in w.confirmations {
-                    if let request = Self.request(matching: title, in: w.requests) {
+                for (allow, label, title, description) in w.confirmations {
+                    if let request = VSCodeApprovalContext.dialogRequest(title: title, description: description, requests: w.requests) {
                         confirmations.append(VSCodeConfirmation(
                             allow: allow, allowLabel: label, request: request,
-                            key: "\(app.processIdentifier)|\(windowTitle)|\(w.session)|\(Matcher.normalize(request))",
+                            key: "\(windowKey)|\(w.session)|\(request)",
                             window: window, sidebarThread: nil))
                     }
                 }
@@ -153,6 +155,10 @@ struct VSCodeScanner {
 
     /// Nil means the owning row/window disappeared, not that the approval succeeded.
     func isResolved(_ confirmation: VSCodeConfirmation) -> Bool? {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(confirmation.window, &pid) == .success else { return nil }
+        let windows: [AXUIElement] = AX.attr(AXUIElementCreateApplication(pid), kAXWindowsAttribute) ?? []
+        guard windows.contains(where: { CFEqual($0, confirmation.window) }) else { return nil }
         guard let thread = confirmation.sidebarThread else {
             return !scanAll().contains { $0.key == confirmation.key }
         }
@@ -236,6 +242,7 @@ struct VSCodeScanner {
         if lower.hasPrefix(Self.dialogPrefix), !w.inDialog {
             w.inDialog = true
             w.dialogTitle = nil
+            w.dialogDescription = desc
             w.allow = nil
             entered = true
         }
@@ -251,7 +258,7 @@ struct VSCodeScanner {
         for child in children { walk(child, depth: depth + 1, &w) }
         if entered {
             if let allow = w.allow, let title = w.dialogTitle {
-                w.confirmations.append((allow.0, allow.1, title))
+                w.confirmations.append((allow.0, allow.1, title, w.dialogDescription))
             }
             w.inDialog = false
         }

@@ -8,6 +8,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+if [[ "${1:-}" == "--install" && -e "/Applications/Cruise Control.app" && ! -w "/Applications/Cruise Control.app/Contents/MacOS" ]]; then
+  echo "The installed app is administrator-owned. Use the packaged macOS installer to update it; the running agent has not been stopped." >&2
+  exit 1
+fi
+
 ARCH_ARGS=(--arch "$(uname -m)")
 if [[ "${CC_UNIVERSAL:-0}" == "1" ]]; then
   for ARCH in arm64 x86_64; do

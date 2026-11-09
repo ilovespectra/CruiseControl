@@ -88,13 +88,25 @@ public enum Matcher {
         guard !hasTimestamp(label), let comma = label.range(of: ", ", options: .backwards) else { return nil }
         let task = label[..<comma.lowerBound].trimmingCharacters(in: .whitespaces)
         let status = normalize(String(label[comma.upperBound...]))
-        guard !task.isEmpty, config.interruptedStatuses.contains(where: { normalize($0) == status }) else { return nil }
+        guard !task.isEmpty, !TaskRecovery.isStopped(status),
+              config.interruptedStatuses.contains(where: { normalize($0) == status }) else { return nil }
         return task
     }
 
     public static func isRetry(_ label: String, config: Config) -> Bool {
-        let n = normalize(label)
-        return config.retryLabels.contains { normalize($0) == n }
+        matches(label, any: config.retryLabels)
+    }
+
+    /// Timeout/error cards name the task in the toast; the inline card belongs to the verified chat.
+    public static func failedTask(_ label: String, selectedTask: String?) -> String? {
+        let prefix = "Didn't finish "
+        if label.hasPrefix(prefix),
+           let end = label.range(of: ". ", range: label.index(label.startIndex, offsetBy: prefix.count)..<label.endIndex) {
+            let task = String(label[label.index(label.startIndex, offsetBy: prefix.count)..<end.lowerBound])
+            return task.isEmpty ? nil : task
+        }
+        if label.hasPrefix("Didn't finish. ") { return selectedTask }
+        return nil
     }
 
     public static func isVSCodeAllow(_ label: String, config: Config) -> Bool {

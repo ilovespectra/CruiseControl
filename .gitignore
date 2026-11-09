@@ -4,9 +4,6 @@
 build/
 .DS_Store
 .swiftpm/
-Sources/CruiseControlPublisher/
+# Release Publisher source and scripts are tracked; generated app bundles remain under build/.
 scripts/open-publisher.sh
-scripts/repackage-binaries.sh
-scripts/repackage-binaries.py
-scripts/test-repackage-binaries.py
-scripts/package-postinstall.sh
+__pycache__/

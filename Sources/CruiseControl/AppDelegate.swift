@@ -4,6 +4,7 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var store: ConfigStore!
     private var monitor: ClickyMonitor!
+    private var ollama: OllamaSetupController!
     private var notch: NotchController!
     private var indicator: CruiseIndicatorController!
     private var settings: SettingsController!
@@ -28,9 +29,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store = ConfigStore()
         BrandFont.register()
         monitor = ClickyMonitor(store: store)
-        notch = NotchController(store: store, monitor: monitor)
+        ollama = OllamaSetupController(store: store)
+        notch = NotchController(store: store, monitor: monitor, ollama: ollama)
         indicator = CruiseIndicatorController(store: store)
-        settings = SettingsController(store: store, monitor: monitor)
+        settings = SettingsController(store: store, monitor: monitor, ollama: ollama)
         monitor.setOverlayHidden = { [weak notch] hidden in notch?.setHidden(hidden) }
         monitor.start()
         AppUpdates.shared.start()

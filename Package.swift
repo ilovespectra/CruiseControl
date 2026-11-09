@@ -6,9 +6,11 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "CruiseControl", targets: ["CruiseControl"]),
+        .executable(name: "CruiseControlPublisher", targets: ["CruiseControlPublisher"]),
     ],
     targets: [
         .target(name: "CruiseCore", path: "Sources/CruiseCore"),
+        .executableTarget(name: "CruiseControlPublisher", path: "Sources/CruiseControlPublisher"),
         .executableTarget(
             name: "CruiseControl",
             dependencies: ["CruiseCore"],

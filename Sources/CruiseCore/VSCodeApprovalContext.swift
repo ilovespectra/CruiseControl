@@ -38,9 +38,41 @@ public enum VSCodeApprovalContext {
             request.components(separatedBy: ", Run in terminal: ").enumerated().map { index, text in
                 index == 0 ? text : "Run in terminal: \(text)"
             }
-        }.filter { Matcher.normalize($0).hasPrefix(normalized + ":") }
+        }.filter { request in
+            let parts = request.components(separatedBy: ": ")
+            return (1..<parts.count).contains { index in
+                Matcher.normalize(parts.prefix(index).joined(separator: ": ")) == normalized
+                    && !parts.suffix(from: index).joined(separator: ": ").isEmpty
+            }
+        }
         let matches = Set(candidates)
         return matches.count == 1 ? matches.first : nil
+    }
+
+    /// Electron can leave the conversation's confirmation description stale while the carousel advances.
+    /// Prefer complete structured inputs on the live dialog over that older request.
+    public static func dialogRequest(title: String, description: String, requests: [String]) -> String? {
+        if let marker = description.range(of: "Input{") {
+            let input = description[marker.upperBound...]
+            guard let end = input.lastIndex(of: "}"),
+                  ["", "See more"].contains(input[input.index(after: end)...].trimmingCharacters(in: .whitespacesAndNewlines))
+            else { return nil }
+            let raw = "{" + input[...end]
+            var json = ""
+            var quoted = false
+            var escaped = false
+            for character in raw {
+                if character == "\"", !escaped { quoted.toggle() }
+                json.append(!quoted && character == "\u{00a0}" ? " " : character)
+                escaped = character == "\\" && !escaped
+            }
+            guard !json.contains("…"), !json.contains("..."), json.count <= 3500,
+                  let data = json.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  !object.isEmpty else { return nil }
+            return "Tool approval inputs (operation unspecified):\n\(json)"
+        }
+        return request(matching: title, in: requests)
     }
 
     public static func threadTitle(_ label: String) -> String? {

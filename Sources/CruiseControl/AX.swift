@@ -53,4 +53,16 @@ enum AX {
     static func isEnabled(_ e: AXUIElement) -> Bool {
         (attr(e, kAXEnabledAttribute) as Bool?) ?? true
     }
+
+    static func isUnderPointer(_ target: AXUIElement, at point: CGPoint) -> Bool {
+        var hit: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &hit) == .success
+        else { return false }
+        for _ in 0..<8 {
+            guard let element = hit else { return false }
+            if CFEqual(element, target) { return true }
+            hit = attr(element, kAXParentAttribute)
+        }
+        return false
+    }
 }

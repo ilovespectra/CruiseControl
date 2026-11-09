@@ -103,7 +103,7 @@ public struct Config: Codable, Equatable, Sendable {
     public var relaunchNudge = "HeyClicky just updated and restarted, which interrupted you. Please pick up exactly where you left off on this task and keep going until it's done."
     /// A task card that says "Interrupted · It was cut off before it finished" (e.g. after the Mac restarted): send this
     /// polite bump into that task's chat, or press the card's "Retry" if the chat can't be opened.
-    public var interruptedStatuses = ["interrupted", "cut off", "stopped"]
+    public var interruptedStatuses = ["interrupted", "cut off"]
     public var retryLabels = ["Retry", "Try again"]
     public var interruptedCardNudge = "Sorry about that — you got cut off before you finished (probably a restart on my end). Please pick up exactly where you left off on this task and keep going until it's done."
 
@@ -149,8 +149,13 @@ public struct Config: Codable, Equatable, Sendable {
     public var clickyTaskAuditMinutes: Double = 5
 
     public var pillSide: PillSide = .right
-    /// Only show the notch pill while HeyClicky is running.
+    /// In Manual and Rest modes, only show the notch pill while HeyClicky is running.
     public var showOnlyWithClicky = true
+
+    public func shouldShowNotch(clickyRunning: Bool) -> Bool {
+        mode == .cruise || clickyRunning || !showOnlyWithClicky
+    }
+
     public init() {}
 
     public init(from decoder: Decoder) throws {

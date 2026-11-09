@@ -79,6 +79,12 @@ if let index = CommandLine.arguments.firstIndex(of: "--inspect-clicky-task") {
     }
 }
 
+if CommandLine.arguments.contains("--ollama-settings") {
+    DistributedNotificationCenter.default().postNotificationName(
+        Notification.Name("CruiseControl.openOllamaSettings"), object: nil, userInfo: nil, deliverImmediately: true)
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--settings") {
     DistributedNotificationCenter.default().postNotificationName(
         SettingsController.openNotification, object: nil, userInfo: nil, deliverImmediately: true)

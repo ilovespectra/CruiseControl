@@ -4,6 +4,7 @@ import CruiseCore
 struct NotchRootView: View {
     @ObservedObject var store: ConfigStore
     @ObservedObject var monitor: ClickyMonitor
+    @ObservedObject var ollama: OllamaSetupController
     var expanded: Bool
     var menuBarHeight: CGFloat
     var side: PillSide
@@ -12,7 +13,7 @@ struct NotchRootView: View {
     var body: some View {
         Group {
             if expanded {
-                ExpandedPanel(store: store, monitor: monitor, menuBarHeight: menuBarHeight, toggle: toggle)
+                ExpandedPanel(store: store, monitor: monitor, ollama: ollama, menuBarHeight: menuBarHeight, toggle: toggle)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxHeight: .infinity, alignment: .top)
             } else {
@@ -42,7 +43,7 @@ struct CollapsedPill: View {
                 .fill(Brand.accent(for: mode))
                 .frame(width: 6, height: 6)
                 .shadow(color: Brand.accent(for: mode).opacity(0.9), radius: 3)
-                .opacity(monitor.clickyRunning ? 1 : 0.35)
+                .opacity(mode == .cruise || monitor.clickyRunning ? 1 : 0.35)
             Text(mode.shortTitle)
                 .font(BrandFont.inter(10.5, .heavy))
                 .tracking(0.8)
@@ -81,6 +82,7 @@ struct ExpandedPanel: View {
     @ObservedObject private var updates = AppUpdates.shared
     @ObservedObject var store: ConfigStore
     @ObservedObject var monitor: ClickyMonitor
+    @ObservedObject var ollama: OllamaSetupController
     var menuBarHeight: CGFloat
     var toggle: () -> Void
 
@@ -91,17 +93,24 @@ struct ExpandedPanel: View {
                     store.config.mode = mode
                 }
             }
-            Button {
-                toggle()
-                NotificationCenter.default.post(name: SettingsController.openNotification, object: nil)
-            } label: {
-                Label(updates.available == nil ? "settings" : "settings · Update Available", systemImage: "gearshape")
-                    .font(BrandFont.inter(13, .semibold))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
+            HStack(spacing: 8) {
+                Button {
+                    toggle()
+                    NotificationCenter.default.post(name: SettingsController.openNotification, object: nil)
+                } label: {
+                    Label(updates.available == nil ? "settings" : "settings · Update Available", systemImage: "gearshape")
+                        .font(BrandFont.inter(13, .semibold))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white)
+
+                OllamaStatusIndicator(controller: ollama) {
+                    toggle()
+                    ollama.openSettings()
+                }
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.white)
         }
         .padding(14)
         .padding(.top, menuBarHeight * 0.25)
@@ -113,13 +122,60 @@ struct ExpandedPanel: View {
     }
 }
 
+private struct OllamaStatusIndicator: View {
+    @ObservedObject var controller: OllamaSetupController
+    var openSettings: () -> Void
+
+    var body: some View {
+        Button(action: openSettings) {
+            Image(systemName: symbol)
+                .font(BrandFont.inter(13, .semibold))
+                .foregroundStyle(color)
+                .frame(width: 28, height: 32)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(tooltip)
+        .accessibilityLabel("Ollama status. \(tooltip) Open Ollama settings.")
+    }
+
+    private var symbol: String {
+        guard controller.integrationEnabled else { return "circle.dashed" }
+        if controller.isChecking { return "ellipsis.circle" }
+        if case .ready = controller.readiness { return "checkmark.circle.fill" }
+        return "exclamationmark.triangle.fill"
+    }
+
+    private var color: Color {
+        guard controller.integrationEnabled else { return .white.opacity(0.45) }
+        if controller.isChecking { return Brand.periwinkle }
+        if case .ready = controller.readiness { return Brand.accent(for: .cruise).opacity(0.75) }
+        return Brand.youBadge
+    }
+
+    private var tooltip: String {
+        guard controller.integrationEnabled else { return "Ollama features are disabled." }
+        if controller.isChecking { return "Checking Ollama health…" }
+        switch controller.readiness {
+        case .missingInstallation: return "Ollama isn't installed. Click to set it up."
+        case .serviceStopped: return "Ollama is installed but its service isn't responding. Click for setup."
+        case .noModel: return "Ollama is running but has no usable model. Click to set one up."
+        case .configuredModelMissing(let model): return "Configured Ollama model \(model) is missing. Click to fix it."
+        case .ready(let model): return "Ollama is ready · \(model). Click for settings."
+        }
+    }
+}
+
 struct SettingsContent: View {
     @ObservedObject private var updates = AppUpdates.shared
     @ObservedObject var store: ConfigStore
     @ObservedObject var monitor: ClickyMonitor
+    @ObservedObject var ollama: OllamaSetupController
+    @State private var selectedTab = 0
+    @State private var scrollTarget: String?
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             settingsPage {
                 settingsSection("Cruise Control updates", detail: "Installed: \(updates.installedVersion). Public GitHub releases are checked on launch and every six hours.") {
                     Text(updates.status).textSelection(.enabled)
@@ -134,7 +190,8 @@ struct SettingsContent: View {
                 }
             }
             .tabItem { Label("Updates", systemImage: "arrow.down.circle") }
-            settingsPage {
+            .tag(0)
+            settingsPage(scrollTarget: $scrollTarget) {
                 settingsSection("HeyClicky", detail: "Controls for drive requests, unfinished tasks and app updates.") {
                     continueToggle
                     updateToggle
@@ -178,13 +235,13 @@ struct SettingsContent: View {
                     Text("Watches accessible VS Code usage notifications, including background windows. At the selected limit, switches to Manual and disables VS Code approvals, follow-ups, model selection and HeyClicky updates. Running agents are not cancelled. Warnings can arrive late or be missed: this is not a hard billing cap.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                settingsSection("Local Ollama", detail: "Reviews and drafts use this endpoint. Localhost keeps conversation text on this Mac.") {
-                    Toggle("Use Ollama for HeyClicky nudges", isOn: $store.config.ollamaEnabled)
-                    TextField("Endpoint", text: $store.config.ollamaURL)
-                    TextField("Model (empty uses first installed)", text: $store.config.ollamaModel)
+                settingsSection("Local Ollama", detail: "Optional for HeyClicky nudges; load-bearing for enabled VS Code reviews, model checks and follow-ups.") {
+                    OllamaSettingsPanel(store: store, controller: ollama)
                 }
+                .id("local-ollama-settings")
             }
             .tabItem { Label("Automation", systemImage: "steeringwheel") }
+            .tag(1)
             settingsPage {
                 settingsSection("Recorded activity", detail: "Real action counts since \(monitor.stats.trackingSince.formatted(date: .abbreviated, time: .shortened)). Saved across app restarts; historical logs are not guessed or backfilled.") {
                     stats
@@ -195,6 +252,7 @@ struct SettingsContent: View {
                 }
             }
             .tabItem { Label("Activity", systemImage: "chart.bar") }
+            .tag(2)
             settingsPage {
                 settingsSection("Documentation & safety", detail: "Cruise Control is an independent open-source project, not affiliated with HeyClicky.") {
                     Text("Auto-approval removes a human checkpoint. Agents can delete files, expose secrets, install malware, spend money, or change accounts. Ollama review and rate limits are not a security boundary. Use backups and restricted accounts; supervise important work.")
@@ -215,11 +273,18 @@ struct SettingsContent: View {
                         Text("Left").tag(PillSide.left)
                         Text("Right").tag(PillSide.right)
                     }
-                    Toggle("Only show notch while HeyClicky is running", isOn: $store.config.showOnlyWithClicky)
+                    Toggle("Hide notch without HeyClicky in Manual or Rest mode", isOn: $store.config.showOnlyWithClicky)
+                    Text("Cruise mode keeps the notch available even when HeyClicky is closed. The explicit hide button still hides it.")
+                        .font(.caption).foregroundStyle(.secondary)
                     footer
                 }
             }
             .tabItem { Label("App & permissions", systemImage: "gearshape") }
+            .tag(3)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: SettingsController.focusOllamaSettingsNotification)) { _ in
+            selectedTab = 1
+            scrollTarget = "local-ollama-settings"
         }
         .padding(16)
         .frame(minWidth: 640, minHeight: 540)
@@ -227,11 +292,28 @@ struct SettingsContent: View {
         .tint(Brand.periwinkle)
     }
 
-    private func settingsPage<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18, content: content)
-                .padding(18)
-                .frame(maxWidth: .infinity, alignment: .leading)
+    private func settingsPage<Content: View>(scrollTarget: Binding<String?> = .constant(nil),
+                                             @ViewBuilder content: @escaping () -> Content) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18, content: content)
+                    .padding(18)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .onAppear {
+                guard let target = scrollTarget.wrappedValue else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    withAnimation { proxy.scrollTo(target, anchor: .top) }
+                    scrollTarget.wrappedValue = nil
+                }
+            }
+            .onChange(of: scrollTarget.wrappedValue) { _, target in
+                guard let target else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    withAnimation { proxy.scrollTo(target, anchor: .top) }
+                    scrollTarget.wrappedValue = nil
+                }
+            }
         }
     }
 
@@ -432,6 +514,105 @@ struct SettingsContent: View {
                 .help("hides the pill until heyclicky launches again (or you open cruise control). your mode keeps working in the background.")
         }
         .padding(.top, 2)
+    }
+}
+
+private struct OllamaSettingsPanel: View {
+    @ObservedObject var store: ConfigStore
+    @ObservedObject var controller: OllamaSetupController
+    @State private var modelToInstall = "qwen2.5:3b"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 7) {
+                Image(systemName: statusSymbol)
+                    .foregroundStyle(statusColor)
+                Text(controller.isChecking ? "Checking Ollama…" : healthTitle)
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text(controller.integrationEnabled ? "ENABLED" : "DISABLED")
+                    .font(.caption2.bold())
+                    .foregroundStyle(controller.integrationEnabled ? Brand.accent(for: .cruise) : .secondary)
+            }
+            Text("HeyClicky nudges use fallback text if Ollama is off or unavailable. Enabled VS Code approval reviews, model-progress checks and follow-ups need a usable model; if it is unavailable, requests stay for you, the current model stays selected, and no follow-up is sent.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Button("Check health") { Task { await controller.refresh() } }
+                    .disabled(controller.isChecking || controller.isPulling)
+                if !controller.serviceReachable {
+                    if case .missingInstallation = controller.readiness {
+                        Button("Install Ollama…") { controller.openInstaller() }
+                    } else if controller.canStartLocalService {
+                        Button("Start Ollama") { controller.startService() }
+                            .disabled(controller.isChecking)
+                    } else {
+                        Button("Retry endpoint") { Task { await controller.refresh() } }
+                            .disabled(controller.isChecking)
+                    }
+                }
+            }
+
+            if controller.serviceReachable {
+                HStack {
+                    TextField("Model to download", text: $modelToInstall)
+                    Button(controller.isPulling ? "Downloading…" : "Pull & select") {
+                        controller.pullModel(modelToInstall)
+                    }
+                    .disabled(controller.isPulling)
+                }
+            }
+            if controller.isPulling || !controller.pullProgress.isEmpty {
+                Text(controller.pullProgress)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            if let message = controller.actionMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            Text("Cruise Control does not bundle Ollama or model weights. Install and model downloads are explicit; models can be large and their terms vary.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+            Toggle("Use Ollama for HeyClicky nudges", isOn: $store.config.ollamaEnabled)
+            TextField("Endpoint", text: $store.config.ollamaURL)
+            TextField("Model (empty uses first installed)", text: $store.config.ollamaModel)
+        }
+        .onAppear {
+            if !store.config.ollamaModel.isEmpty { modelToInstall = store.config.ollamaModel }
+        }
+    }
+
+    private var healthTitle: String {
+        switch controller.readiness {
+        case .missingInstallation: return "Not installed"
+        case .serviceStopped: return "Installed, service stopped"
+        case .noModel: return "No usable model installed"
+        case .configuredModelMissing(let model): return "Configured model missing: \(model)"
+        case .ready(let model): return "Ready · \(model)"
+        }
+    }
+
+    private var statusSymbol: String {
+        switch controller.readiness {
+        case .missingInstallation, .serviceStopped, .noModel, .configuredModelMissing: return "exclamationmark.triangle.fill"
+        case .ready: return "checkmark.circle.fill"
+        }
+    }
+
+    private var statusColor: Color {
+        switch controller.readiness {
+        case .ready: return Brand.accent(for: .cruise)
+        case .missingInstallation, .serviceStopped, .noModel, .configuredModelMissing: return Brand.youBadge
+        }
     }
 }
 

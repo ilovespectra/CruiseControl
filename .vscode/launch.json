@@ -1,0 +1,44 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:CruiseControl}",
+            "name": "Debug CruiseControl",
+            "target": "CruiseControl",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug CruiseControl"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:CruiseControl}",
+            "name": "Release CruiseControl",
+            "target": "CruiseControl",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release CruiseControl"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:CruiseControl}",
+            "name": "Debug CruiseControlPublisher",
+            "target": "CruiseControlPublisher",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug CruiseControlPublisher"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:CruiseControl}",
+            "name": "Release CruiseControlPublisher",
+            "target": "CruiseControlPublisher",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release CruiseControlPublisher"
+        }
+    ]
+}

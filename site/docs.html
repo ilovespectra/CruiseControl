@@ -64,9 +64,10 @@
         <li>Select <strong>Manual</strong> from the Cruise Control notch dropdown to stop HeyClicky prompt responses and task follow-ups.</li>
         <li>In <strong>Settings → Automation</strong>, disable the separate VS Code approval and model switches. Manual alone does not disable every independently enabled VS Code feature.</li>
         <li>Turn off <strong>keep heyclicky updated</strong> if you also want to prevent automatic HeyClicky updates.</li>
-        <li>Stop any already-running agent in its own app. Esc stops HeyClicky's current drive; switching Cruise Control modes does not cancel existing work. Disable recovery before intentionally stopping a task.</li>
+        <li>Stop any already-running agent in its own app. HeyClicky tasks showing Stopped or Stopped by you stay stopped, even with recovery enabled. Resume the task yourself in HeyClicky when ready. Switching Cruise Control modes does not cancel existing work.</li>
       </ol>
       <p><strong>Hide only hides the notch.</strong> Automation keeps running, and the login agent restarts Cruise Control after it exits. The green dashboard light indicates Cruise mode, not that permissions are granted or that a task is safe or complete.</p>
+      <p>In Cruise mode, the notch stays visible even when HeyClicky is closed, so VS Code automation controls remain accessible. The HeyClicky-only visibility setting applies to Manual and Rest modes. Explicit hiding and temporary hiding during synthetic clicks still work.</p>
       <p>To uninstall the app and its login agent, run this from a checked-out copy of the repository:</p>
       <pre><code>./scripts/build-app.sh --uninstall</code></pre>
       <p>Configuration remains in <code>~/Library/Application Support/CruiseControl/</code>. Review and revoke any persistent Automation, Accessibility, or Screen Recording permissions in macOS System Settings → Privacy &amp; Security as needed.</p>
@@ -84,7 +85,8 @@
       <pre><code>swift test
 ./scripts/build-app.sh --install</code></pre>
       <p>The installer places the app in <code>/Applications</code> and registers a login agent that keeps it running. By default, the notch appears while HeyClicky is open. Installing or restarting preserves existing settings, so previously enabled automation can resume.</p>
-      <p><a href="https://ollama.com">Ollama</a> can draft context-specific HeyClicky replies. Configure the endpoint and model in Settings. HeyClicky nudge flows can use fallback text when Ollama is unavailable; VS Code review and follow-up features require a successful model response.</p>
+      <p><a href="https://ollama.com">Ollama</a> can draft context-specific HeyClicky replies. The notch dropdown has a small Ollama status icon: it warns when attention is needed and stays quiet when ready. Click it to open Ollama Settings, where you can check health, open the official installer, start the app, pull a model and retry without Terminal. HeyClicky nudges use fallback text when Ollama is disabled or unavailable. Enabled VS Code approval reviews, model-progress checks, and chat follow-ups depend on a usable response: failed reviews leave requests for you, and failed checks do not automatically escalate or send follow-ups. This affects which response-handling features can run; no measured night-and-day speed improvement is claimed.</p>
+      <p>Cruise Control does not bundle the Ollama runtime or model weights. They update and license separately, and model downloads can be large; install and model pulls are explicit so you can choose what to add.</p>
     </section>
 
     <section id="modes">
@@ -95,7 +97,9 @@
         <li><strong>Cruise control:</strong> drive requests receive Go ahead / Let HeyClicky drive. When system-dialog handling is enabled, HeyClicky-named macOS control requests may also receive Allow.</li>
       </ul>
       <p>Enabled recovery handles Needs-you cards, unfinished reports, quiet chats, and interrupted tasks. It can reveal the relevant chat, send a continuation message, or use Retry when appropriate. Task audits inspect recent or explicitly tracked tasks; uncertain task identity, draft composers, or failed assessments can prevent a follow-up.</p>
-      <p>Automatic notch inspection occurs while idle. Quiet-time thresholds shorten when the user appears away. Idle time is only a heuristic, not proof of absence or consent. Keep Manual selected when you need a pause to remain paused.</p>
+      <p>In Cruise mode, timeout/error cards saying <strong>Didn't finish</strong> are also recoverable. Cruise prefers Retry on the verified task and only spends continuation budget after the prompt clears or a recovery message is sent. Failed attempts are retried, not suppressed for half an hour. Opening another chat still waits for idle input.</p>
+      <p><strong>A user stop overrides recovery.</strong> Stopped, Stopped by you, paused and cancelled tasks receive no automatic continuation, audit follow-up or Retry. Stops are remembered across Cruise Control restarts and HeyClicky updates until a new running turn is observed after you resume the task. An Interrupted badge alone does not override a Stopped by you footer. Retry is skipped if the task's chat cannot be verified.</p>
+      <p>Automatic notch inspection occurs while idle. Quiet-time thresholds shorten when the user appears away. Idle time is only a heuristic, not proof of absence or consent. Use Manual to disable all HeyClicky recovery, not just one stopped task.</p>
       <p>Default nudge budgets are <strong>6 per task per hour</strong>, sharing a <strong>10-continuation hourly budget</strong> with at least <strong>90 seconds</strong> between continuations. Budgets persist across restarts; exhausting one intentionally leaves work for you. More retries are not a substitute for diagnosing a loop.</p>
       <p><strong>HeyClicky updates</strong> are separately configurable and can run in any mode. Cruise Control can press Update app, wait for a relaunch, and resume interrupted tasks where permitted. Cruise Control's own Updates tab checks public GitHub releases and offers available downloads.</p>
     </section>
@@ -105,6 +109,7 @@
       <p>These options start off and must be enabled separately in Settings → Automation.</p>
       <ul>
         <li><strong>Approval review:</strong> a fixed filter and configured Ollama model review tool requests before pressing Allow Once. Flagged, ambiguous, or failed reviews leave the request pending. Even a successful review can approve something dangerous.</li>
+        <li><strong>Multiple windows and carousels:</strong> live structured dialog inputs take priority over stale conversation descriptions. Failed approvals rotate behind other requests. Cruise handles Allow All as separate reviewed requests, never a blanket permission. Sidebar approvals stay background-only; an idle-only dialog click fallback verifies the owning window and hit-tests the reviewed button.</li>
         <li><strong>Keep tasks going:</strong> idle unfinished conversations may receive a labelled text follow-up. Drafts and running tools are not intended to be interrupted; this is a model judgement, not a completion guarantee.</li>
         <li><strong>Cheaper model preference:</strong> prefers MAI-Code Flash and can suggest escalation after evidenced failures. A pricier model requires explicit confirmation. UI model selection does not guarantee server-side routing or prices.</li>
         <li><strong>Usage guard:</strong> an optional cutoff reacts to accessible usage warnings, not live billing telemetry. It can disable automation but does not cancel running agents; warnings may be delayed or missed. It is not a guaranteed spending cap.</li>
@@ -116,7 +121,7 @@
       <h2>permissions &amp; privacy</h2>
       <p>Accessibility reads app labels, controls, and conversation text and can trigger actions. The optional Screen Recording fallback captures screen content to locate HeyClicky prompts. These are powerful permissions; grant them only if you trust the software.</p>
       <p>Conversation text and tool requests are sent to your configured Ollama endpoint, <strong>localhost by default</strong>. Choosing a remote endpoint sends that content to that service; inspect its privacy and security practices. Cruise Control does not automatically attach screenshots to chat replies.</p>
-      <p>Local settings, budgets, task audit history, model state, and activity logs are stored on your Mac. Logs can include task names, commands, and reply excerpts; review and redact them before sharing. The app checks public update feeds. These webpages load fonts from Google, and the landing page queries GitHub release-download counts.</p>
+      <p>Local settings, budgets, stopped-task history, task audit history, model state, and activity logs are stored on your Mac. Logs can include task names, commands, and reply excerpts; review and redact them before sharing. The app checks public update feeds. These webpages load fonts from Google, and the landing page queries GitHub release-download counts.</p>
       <p>HeyClicky-named system-dialog matching limits which alerts are handled, but it does not evaluate the safety of the requested access. Review existing macOS Automation grants separately.</p>
     </section>
 
@@ -127,7 +132,7 @@
         <li><strong>Repeated follow-ups, no progress:</strong> switch to Manual, inspect the task, and provide the missing input or change approach yourself. Automatic nudges cannot guarantee that the agent can complete a task.</li>
         <li><strong>Prompt not detected:</strong> check Accessibility and optional OCR permissions. HeyClicky and VS Code UI changes may require a Cruise Control update.</li>
         <li><strong>Ollama unavailable:</strong> verify that the service is running and the configured model exists. Some HeyClicky flows send fallback text; VS Code reviews leave approvals pending on failure.</li>
-        <li><strong>Intentional stop resumes:</strong> select Manual and disable the separate automation toggles before stopping the agent. Recovery cannot reliably distinguish an accidental interruption from an intentional one.</li>
+        <li><strong>Intentional stop resumes:</strong> check that HeyClicky exposes Stopped or Stopped by you to Accessibility and inspect the activity log. Recognized stops block recovery until you resume the task; unreadable stopped-task history disables automatic HeyClicky recovery. Use Manual if the app no longer exposes a recognizable stop state.</li>
       </ul>
       <p>Open <strong>Settings → Activity → Open activity log</strong> or <strong>App &amp; permissions → config</strong>. Settings are stored in <code>~/Library/Application Support/CruiseControl/config.json</code>; the log is <code>~/Library/Logs/CruiseControl.log</code>.</p>
       <p>A source-build read-only diagnostic prints the current HeyClicky scan without pressing buttons:</p>

@@ -1,0 +1,34 @@
+import SwiftUI
+
+@main
+struct PublisherApp: App {
+    @StateObject private var publisher = BinaryPublisher()
+
+    var body: some Scene {
+        WindowGroup("Cruise Control Publisher") {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Repackage binaries").font(.title2.bold())
+                Text("Maintainer tool — not included in the public Cruise Control app.")
+                    .foregroundStyle(.secondary)
+                Text("Commit and push changes to the production branch first. Builds use an isolated workspace that is cleaned afterward. Publishing requires the official repository owner's GitHub admin permission.")
+                HStack {
+                    TextField("CruiseControl source folder", text: $publisher.repositoryPath)
+                    Button("Choose…") { publisher.chooseRepository() }
+                }.disabled(publisher.running)
+                HStack {
+                    Button("Build preview") { publisher.publish(preview: true) }
+                    Button("Build & publish unsigned release…") { publisher.publish(preview: false) }
+                    if publisher.running { ProgressView().controlSize(.small) }
+                }.disabled(publisher.running)
+                ScrollView {
+                    Text(publisher.log.isEmpty ? "Ready. Requires Swift, Python 3 and authenticated GitHub CLI." : publisher.log)
+                        .font(.system(size: 12, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(24)
+            .frame(minWidth: 700, minHeight: 460)
+        }
+    }
+}

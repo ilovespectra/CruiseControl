@@ -28,7 +28,7 @@ struct NeedsYouCard {
     let task: String
 }
 
-/// A notch card like "Rippa Repair, Interrupted · It was cut off before it finished · Retry".
+/// An interrupted task or a scoped "Didn't finish" error card with Retry.
 struct InterruptedCard {
     let task: String
     let retry: AXUIElement?
@@ -67,6 +67,8 @@ struct ScanResult {
     var recentTasks: [String] = []
     var selectedTask: String?
     var selectedStatus: String?
+    /// Most recent turn outcome, including a stop footer that overrides an Interrupted badge.
+    var latestTurnStatus: String?
     var latestReport: String? { transcript.last(where: { $0.count > 200 }) }
 }
 
@@ -107,6 +109,7 @@ struct ClickyScanner {
         var recentTasks: [String] = []
         var selectedTask: String?
         var selectedStatus: String?
+        var latestTurnStatus: String?
     }
 
     func scan() -> ScanResult {
@@ -147,6 +150,7 @@ struct ClickyScanner {
                     result.lastCard = ctx.lastCard
                     result.selectedTask = ctx.selectedTask
                     result.selectedStatus = ctx.selectedStatus
+                    result.latestTurnStatus = ctx.latestTurnStatus
                     result.recentTasks = ctx.recentTasks
                 }
                 if let open = ctx.openChat {
@@ -157,8 +161,12 @@ struct ClickyScanner {
                     }
                 }
 
-                for card in ctx.interrupted where !result.interrupted.contains(where: { $0.task == card.task }) {
-                    result.interrupted.append(card)
+                for card in ctx.interrupted {
+                    if let index = result.interrupted.firstIndex(where: { $0.task == card.task }) {
+                        if result.interrupted[index].retry == nil { result.interrupted[index] = card }
+                    } else {
+                        result.interrupted.append(card)
+                    }
                 }
                 if let task = ctx.interruptedTask, !result.interrupted.contains(where: { $0.task == task }) {
                     result.interrupted.append(InterruptedCard(task: task, retry: nil))
@@ -183,7 +191,7 @@ struct ClickyScanner {
         return result
     }
 
-    private func walk(_ e: AXUIElement, depth: Int, ctx: inout WalkContext) {
+    private func walk(_ e: AXUIElement, depth: Int, ctx: inout WalkContext, retryTask: String? = nil) {
         guard depth < 40, ctx.visited < 8000 else { return }
         ctx.visited += 1
 
@@ -192,6 +200,7 @@ struct ClickyScanner {
         let title = v[1] as? String ?? ""
         let desc = v[2] as? String ?? ""
         let value = v[3] as? String
+        let scopedRetryTask = Matcher.failedTask(desc, selectedTask: ctx.selectedTask) ?? retryTask
         let children = v[4] as? [AXUIElement] ?? []
 
         if let task = Matcher.interruptedCardTask(desc, config: config) {
@@ -203,7 +212,9 @@ struct ClickyScanner {
         case kAXButtonRole, "AXLink":
             var label = title.isEmpty ? desc : title
             if label.isEmpty { label = descendantText(children, depth: 3) }
-            if Matcher.isRetry(label, config: config), let task = ctx.interruptedTask {
+            if TaskRecovery.isStopped(label) { ctx.latestTurnStatus = label }
+            if Matcher.isRetry(label, config: config), AX.isEnabled(e),
+               let task = scopedRetryTask ?? ctx.interruptedTask {
                 ctx.interrupted.append(InterruptedCard(task: task, retry: e))
                 ctx.interruptedTask = nil
             }
@@ -230,7 +241,10 @@ struct ClickyScanner {
                 ctx.recentTasks.append(label)
             }
             if Matcher.hasTimestamp(label) {
-                if let card = StallTracker.headerCard(label) { ctx.lastCard = card }
+                if let card = StallTracker.headerCard(label) {
+                    ctx.lastCard = card
+                    ctx.latestTurnStatus = card.status
+                }
                 ctx.lastHeader = label
                 ctx.texts.append("— \(label) —")
             }
@@ -247,6 +261,7 @@ struct ClickyScanner {
                     ctx.inRecents = false
                     ctx.texts = []
                 }
+                if TaskRecovery.isStopped(value) { ctx.latestTurnStatus = value }
                 if Matcher.isNeedsYou(value, config: config) {
                     ctx.needsYouTask = ctx.lastText
                 }
@@ -260,6 +275,7 @@ struct ClickyScanner {
             let status = desc.isEmpty ? title : desc
             if StallTracker.cardStatuses.contains(Matcher.normalize(status)), !ctx.lastText.isEmpty {
                 ctx.lastCard = (ctx.lastText, status)
+                ctx.latestTurnStatus = status
                 ctx.texts.append("— \(ctx.lastText) · \(status) —")
             }
             return
@@ -276,7 +292,7 @@ struct ClickyScanner {
         }
 
         for child in children {
-            walk(child, depth: depth + 1, ctx: &ctx)
+            walk(child, depth: depth + 1, ctx: &ctx, retryTask: scopedRetryTask)
         }
     }
 

@@ -9,13 +9,14 @@ final class NotchPanel: NSPanel {
 }
 
 /// Owns the borderless panel that sits beside the notch and grows into the dropdown.
-/// The panel is only shown while HeyClicky is running (unless `showOnlyWithClicky` is off).
+/// Cruise mode keeps the panel visible independently of HeyClicky's lifecycle.
 @MainActor
 final class NotchController {
     private let panel: NotchPanel
     private let host: NSHostingView<NotchRootView>
     private let store: ConfigStore
     private let monitor: ClickyMonitor
+    private let ollama: OllamaSetupController
     private var outsideClickMonitor: Any?
     private var cancellables: Set<AnyCancellable> = []
 
@@ -27,9 +28,10 @@ final class NotchController {
     private let pillWidth: CGFloat = 128
     private let expandedWidth: CGFloat = 330
 
-    init(store: ConfigStore, monitor: ClickyMonitor) {
+    init(store: ConfigStore, monitor: ClickyMonitor, ollama: OllamaSetupController) {
         self.store = store
         self.monitor = monitor
+        self.ollama = ollama
         panel = NotchPanel(
             contentRect: .zero,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -45,7 +47,7 @@ final class NotchController {
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = true
 
-        host = NSHostingView(rootView: NotchRootView(store: store, monitor: monitor, expanded: false, menuBarHeight: 32, side: .right, toggle: {}))
+        host = NSHostingView(rootView: NotchRootView(store: store, monitor: monitor, ollama: ollama, expanded: false, menuBarHeight: 32, side: .right, toggle: {}))
         host.sizingOptions = []
         panel.contentView = host
 
@@ -56,7 +58,7 @@ final class NotchController {
             .sink { [weak self] _ in self?.layout() }
             .store(in: &cancellables)
         store.$config
-            .map { [$0.pillSide.rawValue, "\($0.showOnlyWithClicky)"] }
+            .map { [$0.pillSide.rawValue, "\($0.showOnlyWithClicky)", $0.mode.rawValue] }
             .removeDuplicates()
             .dropFirst()
             .sink { [weak self] _ in
@@ -109,7 +111,7 @@ final class NotchController {
     }
 
     private var shouldShow: Bool {
-        !hiddenForClick && !hiddenByUser && (monitor.clickyRunning || !store.config.showOnlyWithClicky)
+        !hiddenForClick && !hiddenByUser && store.config.shouldShowNotch(clickyRunning: monitor.clickyRunning)
     }
 
     private func updateVisibility() {
@@ -150,6 +152,7 @@ final class NotchController {
         host.rootView = NotchRootView(
             store: store,
             monitor: monitor,
+            ollama: ollama,
             expanded: expanded,
             menuBarHeight: menuBarHeight,
             side: side,
@@ -172,7 +175,7 @@ final class NotchController {
         var x = pillX
         if expanded {
             // Measure the dropdown on its own; the hosted root fills whatever frame it's given.
-            let measure = NSHostingView(rootView: ExpandedPanel(store: store, monitor: monitor, menuBarHeight: menuBarHeight, toggle: {})
+            let measure = NSHostingView(rootView: ExpandedPanel(store: store, monitor: monitor, ollama: ollama, menuBarHeight: menuBarHeight, toggle: {})
                 .fixedSize(horizontal: false, vertical: true)
                 .environment(\.colorScheme, .dark))
             let fitting = measure.fittingSize

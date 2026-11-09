@@ -84,7 +84,7 @@ public struct TaskRow: Equatable, Sendable {
 /// nobody answered) so Cruise Control can reply on the user's behalf.
 public struct StallTracker: Sendable {
     public static let busyStatuses: Set<String> = ["working", "sent", "running", "thinking", "queued", "in progress"]
-    public static let cardStatuses: Set<String> = busyStatuses.union(["done", "you", "needs you", "failed", "error", "stopped", "paused", "blocked", "interrupted"])
+    public static let cardStatuses: Set<String> = busyStatuses.union(["done", "you", "needs you", "failed", "error", "stopped", "stopped by you", "paused", "cancelled", "canceled", "blocked", "interrupted"])
 
     public private(set) var fingerprint = ""
     public private(set) var changedAt = Date.distantPast

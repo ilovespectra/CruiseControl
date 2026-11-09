@@ -2,6 +2,38 @@ import Testing
 @testable import CruiseCore
 
 @Suite struct VSCodeApprovalContextTests {
+    @Test func liveCarouselInputsOverrideStaleConversationRequest() {
+        let description = "Chat Confirmation Dialog Allow reading file outside of workspace? Read old.swiftShow MoreInput{\u{00a0}\"path\":\u{00a0}\"/tmp/current.swift\"\u{00a0}}See more"
+        let request = VSCodeApprovalContext.dialogRequest(
+            title: "Allow reading file outside of workspace?", description: description,
+            requests: [#"Allow reading file outside of workspace?: {"path":"/tmp/old.swift"}"#])
+        #expect(request == "Tool approval inputs (operation unspecified):\n{ \"path\": \"/tmp/current.swift\" }")
+        #expect(VSCodeApprovalContext.request(matching: "Allow reading file outside of workspace?",
+            in: [#"Allow reading file outside of workspace?: {"path":"/tmp/file"}"#])
+            == #"Allow reading file outside of workspace?: {"path":"/tmp/file"}"#)
+    }
+
+    @Test func rejectsIncompleteLiveInputsInsteadOfReviewingAnOlderRequest() {
+        for input in ["{invalid}See more", "{}See more", #"{"path":"…"}See more"#,
+                      #"{"path":"x"}trailing"#, #"{"path":"x""#] {
+            #expect(VSCodeApprovalContext.dialogRequest(title: "Read file",
+                description: "Chat Confirmation Dialog Input\(input)",
+                requests: ["Read file: old.swift"]) == nil)
+        }
+        let request = VSCodeApprovalContext.dialogRequest(title: "Tool",
+            description: #"Chat Confirmation Dialog Input{"command":"rm\u0020-rf\u0020/"}See more"#,
+            requests: [])
+        #expect(request.flatMap(ApprovalReview.hardBlockReason) != nil)
+    }
+
+    @Test func carouselPreservesQuotedWhitespaceAndEscapedQuotes() {
+        let request = VSCodeApprovalContext.dialogRequest(title: "Tool",
+            description: "Chat Confirmation Dialog Input{\"path\":\"/tmp/a\u{00a0}b\", \"value\":\"a\\\"b\"}See more",
+            requests: [])
+        #expect(request?.contains("/tmp/a\u{00a0}b") == true)
+        #expect(request?.contains("a\\\"b") == true)
+    }
+
     @Test func reviewsStructuredSidebarInputsWithoutInventingToolName() {
         let input = #"{"url":"http://127.0.0.1:11434/api/tags"}"#
         #expect(VSCodeApprovalContext.sidebarRequest("Allow once: \(input)")
