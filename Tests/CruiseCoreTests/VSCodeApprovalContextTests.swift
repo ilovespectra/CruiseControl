@@ -32,6 +32,19 @@ import Testing
         #expect(VSCodeApprovalContext.writeMetadataRequest(description: description, files: ["package.json"], summaries: ["3 lines or maybe 4"]) == nil)
     }
 
+    @Test func createFileUsesTheSameMetadataPolicyAndPreservesOperation() {
+        let description = "Chat Confirmation Dialog Create file? Create ReleaseDownload.tsx1 file created+47-0.monaco-list { color: red }"
+        #expect(VSCodeApprovalContext.isFileMutationDialog(description))
+        #expect(VSCodeApprovalContext.isFileChangeSummary("1 file created, 47 lines added, 0 lines removed"))
+        let request = VSCodeApprovalContext.writeMetadataRequest(description: description,
+            files: ["\u{eae4}ReleaseDownload.tsx"], summaries: ["1 file created, 47 lines added, 0 lines removed"])
+        #expect(request == "\(VSCodeApprovalContext.writeMetadataPrefix)\nAction: create file\nFiles: ReleaseDownload.tsx\nChanges: 1 file created, 47 lines added, 0 lines removed")
+        #expect(VSCodeApprovalContext.writeMetadataRequest(description: description, files: [], summaries: []) == nil)
+        #expect(!VSCodeApprovalContext.isFileMutationDialog("Chat Confirmation Dialog Delete file? file.swift"))
+        #expect(!VSCodeApprovalContext.isFileChangeSummary("Session changes, 1 file created"))
+        #expect(!VSCodeApprovalContext.isFileChangeSummary("1 file deleted, 0 lines added, 47 lines removed"))
+    }
+
     @Test func liveCarouselInputsOverrideStaleConversationRequest() {
         let description = "Chat Confirmation Dialog Allow reading file outside of workspace? Read old.swiftShow MoreInput{\u{00a0}\"path\":\u{00a0}\"/tmp/current.swift\"\u{00a0}}See more"
         let request = VSCodeApprovalContext.dialogRequest(

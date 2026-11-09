@@ -210,7 +210,7 @@ struct SettingsContent: View {
                     vscodeToggle
                     Toggle("Allow file edits without a readable diff", isOn: $store.config.vscodeAllowWriteMetadata)
                         .disabled(!store.config.vscodeAutoApprove)
-                    Text("Off by default. When enabled, Ollama reviews only the file names and change counts exposed by Write file dialogs. Full paths and edit contents may be unavailable, including for files outside the workspace.")
+                    Text("Off by default. Applies to Write file and Create file dialogs. Ollama reviews only exposed file names and change counts. Full paths and contents may be unavailable, including for files outside the workspace.")
                         .font(.caption).foregroundStyle(.secondary)
                     Text("Approval status: \(monitor.vscodeStatus)")
                         .font(.caption).foregroundStyle(.secondary)

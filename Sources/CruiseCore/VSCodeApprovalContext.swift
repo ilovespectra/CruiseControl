@@ -3,8 +3,18 @@ import Foundation
 public enum VSCodeApprovalContext {
     public static let writeMetadataPrefix = "Write-file approval (metadata only; full diff and absolute paths unavailable):"
 
+    public static func isFileMutationDialog(_ description: String) -> Bool {
+        description.hasPrefix("Chat Confirmation Dialog Write file? ")
+            || description.hasPrefix("Chat Confirmation Dialog Create file? ")
+    }
+
+    public static func isFileChangeSummary(_ label: String) -> Bool {
+        label.range(of: #"^\d+ files? (changed|created), \d+ lines? added, \d+ lines? removed$"#,
+                    options: .regularExpression) != nil
+    }
+
     public static func writeMetadataRequest(description: String, files: [String], summaries: [String]) -> String? {
-        guard description.hasPrefix("Chat Confirmation Dialog Write file? "),
+        guard isFileMutationDialog(description),
               !files.isEmpty, files.count <= 20 else { return nil }
         let names = files.map {
             $0.unicodeScalars.filter { $0.properties.generalCategory != .privateUse }
@@ -12,9 +22,9 @@ public enum VSCodeApprovalContext {
         }
         guard names.allSatisfy({ !$0.isEmpty && !$0.contains("…") && !$0.contains("\n") }),
               !summaries.isEmpty,
-              summaries.allSatisfy({ $0.range(of: #"^\d+ files? changed, \d+ lines? added, \d+ lines? removed$"#,
-                                             options: .regularExpression) != nil }) else { return nil }
-        let request = "\(writeMetadataPrefix)\nFiles: \(names.joined(separator: ", "))\nChanges: \(summaries.joined(separator: "; "))"
+              summaries.allSatisfy(isFileChangeSummary) else { return nil }
+        let action = description.hasPrefix("Chat Confirmation Dialog Create file? ") ? "\nAction: create file" : ""
+        let request = "\(writeMetadataPrefix)\(action)\nFiles: \(names.joined(separator: ", "))\nChanges: \(summaries.joined(separator: "; "))"
         return request.count <= 3500 ? request : nil
     }
 

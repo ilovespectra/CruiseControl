@@ -923,7 +923,7 @@ final class ClickyMonitor: ObservableObject {
             if now.timeIntervalSince(writePolicyHolds[pending.key] ?? .distantPast) >= 60 {
                 if writePolicyHolds.count > 300 { writePolicyHolds.removeAll() }
                 writePolicyHolds[pending.key] = now
-                record("vscode: write-file approval held — full diff unavailable. Enable “allow file edits without a readable diff” in Settings → Automation to review file/action metadata instead.")
+                record("vscode: file edit/create approval held — full diff unavailable. Enable “allow file edits without a readable diff” in Settings → Automation to review file/action metadata instead.")
             }
         }
         guard let pending = pendingRequests.first(where: { pending in

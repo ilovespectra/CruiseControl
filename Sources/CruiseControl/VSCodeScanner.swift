@@ -156,7 +156,7 @@ struct VSCodeScanner {
                 for dialog in w.confirmations {
                     let metadata = VSCodeApprovalContext.writeMetadataRequest(
                         description: dialog.description, files: dialog.files, summaries: dialog.summaries)
-                    let isWrite = dialog.description.hasPrefix("Chat Confirmation Dialog Write file? ")
+                    let isWrite = VSCodeApprovalContext.isFileMutationDialog(dialog.description)
                     let request = isWrite ? metadata : dialog.title.flatMap {
                         VSCodeApprovalContext.dialogRequest(title: $0, description: dialog.description, requests: w.requests)
                     }
@@ -277,8 +277,7 @@ struct VSCodeScanner {
         }
         if w.inDialog, role == kAXButtonRole {
             let label = title.isEmpty ? desc : title
-            if label.range(of: #"^\d+ files? changed, \d+ lines? added, \d+ lines? removed$"#,
-                           options: .regularExpression) != nil { w.dialogSummaries.append(label) }
+            if VSCodeApprovalContext.isFileChangeSummary(label) { w.dialogSummaries.append(label) }
             if Matcher.isVSCodeAllow(label, config: config), AX.isEnabled(e) { w.allow = (e, label) }
             return
         }
