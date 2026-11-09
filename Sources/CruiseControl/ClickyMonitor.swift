@@ -19,6 +19,7 @@ final class ClickyMonitor: ObservableObject {
     }
     @Published private(set) var log: [LogLine] = []
     @Published private(set) var lastActionAt: Date?
+    @Published private(set) var vscodeStatus = "Waiting for a VS Code request."
 
     /// Hides Cruise Control's own notch panel while synthetic mouse clicks happen.
     var setOverlayHidden: ((Bool) -> Void)?
@@ -82,6 +83,7 @@ final class ClickyMonitor: ObservableObject {
     private var bumpStates: [String: ChatBump.State] = [:]
     private let bumpStateURL = ConfigStore.directory.appendingPathComponent("chat-bumps.json")
     private var approvalAttempts: [String: Date] = [:]
+    private var writePolicyHolds: [String: Date] = [:]
     private var lastVSCodeThreadProbeAt = Date.distantPast
     private var usageScanBusy = false
     private var lastUsageScanAt = Date.distantPast
@@ -917,7 +919,15 @@ final class ClickyMonitor: ObservableObject {
         let now = Date()
         let pendingRequests = await Worker.run { VSCodeScanner(config: config).scanAll() }
             .sorted { (approvalAttempts[$0.key] ?? .distantPast) < (approvalAttempts[$1.key] ?? .distantPast) }
+        for pending in pendingRequests where pending.writeMetadataOnly && !config.vscodeAllowWriteMetadata {
+            if now.timeIntervalSince(writePolicyHolds[pending.key] ?? .distantPast) >= 60 {
+                if writePolicyHolds.count > 300 { writePolicyHolds.removeAll() }
+                writePolicyHolds[pending.key] = now
+                record("vscode: write-file approval held — full diff unavailable. Enable “allow file edits without a readable diff” in Settings → Automation to review file/action metadata instead.")
+            }
+        }
         guard let pending = pendingRequests.first(where: { pending in
+            if pending.writeMetadataOnly && !config.vscodeAllowWriteMetadata { return false }
             if let onlyKey, pending.key != onlyKey || pending.sidebarThread == nil { return false }
             guard now.timeIntervalSince(approvalAttempts[pending.key] ?? .distantPast) >= 5 else { return false }
             if let cached = reviews[pending.key] {
@@ -958,7 +968,8 @@ final class ClickyMonitor: ObservableObject {
         // Only press if the very same request is still waiting (the review can take a few seconds).
         await refreshUsageGuard()
         guard let still = await Worker.run({ VSCodeScanner(config: config).scanAll().first { $0.key == key } }),
-              still.request == pending.request, store.config.vscodeAutoApprove, permitAction() else { return true }
+              still.request == pending.request, store.config.vscodeAutoApprove,
+              !still.writeMetadataOnly || store.config.vscodeAllowWriteMetadata, permitAction() else { return true }
         approvalAttempts[key] = Date()
         let pressed = await pressVSCodeConfirmation(still, config: config, permitAction: permitAction)
         if pressed {
@@ -1003,7 +1014,8 @@ final class ClickyMonitor: ObservableObject {
               NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return false }
         var clicked = false
         await withOverlayHidden {
-            guard !interaction.interrupted, permitAction(), store.config.vscodeAutoApprove else { return }
+            guard !interaction.interrupted, permitAction(), store.config.vscodeAutoApprove,
+                  !pending.writeMetadataOnly || store.config.vscodeAllowWriteMetadata else { return }
             clicked = await Worker.run {
                 guard let fresh = VSCodeScanner(config: config).scanAll().first(where: { $0.key == pending.key }),
                       fresh.request == pending.request, AX.isEnabled(fresh.allow),
@@ -1669,6 +1681,7 @@ final class ClickyMonitor: ObservableObject {
     }
 
     func record(_ text: String) {
+        if text.hasPrefix("vscode: ") { vscodeStatus = String(text.dropFirst("vscode: ".count)) }
         let line = LogLine(date: Date(), text: text)
         log.append(line)
         if log.count > 60 { log.removeFirst(log.count - 60) }

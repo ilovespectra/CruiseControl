@@ -208,6 +208,13 @@ struct SettingsContent: View {
                 }
                 settingsSection("VS Code", detail: "Independent opt-in controls. Higher-cost model switches always require confirmation.") {
                     vscodeToggle
+                    Toggle("Allow file edits without a readable diff", isOn: $store.config.vscodeAllowWriteMetadata)
+                        .disabled(!store.config.vscodeAutoApprove)
+                    Text("Off by default. When enabled, Ollama reviews only the file names and change counts exposed by Write file dialogs. Full paths and edit contents may be unavailable, including for files outside the workspace.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("Approval status: \(monitor.vscodeStatus)")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                     modelToggle
                     chatBumpToggle
                     Picker("Stop Cruise Control at Copilot usage", selection: $store.config.vscodeUsageCutoff) {

@@ -11,6 +11,7 @@ struct VSCodeConfirmation {
     let key: String
     let window: AXUIElement
     let sidebarThread: String?
+    var writeMetadataOnly = false
 }
 
 struct VSCodeAttentionThread {
@@ -74,7 +75,8 @@ struct VSCodeScanner {
             let role = values[0] as? String ?? ""
             let title = values[1] as? String ?? ""
             let description = values[2] as? String ?? ""
-            let detail = description.hasPrefix("Allow once: ") ? description : String(description.prefix(700))
+            let detail = description.hasPrefix("Allow once: ") || description.hasPrefix("Chat Confirmation Dialog ")
+                ? description : String(description.prefix(700))
             lines.append("\(String(repeating: " ", count: depth))\(role) | \(title.prefix(250)) | \(detail)")
             for child in values[3] as? [AXUIElement] ?? [] { visit(child, depth: depth + 1) }
         }
@@ -105,10 +107,21 @@ struct VSCodeScanner {
         /// The dialog's own title, "Run in terminal: <title>" — identifies which request the Allow button belongs to.
         var dialogTitle: String?
         var dialogDescription = ""
+        var dialogFiles: [String] = []
+        var dialogSummaries: [String] = []
         var allow: (AXUIElement, String)?
         var inDialog = false
-        var confirmations: [(AXUIElement, String, String, String)] = []
+        var confirmations: [Dialog] = []
         var session = ""
+    }
+
+    private struct Dialog {
+        let allow: AXUIElement
+        let label: String
+        let title: String?
+        let description: String
+        let files: [String]
+        let summaries: [String]
     }
 
     func scan() -> VSCodeConfirmation? {
@@ -140,12 +153,18 @@ struct VSCodeScanner {
                         key: "\(windowKey)|sidebar|\(row.title)|\(request)",
                         window: window, sidebarThread: row.title))
                 }
-                for (allow, label, title, description) in w.confirmations {
-                    if let request = VSCodeApprovalContext.dialogRequest(title: title, description: description, requests: w.requests) {
+                for dialog in w.confirmations {
+                    let metadata = VSCodeApprovalContext.writeMetadataRequest(
+                        description: dialog.description, files: dialog.files, summaries: dialog.summaries)
+                    let isWrite = dialog.description.hasPrefix("Chat Confirmation Dialog Write file? ")
+                    let request = isWrite ? metadata : dialog.title.flatMap {
+                        VSCodeApprovalContext.dialogRequest(title: $0, description: dialog.description, requests: w.requests)
+                    }
+                    if let request {
                         confirmations.append(VSCodeConfirmation(
-                            allow: allow, allowLabel: label, request: request,
+                            allow: dialog.allow, allowLabel: dialog.label, request: request,
                             key: "\(windowKey)|\(w.session)|\(request)",
-                            window: window, sidebarThread: nil))
+                            window: window, sidebarThread: nil, writeMetadataOnly: metadata != nil))
                     }
                 }
             }
@@ -243,6 +262,8 @@ struct VSCodeScanner {
             w.inDialog = true
             w.dialogTitle = nil
             w.dialogDescription = desc
+            w.dialogFiles = []
+            w.dialogSummaries = []
             w.allow = nil
             entered = true
         }
@@ -250,15 +271,23 @@ struct VSCodeScanner {
         if w.inDialog, role == kAXTextAreaRole, w.dialogTitle == nil, !desc.isEmpty {
             w.dialogTitle = desc
         }
+        if w.inDialog, role == "AXLink" {
+            let label = title.isEmpty ? desc : title
+            if !label.isEmpty { w.dialogFiles.append(label) }
+        }
         if w.inDialog, role == kAXButtonRole {
             let label = title.isEmpty ? desc : title
+            if label.range(of: #"^\d+ files? changed, \d+ lines? added, \d+ lines? removed$"#,
+                           options: .regularExpression) != nil { w.dialogSummaries.append(label) }
             if Matcher.isVSCodeAllow(label, config: config), AX.isEnabled(e) { w.allow = (e, label) }
             return
         }
         for child in children { walk(child, depth: depth + 1, &w) }
         if entered {
-            if let allow = w.allow, let title = w.dialogTitle {
-                w.confirmations.append((allow.0, allow.1, title, w.dialogDescription))
+            if let allow = w.allow {
+                w.confirmations.append(Dialog(allow: allow.0, label: allow.1, title: w.dialogTitle,
+                                              description: w.dialogDescription, files: w.dialogFiles,
+                                              summaries: w.dialogSummaries))
             }
             w.inDialog = false
         }

@@ -1,6 +1,23 @@
 import Foundation
 
 public enum VSCodeApprovalContext {
+    public static let writeMetadataPrefix = "Write-file approval (metadata only; full diff and absolute paths unavailable):"
+
+    public static func writeMetadataRequest(description: String, files: [String], summaries: [String]) -> String? {
+        guard description.hasPrefix("Chat Confirmation Dialog Write file? "),
+              !files.isEmpty, files.count <= 20 else { return nil }
+        let names = files.map {
+            $0.unicodeScalars.filter { $0.properties.generalCategory != .privateUse }
+                .map(String.init).joined().trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard names.allSatisfy({ !$0.isEmpty && !$0.contains("…") && !$0.contains("\n") }),
+              !summaries.isEmpty,
+              summaries.allSatisfy({ $0.range(of: #"^\d+ files? changed, \d+ lines? added, \d+ lines? removed$"#,
+                                             options: .regularExpression) != nil }) else { return nil }
+        let request = "\(writeMetadataPrefix)\nFiles: \(names.joined(separator: ", "))\nChanges: \(summaries.joined(separator: "; "))"
+        return request.count <= 3500 ? request : nil
+    }
+
     /// The sidebar preview is clipped, but the Allow button's aria-label includes the entire approval label.
     public static func sidebarRequest(_ label: String) -> String? {
         let prefix = "Allow once: "

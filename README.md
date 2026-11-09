@@ -28,6 +28,8 @@ Stopping an individual HeyClicky task takes priority over automatic recovery. **
 
 In Cruise mode, recovery also recognizes **Didn't finish** timeout/error cards and prefers their **Retry** button. Failed presses do not spend continuation budget or start a long recovery cooldown. Visible Retry controls in the already-verified task can be pressed without moving the pointer; opening another chat still waits for idle input. VS Code checks every window, reviews live carousel inputs rather than stale chat descriptions, and rotates failed approvals so one stuck request cannot starve the others. “Allow All” is handled as individual reviewed approvals, not a blanket grant. Dialog clicks are a last resort while idle, after verifying the owning window and hit-testing the same reviewed button; sidebar approvals remain background-only.
 
+**Settings → Automation → VS Code → Allow file edits without a readable diff** is a separate, persistent opt-in (off by default). VS Code's **Write file?** dialogs sometimes expose only file names and change counts, without a text-area title, full paths or edit contents. With this switch enabled, Ollama can review that metadata and approve the edit; this can include files outside the workspace and does not constitute a review of the diff. With it disabled, Cruise holds these requests and explains why in the activity log and the Settings approval status. Ollama-rejected commands remain held regardless of this switch.
+
 ## Local development
 
 Install Xcode Command Line Tools (`xcode-select --install`), then:

@@ -111,6 +111,8 @@ public struct Config: Codable, Equatable, Sendable {
     /// Off by default — see the README for the risks. Anything the review flags, or anything that can't be reviewed
     /// (Ollama down), is left on screen for you.
     public var vscodeAutoApprove = false
+    /// Opt in to reviewing write-file metadata when VS Code does not expose the full diff.
+    public var vscodeAllowWriteMetadata = false
     public var vscodeBundleIDs = ["com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.vscodium"]
     public var vscodeAllowLabels = ["Allow Once", "Allow", "Continue", "Run"]
     public var vscodeCheckSeconds: Double = 1.5
@@ -207,6 +209,7 @@ public struct Config: Codable, Equatable, Sendable {
         retryLabels = try c.decodeIfPresent([String].self, forKey: .retryLabels) ?? d.retryLabels
         interruptedCardNudge = try c.decodeIfPresent(String.self, forKey: .interruptedCardNudge) ?? d.interruptedCardNudge
         vscodeAutoApprove = try c.decodeIfPresent(Bool.self, forKey: .vscodeAutoApprove) ?? d.vscodeAutoApprove
+        vscodeAllowWriteMetadata = try c.decodeIfPresent(Bool.self, forKey: .vscodeAllowWriteMetadata) ?? d.vscodeAllowWriteMetadata
         vscodeBundleIDs = try c.decodeIfPresent([String].self, forKey: .vscodeBundleIDs) ?? d.vscodeBundleIDs
         vscodeAllowLabels = try c.decodeIfPresent([String].self, forKey: .vscodeAllowLabels) ?? d.vscodeAllowLabels
         vscodeCheckSeconds = max(0.5, try c.decodeIfPresent(Double.self, forKey: .vscodeCheckSeconds) ?? d.vscodeCheckSeconds)

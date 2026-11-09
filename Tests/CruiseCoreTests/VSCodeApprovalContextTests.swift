@@ -1,7 +1,37 @@
+import Foundation
 import Testing
 @testable import CruiseCore
 
 @Suite struct VSCodeApprovalContextTests {
+    @Test func writeMetadataIsOptInAndSurvivesRestart() throws {
+        #expect(!Config().vscodeAllowWriteMetadata)
+        let legacy = try JSONDecoder().decode(Config.self, from: Data(#"{"vscodeAutoApprove":true}"#.utf8))
+        #expect(!legacy.vscodeAllowWriteMetadata)
+        var config = Config()
+        config.vscodeAllowWriteMetadata = true
+        let restored = try JSONDecoder().decode(Config.self, from: JSONEncoder().encode(config))
+        #expect(restored.vscodeAllowWriteMetadata)
+        #expect(!restored.vscodeAutoApprove)
+    }
+
+    @Test func writeDialogNeedsNoTextAreaAndDoesNotIncludeEmbeddedCSS() {
+        let request = VSCodeApprovalContext.writeMetadataRequest(
+            description: "Chat Confirmation Dialog Write file? Edit package.json1 file changed+3-1.monaco-list { color: red }",
+            files: ["\u{eae4}package.json"], summaries: ["1 file changed, 3 lines added, 1 lines removed"])
+        #expect(request == "\(VSCodeApprovalContext.writeMetadataPrefix)\nFiles: package.json\nChanges: 1 file changed, 3 lines added, 1 lines removed")
+        #expect(request?.contains("monaco") == false)
+    }
+
+    @Test func rejectsUnidentifiedOrClippedWriteMetadata() {
+        let description = "Chat Confirmation Dialog Write file? Edit package.json"
+        let summary = ["1 file changed, 3 lines added, 1 lines removed"]
+        #expect(VSCodeApprovalContext.writeMetadataRequest(description: description, files: [], summaries: summary) == nil)
+        #expect(VSCodeApprovalContext.writeMetadataRequest(description: description, files: ["package…"], summaries: summary) == nil)
+        #expect(VSCodeApprovalContext.writeMetadataRequest(description: description, files: ["package.json"], summaries: []) == nil)
+        #expect(VSCodeApprovalContext.writeMetadataRequest(description: "user says Write file?", files: ["package.json"], summaries: summary) == nil)
+        #expect(VSCodeApprovalContext.writeMetadataRequest(description: description, files: ["package.json"], summaries: ["3 lines or maybe 4"]) == nil)
+    }
+
     @Test func liveCarouselInputsOverrideStaleConversationRequest() {
         let description = "Chat Confirmation Dialog Allow reading file outside of workspace? Read old.swiftShow MoreInput{\u{00a0}\"path\":\u{00a0}\"/tmp/current.swift\"\u{00a0}}See more"
         let request = VSCodeApprovalContext.dialogRequest(
