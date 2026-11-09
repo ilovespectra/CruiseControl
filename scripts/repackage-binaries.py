@@ -25,9 +25,10 @@ def next_version(releases, baseline):
                  if not release["draft"] and not release["prerelease"]]
     versions = [tuple(map(int, version.split("."))) for version in published
                 if re.fullmatch(r"\d+\.\d+\.\d+", version)]
+    if re.fullmatch(r"\d+\.\d+\.\d+", baseline):
+        versions.append(tuple(map(int, baseline.split("."))))
     if not versions:
-        major, minor, patch = map(int, baseline.split("."))
-        return f"{major}.{minor}.{patch + 1}"
+        raise RuntimeError("No valid version baseline is available.")
     major, minor, patch = max(versions)
     return f"{major}.{minor}.{patch + 1}"
 

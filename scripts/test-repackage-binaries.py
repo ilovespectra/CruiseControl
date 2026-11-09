@@ -25,6 +25,10 @@ class VersionTests(unittest.TestCase):
         versions = [{"tag_name": value, "draft": False, "prerelease": False} for value in ["v1.0.9", "v1.0.10"]]
         self.assertEqual(release.next_version(versions, "1.0.0"), "1.0.11")
 
+    def test_local_installed_baseline_ahead_of_public_release_is_not_reused(self):
+        versions = [{"tag_name": "v1.0.11", "draft": False, "prerelease": False}]
+        self.assertEqual(release.next_version(versions, "1.0.12"), "1.0.13")
+
 
 class OwnerPreflightTests(unittest.TestCase):
     def metadata(self, *, owner="ilovespectra", admin=True):
