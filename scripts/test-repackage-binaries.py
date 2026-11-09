@@ -10,8 +10,10 @@ spec.loader.exec_module(release)
 
 
 class VersionTests(unittest.TestCase):
-    def test_first_release_updates_existing_installs(self):
-        self.assertEqual(release.next_version([], "1.0.0"), "1.0.1")
+    def test_rollover_boundaries(self):
+        self.assertEqual(release.next_version([], "1.0.8"), "1.0.9")
+        self.assertEqual(release.next_version([], "1.0.9"), "1.1.0")
+        self.assertEqual(release.next_version([], "1.9.9"), "2.0.0")
 
     def test_only_successful_releases_advance_version(self):
         versions = [
@@ -19,15 +21,18 @@ class VersionTests(unittest.TestCase):
             {"tag_name": "v1.0.10", "draft": True, "prerelease": False},
             {"tag_name": "v2.0.0", "draft": False, "prerelease": True},
         ]
-        self.assertEqual(release.next_version(versions, "1.0.0"), "1.0.10")
+        self.assertEqual(release.next_version(versions, "1.0.0"), "1.1.0")
 
-    def test_numeric_order(self):
-        versions = [{"tag_name": value, "draft": False, "prerelease": False} for value in ["v1.0.9", "v1.0.10"]]
-        self.assertEqual(release.next_version(versions, "1.0.0"), "1.0.11")
+    def test_numeric_order_and_legacy_release_normalization(self):
+        versions = [{"tag_name": value, "draft": False, "prerelease": False} for value in ["v1.0.9", "v1.0.13"]]
+        self.assertEqual(release.next_version(versions, "1.0.0"), "1.1.0")
+
+    def test_staged_candidate_is_a_floor_without_rewriting_it(self):
+        self.assertEqual(release.next_version([], "1.0.11", ["1.0.13"]), "1.1.0")
 
     def test_local_installed_baseline_ahead_of_public_release_is_not_reused(self):
         versions = [{"tag_name": "v1.0.11", "draft": False, "prerelease": False}]
-        self.assertEqual(release.next_version(versions, "1.0.12"), "1.0.13")
+        self.assertEqual(release.next_version(versions, "1.0.12"), "1.1.0")
 
 
 class OwnerPreflightTests(unittest.TestCase):

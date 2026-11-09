@@ -44,7 +44,7 @@
       <a class="pill pill-secondary" href="#how">see how it works</a>
     </div>
     <p class="fine">public beta · macos sonoma 14 or higher · heyclicky companion with optional vscode automation</p>
-    <p class="fine">open source · <a href="https://github.com/ilovespectra/CruiseControl">view the code on github</a> · <a href="docs.html">read the documentation</a></p>
+    <p class="fine">open source · <a href="https://github.com/ilovespectra/CruiseControl">view the code on github</a> · <a href="https://github.com/ilovespectra/CruiseControl/blob/main/README.md">readme</a> · <a href="docs.html">read the documentation</a></p>
     <aside class="safety-warning" aria-labelledby="automation-warning">
       <h2 id="automation-warning">auto-approval has real risks</h2>
       <p>an agent can delete files, expose secrets, install malicious software, spend money, or change accounts without another human checkpoint. local ollama review and rate limits do not make this safe. use a backed-up, restricted environment and supervise important work.</p>
@@ -167,7 +167,8 @@
           <p id="binary-downloads" aria-live="polite">loading binary downloads…</p>
           <p class="fine">total installer-package downloads across published GitHub releases, including updates. not unique users or verified installs.</p>
           <p><a href="https://raw.githubusercontent.com/ilovespectra/CruiseControl/main/scripts/install-cruisecontrol.sh" download="install-cruisecontrol.sh">download checksum-verifying install script</a> — inspect it, then run <code>bash ~/Downloads/install-cruisecontrol.sh</code>.</p>
-          <p>downloads the latest published universal binary for macOS 14+. no Swift or GitHub CLI needed. installs to /Applications and restarts the login agent, preserving your settings. downloads become available once the first release is published and the repository is public.</p>
+          <p>downloads the latest published universal binary for macOS 14+. no Swift or GitHub CLI needed. installs to /Applications and restarts the login agent, preserving your settings. downloads are served from the latest published GitHub release; local previews are not downloadable here.</p>
+          <p>release versions roll each minor and patch digit at nine (1.0.9 → 1.1.0; 1.9.9 → 2.0.0). this page and download link reflect published GitHub releases only; local previews are not releases. the current public release is 1.0.11.</p>
           <p>unsigned and not notarized: macOS will warn or block installation. review the project before approving in System Settings → Privacy &amp; Security. checksums detect changed downloads; they do not certify the publisher. installed versions with the updater show <b>Update Available</b> in settings.</p>
         </div>
       </li>

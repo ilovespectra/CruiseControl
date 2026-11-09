@@ -8,6 +8,8 @@ Build the console from the repository root with `swift build --product CruiseCon
 
 The repackage script refuses a dirty checkout or a checkout that is not exactly at the latest pushed production commit. It stages the build in a temporary directory and keeps prior output intact if the selected version's output directory already exists.
 
+The console chooses the next version from the highest stable GitHub release, the app bundle's current version, and any local `build/releases/*/release.json` candidates. Version comparison is numeric; historical versions with multi-digit minor or patch fields remain valid, but new versions roll digits at nine (`1.0.9` → `1.1.0`; `1.9.9` → `2.0.0`). A local staged `1.0.13` therefore makes the next candidate `1.1.0`, without rewriting that old candidate. A preview does not publish a release or change the public download feed.
+
 ## Official publishing boundary
 
 Publishing requires the explicit confirmation in the Publisher and `gh` authenticated to GitHub. Before reading release metadata or building for publication, the script verifies that the authenticated login is the owner of `ilovespectra/CruiseControl`, that the repository metadata names that same owner, and that the account has `admin: true`. A clone's own credentials cannot publish to the official repository unless GitHub grants that account those actual permissions. No GitHub tokens, signing keys, or owner credentials are stored in this source or the user app.

@@ -20,17 +20,33 @@ def run(*args, cwd=ROOT, capture=False, env=None):
     return result.stdout.strip() if capture else ""
 
 
-def next_version(releases, baseline):
+def _version_tuple(value):
+    if not isinstance(value, str) or not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", value):
+        return None
+    return tuple(map(int, value.split(".")))
+
+
+def _next_rollover(version):
+    major, minor, patch = version
+    if minor > 9:
+        return f"{major + 1}.0.0"
+    if patch > 9:
+        return f"{major}.{minor + 1}.0" if minor < 9 else f"{major + 1}.0.0"
+    if patch < 9:
+        return f"{major}.{minor}.{patch + 1}"
+    if minor < 9:
+        return f"{major}.{minor + 1}.0"
+    return f"{major + 1}.0.0"
+
+
+def next_version(releases, baseline, staged=()):
     published = [release["tag_name"].removeprefix("v") for release in releases
                  if not release["draft"] and not release["prerelease"]]
-    versions = [tuple(map(int, version.split("."))) for version in published
-                if re.fullmatch(r"\d+\.\d+\.\d+", version)]
-    if re.fullmatch(r"\d+\.\d+\.\d+", baseline):
-        versions.append(tuple(map(int, baseline.split("."))))
+    versions = [version for value in [*published, baseline, *staged]
+                if (version := _version_tuple(value)) is not None]
     if not versions:
         raise RuntimeError("No valid version baseline is available.")
-    major, minor, patch = max(versions)
-    return f"{major}.{minor}.{patch + 1}"
+    return _next_rollover(max(versions))
 
 
 def validate_release_owner(login, metadata, repository=REPO):
@@ -80,7 +96,17 @@ def main():
     releases = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{REPO}/releases?per_page=100", capture=True))
     releases = [release for page in releases for release in page]
     baseline = run("/usr/libexec/PlistBuddy", "-c", "Print :CFBundleShortVersionString", "Resources/Info.plist", capture=True)
-    version = next_version(releases, baseline)
+    staged_versions = []
+    staged_root = ROOT / "build" / "releases"
+    if staged_root.is_dir():
+        for manifest_path in staged_root.glob("*/release.json"):
+            try:
+                staged_version = json.loads(manifest_path.read_text()).get("version")
+            except (OSError, json.JSONDecodeError):
+                continue
+            if _version_tuple(staged_version) is not None:
+                staged_versions.append(staged_version)
+    version = next_version(releases, baseline, staged_versions)
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise RuntimeError("Invalid release version.")
     tag = f"v{version}"

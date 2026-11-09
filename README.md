@@ -6,9 +6,11 @@ Independent, open-source public beta. **Not affiliated with HeyClicky.**
 
 **Warning:** auto-approval removes human review. Agents can delete files, expose secrets, or spend money. Use backups and supervise important work. Hiding the notch does not stop automation.
 
+Release versions use the project's digit-rollover policy: `1.0.8` → `1.0.9` → `1.1.0`, and `1.9.9` → `2.0.0`. The download link below always follows the latest published GitHub release; local preview builds are not public releases. The current public release remains `1.0.11` until a newer release is explicitly published.
+
 In **Cruise** mode the notch dropdown stays visible even when HeyClicky is closed, keeping VS Code automation controls accessible. The HeyClicky-only visibility preference applies to Manual and Rest modes. Explicitly hiding the notch and briefly hiding it for synthetic clicks still work.
 
-[Website](https://cruise.kolektivkrog.si) · [Documentation & safety](https://cruise.kolektivkrog.si/docs.html)
+[Website](https://cruise.kolektivkrog.si) · [Documentation & safety](https://cruise.kolektivkrog.si/docs.html) · [Maintainer console](DEVELOPER_CONSOLE.md)
 
 ## Install
 
