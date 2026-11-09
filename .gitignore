@@ -4,6 +4,28 @@
 build/
 .DS_Store
 .swiftpm/
+.vercel/
+**/.vercel/
 # Release Publisher source and scripts are tracked; generated app bundles remain under build/.
 scripts/open-publisher.sh
 __pycache__/
+
+# Local credentials, signing identities, and maintainer-only state
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.p8
+*.mobileprovision
+*.cer
+*.keychain-db
+*.log
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+local-config/
+user-data/
