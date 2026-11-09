@@ -12,6 +12,7 @@ struct VSCodeConfirmation {
     let window: AXUIElement
     let sidebarThread: String?
     var writeMetadataOnly = false
+    var toolPermission = false
 }
 
 struct VSCodeAttentionThread {
@@ -157,14 +158,18 @@ struct VSCodeScanner {
                     let metadata = VSCodeApprovalContext.writeMetadataRequest(
                         description: dialog.description, files: dialog.files, summaries: dialog.summaries)
                     let isWrite = VSCodeApprovalContext.isFileMutationDialog(dialog.description)
-                    let request = isWrite ? metadata : dialog.title.flatMap {
+                    let isTool = VSCodeApprovalContext.isToolPermissionDialog(dialog.description)
+                    let toolRequest = VSCodeApprovalContext.toolPermissionRequest(
+                        description: dialog.description, allowLabel: dialog.label)
+                    let request = isTool ? toolRequest : isWrite ? metadata : dialog.title.flatMap {
                         VSCodeApprovalContext.dialogRequest(title: $0, description: dialog.description, requests: w.requests)
                     }
                     if let request {
                         confirmations.append(VSCodeConfirmation(
                             allow: dialog.allow, allowLabel: dialog.label, request: request,
                             key: "\(windowKey)|\(w.session)|\(request)",
-                            window: window, sidebarThread: nil, writeMetadataOnly: metadata != nil))
+                            window: window, sidebarThread: nil, writeMetadataOnly: metadata != nil,
+                            toolPermission: isTool))
                     }
                 }
             }
@@ -279,6 +284,8 @@ struct VSCodeScanner {
             let label = title.isEmpty ? desc : title
             if VSCodeApprovalContext.isFileChangeSummary(label) { w.dialogSummaries.append(label) }
             if Matcher.isVSCodeAllow(label, config: config), AX.isEnabled(e) { w.allow = (e, label) }
+            if VSCodeApprovalContext.isToolPermissionDialog(w.dialogDescription),
+               Matcher.normalize(label) == "allow in this session", AX.isEnabled(e) { w.allow = (e, label) }
             return
         }
         for child in children { walk(child, depth: depth + 1, &w) }

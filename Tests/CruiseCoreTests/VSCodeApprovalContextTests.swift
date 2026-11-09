@@ -3,6 +3,42 @@ import Testing
 @testable import CruiseCore
 
 @Suite struct VSCodeApprovalContextTests {
+    @Test func toolPermissionPolicyIsSeparateOptInAndPersists() throws {
+        let legacy = try JSONDecoder().decode(Config.self, from: Data(#"{"vscodeAutoApprove":true,"vscodeAllowWriteMetadata":true}"#.utf8))
+        #expect(!legacy.vscodeAllowToolPermissions)
+        var config = Config()
+        config.vscodeAllowToolPermissions = true
+        let restored = try JSONDecoder().decode(Config.self, from: JSONEncoder().encode(config))
+        #expect(restored.vscodeAllowToolPermissions)
+        #expect(!restored.vscodeAutoApprove)
+        #expect(!restored.vscodeAllowWriteMetadata)
+    }
+
+    @Test func pylanceAndOtherProvidersPreserveIdentityAndSessionScope() {
+        for (provider, tool) in [("pylance mcp server", "pylanceWorkspaceRoots"), ("Other MCP server", "inspectProject")] {
+            let description = "Chat Confirmation Dialog Allow tool from \(provider)? \(provider): \(tool)"
+            #expect(VSCodeApprovalContext.isToolPermissionDialog(description))
+            let request = VSCodeApprovalContext.toolPermissionRequest(description: description, allowLabel: "Allow in this Session")
+            #expect(request?.contains("Provider: \(provider)\nTool: \(tool)\nGrant scope: this VS Code session") == true)
+            #expect(request?.contains("without individual confirmation") == true)
+            let once = VSCodeApprovalContext.toolPermissionRequest(description: description, allowLabel: "Allow Once")
+            #expect(once?.contains("Grant scope: this request only") == true)
+        }
+    }
+
+    @Test func toolPermissionNeverAcceptsPermanentGrantsOrUnidentifiedTools() {
+        let prefix = "Chat Confirmation Dialog Allow tool from pylance mcp server? "
+        for label in ["Always Allow", "Allow All", "Allow", "Allow in this Workspace", "Skip"] {
+            #expect(VSCodeApprovalContext.toolPermissionRequest(
+                description: prefix + "pylance mcp server: pylanceWorkspaceRoots", allowLabel: label) == nil)
+        }
+        for detail in ["", "other server: tool", "pylance mcp server: ", "pylance mcp server: tool…",
+                       "pylance mcp server: tool\nhidden"] {
+            #expect(VSCodeApprovalContext.toolPermissionRequest(description: prefix + detail, allowLabel: "Allow in this Session") == nil)
+        }
+        #expect(!VSCodeApprovalContext.isToolPermissionDialog("A report says Allow tool from pylance?"))
+    }
+
     @Test func writeMetadataIsOptInAndSurvivesRestart() throws {
         #expect(!Config().vscodeAllowWriteMetadata)
         let legacy = try JSONDecoder().decode(Config.self, from: Data(#"{"vscodeAutoApprove":true}"#.utf8))

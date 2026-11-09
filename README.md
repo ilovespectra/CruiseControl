@@ -30,6 +30,8 @@ In Cruise mode, recovery also recognizes **Didn't finish** timeout/error cards a
 
 **Settings → Automation → VS Code → Allow file edits without a readable diff** is a separate, persistent opt-in (off by default). VS Code's **Write file?** and **Create file?** dialogs sometimes expose only file names and change counts, without a text-area title, full paths or edit contents. With this switch enabled, Ollama can review that metadata and approve the edit or creation; this can include files outside the workspace and does not constitute a review of the diff. With it disabled, Cruise holds these requests and explains why in the activity log and the Settings approval status. Ollama-rejected commands remain held regardless of this switch.
 
+**Allow tool permissions (including session grants)** in the same Settings section is another independent, persistent opt-in, off by default. It covers **Allow tool from …?** prompts for Pylance and other providers, after Ollama reviews the exposed tool/provider identity and scope. Hidden inputs are not reviewed. **Allow in this Session** can authorize subsequent tool calls without individual confirmation; disabling this switch stops new Cruise grants but does not revoke permissions already granted in VS Code. Cruise does not press permanent/always-allow or workspace-wide tool grants. The main VS Code approval switch and usage cutoff still apply.
+
 ## Local development
 
 Install Xcode Command Line Tools (`xcode-select --install`), then:

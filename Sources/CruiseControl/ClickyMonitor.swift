@@ -84,6 +84,7 @@ final class ClickyMonitor: ObservableObject {
     private let bumpStateURL = ConfigStore.directory.appendingPathComponent("chat-bumps.json")
     private var approvalAttempts: [String: Date] = [:]
     private var writePolicyHolds: [String: Date] = [:]
+    private var toolPolicyHolds: [String: Date] = [:]
     private var lastVSCodeThreadProbeAt = Date.distantPast
     private var usageScanBusy = false
     private var lastUsageScanAt = Date.distantPast
@@ -926,8 +927,16 @@ final class ClickyMonitor: ObservableObject {
                 record("vscode: file edit/create approval held — full diff unavailable. Enable “allow file edits without a readable diff” in Settings → Automation to review file/action metadata instead.")
             }
         }
+        for pending in pendingRequests where pending.toolPermission && !config.vscodeAllowToolPermissions {
+            if now.timeIntervalSince(toolPolicyHolds[pending.key] ?? .distantPast) >= 60 {
+                if toolPolicyHolds.count > 300 { toolPolicyHolds.removeAll() }
+                toolPolicyHolds[pending.key] = now
+                record("vscode: tool permission held — enable “allow tool permissions (including session grants)” in Settings → Automation to review tool/provider identity and grant scope.")
+            }
+        }
         guard let pending = pendingRequests.first(where: { pending in
             if pending.writeMetadataOnly && !config.vscodeAllowWriteMetadata { return false }
+            if pending.toolPermission && !config.vscodeAllowToolPermissions { return false }
             if let onlyKey, pending.key != onlyKey || pending.sidebarThread == nil { return false }
             guard now.timeIntervalSince(approvalAttempts[pending.key] ?? .distantPast) >= 5 else { return false }
             if let cached = reviews[pending.key] {
@@ -969,7 +978,8 @@ final class ClickyMonitor: ObservableObject {
         await refreshUsageGuard()
         guard let still = await Worker.run({ VSCodeScanner(config: config).scanAll().first { $0.key == key } }),
               still.request == pending.request, store.config.vscodeAutoApprove,
-              !still.writeMetadataOnly || store.config.vscodeAllowWriteMetadata, permitAction() else { return true }
+              !still.writeMetadataOnly || store.config.vscodeAllowWriteMetadata,
+              !still.toolPermission || store.config.vscodeAllowToolPermissions, permitAction() else { return true }
         approvalAttempts[key] = Date()
         let pressed = await pressVSCodeConfirmation(still, config: config, permitAction: permitAction)
         if pressed {
@@ -1015,7 +1025,8 @@ final class ClickyMonitor: ObservableObject {
         var clicked = false
         await withOverlayHidden {
             guard !interaction.interrupted, permitAction(), store.config.vscodeAutoApprove,
-                  !pending.writeMetadataOnly || store.config.vscodeAllowWriteMetadata else { return }
+                  !pending.writeMetadataOnly || store.config.vscodeAllowWriteMetadata,
+                  !pending.toolPermission || store.config.vscodeAllowToolPermissions else { return }
             clicked = await Worker.run {
                 guard let fresh = VSCodeScanner(config: config).scanAll().first(where: { $0.key == pending.key }),
                       fresh.request == pending.request, AX.isEnabled(fresh.allow),

@@ -3,6 +3,27 @@ import Foundation
 public enum VSCodeApprovalContext {
     public static let writeMetadataPrefix = "Write-file approval (metadata only; full diff and absolute paths unavailable):"
 
+    public static func isToolPermissionDialog(_ description: String) -> Bool {
+        description.hasPrefix("Chat Confirmation Dialog Allow tool from ")
+    }
+
+    public static func toolPermissionRequest(description: String, allowLabel: String) -> String? {
+        let prefix = "Chat Confirmation Dialog Allow tool from "
+        guard isToolPermissionDialog(description),
+              ["allow in this session", "allow once"].contains(Matcher.normalize(allowLabel)),
+              let separator = description.range(of: "? ", range: description.index(description.startIndex, offsetBy: prefix.count)..<description.endIndex)
+        else { return nil }
+        let provider = String(description[description.index(description.startIndex, offsetBy: prefix.count)..<separator.lowerBound])
+        let detail = String(description[separator.upperBound...])
+        guard !provider.isEmpty, provider.count <= 200,
+              detail.hasPrefix(provider + ": "),
+              detail.count > provider.count + 2, detail.count <= 1000,
+              !detail.contains("…"), !detail.contains("..."),
+              !provider.contains("\n"), !detail.contains("\n") else { return nil }
+        let scope = Matcher.normalize(allowLabel) == "allow in this session" ? "this VS Code session" : "this request only"
+        return "Tool permission approval (identity only; tool inputs unavailable):\nProvider: \(provider)\nTool: \(detail.dropFirst(provider.count + 2))\nGrant scope: \(scope)\nThis grant can permit subsequent tool calls without individual confirmation."
+    }
+
     public static func isFileMutationDialog(_ description: String) -> Bool {
         description.hasPrefix("Chat Confirmation Dialog Write file? ")
             || description.hasPrefix("Chat Confirmation Dialog Create file? ")

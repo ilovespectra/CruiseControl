@@ -113,6 +113,8 @@ public struct Config: Codable, Equatable, Sendable {
     public var vscodeAutoApprove = false
     /// Opt in to reviewing write-file metadata when VS Code does not expose the full diff.
     public var vscodeAllowWriteMetadata = false
+    /// Allow session-scoped tool/provider grants after review of the exposed tool identity.
+    public var vscodeAllowToolPermissions = false
     public var vscodeBundleIDs = ["com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.vscodium"]
     public var vscodeAllowLabels = ["Allow Once", "Allow", "Continue", "Run"]
     public var vscodeCheckSeconds: Double = 1.5
@@ -210,6 +212,7 @@ public struct Config: Codable, Equatable, Sendable {
         interruptedCardNudge = try c.decodeIfPresent(String.self, forKey: .interruptedCardNudge) ?? d.interruptedCardNudge
         vscodeAutoApprove = try c.decodeIfPresent(Bool.self, forKey: .vscodeAutoApprove) ?? d.vscodeAutoApprove
         vscodeAllowWriteMetadata = try c.decodeIfPresent(Bool.self, forKey: .vscodeAllowWriteMetadata) ?? d.vscodeAllowWriteMetadata
+        vscodeAllowToolPermissions = try c.decodeIfPresent(Bool.self, forKey: .vscodeAllowToolPermissions) ?? d.vscodeAllowToolPermissions
         vscodeBundleIDs = try c.decodeIfPresent([String].self, forKey: .vscodeBundleIDs) ?? d.vscodeBundleIDs
         vscodeAllowLabels = try c.decodeIfPresent([String].self, forKey: .vscodeAllowLabels) ?? d.vscodeAllowLabels
         vscodeCheckSeconds = max(0.5, try c.decodeIfPresent(Double.self, forKey: .vscodeCheckSeconds) ?? d.vscodeCheckSeconds)

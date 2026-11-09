@@ -78,6 +78,10 @@ public enum ApprovalReview {
     are sent only after the developer opts in to metadata-only file-edit approval. Review the exposed filenames \
     and change counts as that limited operation. Do not invent file contents or claim you reviewed a diff. \
     Normal source/config edits are allowed under that opt-in; known secret or security-sensitive targets still warrant review.
+    Requests marked "Tool permission approval (identity only; tool inputs unavailable)" require a separate developer \
+    opt-in to tool/provider grants. Review the exposed provider/tool identity and stated scope. A session grant can \
+    permit subsequent calls without per-call review; do not pretend you reviewed hidden inputs. Normal Pylance \
+    analysis tools and routine development tools are allowed under this opt-in; clearly harmful tool purposes are not.
 
     Examples:
     "Run in terminal: Build: swift build && ./scripts/build-app.sh --install" -> {"harm":"none","reason":"builds and installs the app"}
