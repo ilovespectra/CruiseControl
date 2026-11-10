@@ -1,20 +1,188 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import AppKit
 import CruiseCore
 
+@MainActor
+private final class TaskLifecycleStore: ObservableObject {
+    static let shared = TaskLifecycleStore()
+    @Published private(set) var closedIDs: Set<String>
+    @Published private(set) var finishedIDs: Set<String>
+
+    private let defaults: UserDefaults
+    private let closedKey = "com.ilovespectra.CruiseControl.tasks.closed.v1"
+    private let finishedKey = "com.ilovespectra.CruiseControl.tasks.finished.v1"
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        closedIDs = Set(defaults.stringArray(forKey: "com.ilovespectra.CruiseControl.tasks.closed.v1") ?? [])
+        finishedIDs = Set(defaults.stringArray(forKey: "com.ilovespectra.CruiseControl.tasks.finished.v1") ?? [])
+    }
+
+    func isClosed(_ id: String) -> Bool { closedIDs.contains(id) }
+    func isFinished(_ id: String) -> Bool { finishedIDs.contains(id) }
+
+    func close(_ id: String) {
+        guard !finishedIDs.contains(id) else { return }
+        closedIDs.insert(id)
+        persist()
+    }
+
+    func finish(_ id: String) {
+        closedIDs.remove(id)
+        finishedIDs.insert(id)
+        persist()
+    }
+
+    func reopen(_ id: String) {
+        closedIDs.remove(id)
+        finishedIDs.remove(id)
+        persist()
+    }
+
+    private func persist() {
+        defaults.set(closedIDs.sorted(), forKey: closedKey)
+        defaults.set(finishedIDs.sorted(), forKey: finishedKey)
+    }
+}
+
+private enum TaskReportBlock: Identifiable {
+    case markdown(Int, String)
+    case code(Int, String, String)
+
+    var id: Int {
+        switch self {
+        case .markdown(let id, _), .code(let id, _, _): id
+        }
+    }
+}
+
+private enum TaskReportParser {
+    static func blocks(_ source: String) -> [TaskReportBlock] {
+        var result: [TaskReportBlock] = []
+        var prose: [String] = []
+        var code: [String] = []
+        var language = ""
+        var insideCode = false
+        var nextID = 0
+
+        func flushProse() {
+            let text = prose.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { prose.removeAll(); return }
+            result.append(.markdown(nextID, text))
+            nextID += 1
+            prose.removeAll()
+        }
+
+        for line in source.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") {
+                if insideCode {
+                    result.append(.code(nextID, language, code.joined(separator: "\n")))
+                    nextID += 1
+                    code.removeAll()
+                    language = ""
+                    insideCode = false
+                } else {
+                    flushProse()
+                    language = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                    insideCode = true
+                }
+            } else if insideCode {
+                code.append(line)
+            } else {
+                prose.append(line)
+            }
+        }
+        if insideCode {
+            result.append(.code(nextID, language, code.joined(separator: "\n")))
+            nextID += 1
+        } else {
+            flushProse()
+        }
+        return result
+    }
+}
+
+private struct TaskCodeBlockView: View {
+    let language: String
+    let code: String
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "curlybraces").foregroundStyle(Brand.periwinkle)
+                Text(language.isEmpty ? "Code" : language)
+                    .font(BrandFont.inter(9, .semibold)).foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(code, forType: .string)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+                } label: {
+                    Label(copied ? "Copied" : "Copy code", systemImage: copied ? "checkmark" : "doc.on.doc")
+                }
+                .buttonStyle(TaskControlPillStyle(selected: copied))
+                .accessibilityLabel(copied ? "Code copied" : "Copy code block")
+            }
+            .padding(.horizontal, 9).padding(.vertical, 6)
+            ScrollView([.horizontal, .vertical]) {
+                Text(code.isEmpty ? " " : code)
+                    .font(.system(size: 10.5, weight: .regular, design: .monospaced))
+                    .foregroundStyle(Color.white.opacity(0.86))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: true, vertical: true)
+                    .padding(9)
+            }
+            .frame(maxWidth: .infinity, maxHeight: 210, alignment: .topLeading)
+            .background(Color.black.opacity(0.48))
+        }
+        .background(Brand.card, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.08)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct TaskReportContent: View {
+    let text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            ForEach(TaskReportParser.blocks(text)) { block in
+                switch block {
+                case .markdown(_, let markdown):
+                    if let attributed = try? AttributedString(markdown: markdown) {
+                        Text(attributed).font(BrandFont.inter(11)).foregroundStyle(.secondary)
+                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text(markdown).font(BrandFont.inter(11)).foregroundStyle(.secondary)
+                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    }
+                case .code(_, let language, let code):
+                    TaskCodeBlockView(language: language, code: code)
+                }
+            }
+        }
+    }
+}
+
 private enum TaskListFilter: String, CaseIterable, Identifiable {
-    case all, needsDefinition, attention, working, reportedDone, unassigned, reviewEnabled
+    case all, needsDefinition, attention, working, reportedDone, unassigned, reviewEnabled, closed, finished
 
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .all: "All tasks"
+        case .all: "Open tasks"
         case .needsDefinition: "Needs a definition"
         case .attention: "Needs attention"
         case .working: "Working"
         case .reportedDone: "Reported done"
         case .unassigned: "Unassigned project"
         case .reviewEnabled: "In Cruise review"
+        case .closed: "Closed in Cruise"
+        case .finished: "Finished in Cruise"
         }
     }
 }
@@ -31,6 +199,7 @@ struct TasksSettingsView: View {
     @State private var initializedGroupState = false
     @State private var refreshing = false
     @State private var selectedTaskID: String?
+    @ObservedObject private var lifecycle = TaskLifecycleStore.shared
 
     private let visibleSorts: [TaskSort] = [.priority, .updated, .newest, .name]
 
@@ -87,13 +256,15 @@ struct TasksSettingsView: View {
     }
 
     private func matchesFilter(_ item: CatalogTask) -> Bool {
+        if lifecycle.isFinished(item.id) { return filter == .finished }
+        if lifecycle.isClosed(item.id) { return filter == .closed }
         let definition = store.config.clickyDefinitionsOfDone[item.id]
         let current = tasks.task(item.id)
         let assessment = current.flatMap { tasks.currentAssessment(for: $0, definition: definition) }
         let status = item.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch filter {
         case .all:
-            return true
+            return !lifecycle.isClosed(item.id) && !lifecycle.isFinished(item.id)
         case .needsDefinition:
             return current != nil && DefinitionOfDone.normalized(definition) == nil
         case .attention:
@@ -111,6 +282,10 @@ struct TasksSettingsView: View {
             return item.project.title == nil
         case .reviewEnabled:
             return store.config.taskPlans[item.id]?.enabled == true
+        case .closed:
+            return lifecycle.isClosed(item.id)
+        case .finished:
+            return lifecycle.isFinished(item.id)
         }
     }
 
@@ -149,11 +324,13 @@ struct TasksSettingsView: View {
             taskControls.padding(.bottom, 8)
             taskFilters.padding(.bottom, 10)
             taskContentColumns
+                .frame(maxHeight: .infinity)
                 .background(Color.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 14))
                 .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.white.opacity(0.07)))
             taskFooter.padding(.top, 8)
         }
         .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 18))
         .task { await monitor.refreshTaskCatalog() }
         .onReceive(tasks.$tasks) { loaded in
@@ -205,28 +382,48 @@ struct TasksSettingsView: View {
             TextField("Search tasks, projects, workspaces…", text: $search)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityIdentifier("agent-task-search")
-            Picker("Group by", selection: Binding(
-                get: { groupedByWorkspace ? TaskGrouping.directory : groupedByProject ? TaskGrouping.project : TaskGrouping.none },
-                set: { store.config.taskGrouping = $0; projectFilter = "all" }
-            )) {
-                Text("Projects").tag(TaskGrouping.project)
-                Text("Workspaces").tag(TaskGrouping.directory)
-                Text("All tasks").tag(TaskGrouping.none)
+            HStack(spacing: 4) {
+                Text("Group").font(BrandFont.inter(9, .medium)).foregroundStyle(.secondary)
+                ForEach([TaskGrouping.project, .directory, .none]) { option in
+                    let title = option == .directory ? "Workspaces" : option == .project ? "Projects" : "All"
+                    Button(title) {
+                        store.config.taskGrouping = option
+                        projectFilter = "all"
+                    }
+                    .buttonStyle(TaskControlPillStyle(selected: (groupedByWorkspace ? .directory : groupedByProject ? .project : .none) == option))
+                    .accessibilityIdentifier("task-group-\(option.rawValue)")
+                }
             }
-            .pickerStyle(.segmented)
-            .frame(width: 280)
             .accessibilityIdentifier("agent-task-layout")
-            Picker("Priority", selection: $priorityFilter) {
-                ForEach(TaskPriorityFilter.allCases) { option in Text(option.title).tag(option) }
+            Menu {
+                ForEach(TaskPriorityFilter.allCases) { option in
+                    Button {
+                        priorityFilter = option
+                    } label: {
+                        if priorityFilter == option { Label(option.title, systemImage: "checkmark") }
+                        else { Text(option.title) }
+                    }
+                }
+            } label: {
+                TaskMenuPill(title: priorityFilter.title, icon: "flag")
             }
-            .pickerStyle(.menu)
-            .frame(width: 130)
+            .accessibilityLabel("Priority filter, \(priorityFilter.title)")
+            .frame(width: 128)
             .accessibilityIdentifier("agent-task-priority-filter")
-            Picker("Sort", selection: Binding(get: { selectedSort }, set: { store.config.taskSort = $0 })) {
-                ForEach(visibleSorts) { Text($0.title).tag($0) }
+            Menu {
+                ForEach(visibleSorts) { option in
+                    Button {
+                        store.config.taskSort = option
+                    } label: {
+                        if selectedSort == option { Label(option.title, systemImage: "checkmark") }
+                        else { Text(option.title) }
+                    }
+                }
+            } label: {
+                TaskMenuPill(title: selectedSort.title, icon: "arrow.up.arrow.down")
             }
-            .pickerStyle(.menu)
-            .frame(width: 150)
+            .accessibilityLabel("Sort tasks, \(selectedSort.title)")
+            .frame(width: 135)
             .accessibilityIdentifier("agent-task-sort")
         }
     }
@@ -235,13 +432,8 @@ struct TasksSettingsView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 ForEach(TaskListFilter.allCases) { option in
-                    Button { filter = option } label: {
-                        Text(option.title).font(BrandFont.inter(10, .semibold))
-                            .padding(.horizontal, 10).padding(.vertical, 6)
-                            .background(filter == option ? Brand.navy : Brand.card, in: Capsule())
-                            .overlay(Capsule().strokeBorder(filter == option ? Brand.periwinkle.opacity(0.7) : Color.white.opacity(0.08)))
-                    }
-                    .buttonStyle(.plain)
+                    Button(option.title) { filter = option }
+                    .buttonStyle(TaskControlPillStyle(selected: filter == option))
                     .accessibilityIdentifier("task-filter-\(option.id)")
                 }
                 if projectFilter != "all" {
@@ -254,14 +446,14 @@ struct TasksSettingsView: View {
 
     private var taskContentColumns: some View {
         HStack(spacing: 0) {
-            taskListColumn.frame(width: 310)
+            taskListColumn.frame(width: 310).frame(maxHeight: .infinity)
             Rectangle().fill(Color.white.opacity(0.08)).frame(width: 1)
-            taskDetailColumn.frame(maxWidth: .infinity)
+            taskDetailColumn.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
     private var taskListColumn: some View {
-        ScrollView {
+        ScrollView(.vertical) {
             LazyVStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Text(groupedByWorkspace ? "WORKSPACES" : groupedByProject ? "PROJECTS" : "TASKS")
@@ -277,6 +469,8 @@ struct TasksSettingsView: View {
             }
             .padding(10)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .accessibilityIdentifier("task-sidebar-scroll")
     }
 
     private func taskGroupRow(_ group: TaskCatalog.Group) -> some View {
@@ -300,7 +494,9 @@ struct TasksSettingsView: View {
     }
 
     private var taskDetailColumn: some View {
-        ScrollView { taskDetailContent }
+        ScrollView(.vertical) { taskDetailContent }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .accessibilityIdentifier("task-detail-scroll")
     }
 
     @ViewBuilder
@@ -637,8 +833,16 @@ private struct TaskProjectRow: View {
     @State private var definitionDraft = ""
     @State private var showingDetails = false
     @State private var draftingBump = false
+    @State private var reviewingLatestReport = false
+    @State private var sendingBump = false
     @State private var bumpDraftMessage: String?
     @State private var bumpDraftError: String?
+    @State private var bumpSendStatus: String?
+    @State private var copiedReport = false
+    @State private var confirmingClose = false
+    @State private var confirmingFinish = false
+    @State private var confirmingReopen = false
+    @ObservedObject private var lifecycle = TaskLifecycleStore.shared
 
     private var details: ClickyAgentTask? { tasks.task(task.id) }
     private var stateLabel: String {
@@ -660,43 +864,120 @@ private struct TaskProjectRow: View {
         store.config.taskPlans[task.id]?.autoBump == true
     }
     private var canDraftBump: Bool {
-        guard let details, definition != nil else { return false }
+        guard let details, definition != nil, let assessment else { return false }
         return details.hasReport && !details.isWorking && !details.isStopped && !details.dismissed
             && !TaskAudit.requiresUser(details.lastMessage)
+            && !lifecycle.isFinished(task.id)
             && !ClickyTaskLibrary.ambiguousNames(tasks.tasks).contains(Matcher.normalize(details.name))
+            && assessment.meetsDefinition == false && !assessment.missing.isEmpty
+            && [.unfinished, .failed].contains(assessment.state)
+    }
+
+    private func reviewLatestReport() async {
+        guard let definition else { return }
+        reviewingLatestReport = true
+        bumpDraftMessage = nil
+        bumpDraftError = nil
+        bumpSendStatus = nil
+        defer { reviewingLatestReport = false }
+
+        let expectedDefinition = definition
+        let requestedAt = Date()
+        await tasks.refresh(measure: false)
+        guard let loadedAt = tasks.loadedAt, loadedAt >= requestedAt, tasks.loadError == nil,
+              DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id]) == expectedDefinition,
+              let latest = tasks.task(task.id), latest.hasReport else {
+            bumpDraftError = tasks.loadError ?? "A fresh task report is unavailable. Refresh and review again."
+            return
+        }
+        let expectedFingerprint = latest.fingerprint
+        _ = await tasks.assess(latest, config: store.config, localOnly: true)
+        guard let current = tasks.task(task.id), current.fingerprint == expectedFingerprint,
+              DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id]) == expectedDefinition,
+              tasks.currentAssessment(for: current, definition: expectedDefinition) != nil else {
+            bumpDraftError = "The report or saved criteria changed during review. Review the latest version again."
+            return
+        }
     }
 
     private func createBumpDraft() async {
-        guard let details, let definition else { return }
+        guard let details, let definition, let reviewed = assessment, canDraftBump else {
+            bumpDraftError = "Review the latest report first; drafting requires a current review with concrete gaps."
+            return
+        }
+        let expectedFingerprint = details.fingerprint
+        let expectedDefinition = definition
         draftingBump = true
         bumpDraftMessage = nil
         bumpDraftError = nil
+        bumpSendStatus = nil
         defer { draftingBump = false }
 
-        let current: ClickyTaskAssessment
-        if let assessment {
-            current = assessment
-        } else {
-            current = await Ollama.assessClickyTask(details, definition: definition, config: store.config, localOnly: true)
-        }
-        guard current.meetsDefinition == false, !current.missing.isEmpty else {
-            bumpDraftError = current.meetsDefinition == true
-                ? "The latest report appears to meet the saved goal; no follow-up draft is needed."
-                : "No concrete gap is available yet; review the latest report before drafting."
-            return
-        }
-
         do {
-            let draft = try await Ollama.draftTaskBump(task: details, definition: definition, project: task.project,
-                                                      priority: priority, missing: current.missing, config: store.config)
+            let draft = try await Ollama.draftTaskBump(task: details, definition: expectedDefinition, project: task.project,
+                                                      priority: priority, missing: reviewed.missing, config: store.config)
             guard draft.unfinished else {
-                bumpDraftError = "The latest report has no actionable gap; no follow-up draft is needed."
+                bumpDraftError = "The reviewed report has no actionable gap; no follow-up draft is needed."
+                return
+            }
+            guard let latest = tasks.task(task.id), latest.fingerprint == expectedFingerprint,
+                  DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id]) == expectedDefinition,
+                  tasks.currentAssessment(for: latest, definition: expectedDefinition) == reviewed,
+                  !latest.isWorking, !latest.isStopped, !latest.dismissed,
+                  !TaskAudit.requiresUser(latest.lastMessage) else {
+                bumpDraftError = "The task report or criteria changed while drafting. Review again before drafting."
                 return
             }
             bumpDraftMessage = draft.message
         } catch {
             bumpDraftError = error.localizedDescription
         }
+    }
+
+    private func copyReport(_ report: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(report, forType: .string)
+        copiedReport = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copiedReport = false }
+    }
+
+    private func sendBumpDraft() async {
+        guard let message = bumpDraftMessage, let details, let definition, let reviewed = assessment else { return }
+        sendingBump = true
+        bumpSendStatus = nil
+        defer { sendingBump = false }
+        let result = await monitor.sendReviewedTaskDraft(taskID: task.id, text: message,
+                                                         definition: definition, reportFingerprint: details.fingerprint,
+                                                         missing: reviewed.missing)
+        if let result {
+            bumpSendStatus = result
+        } else {
+            bumpSendStatus = "Sent and confirmed in HeyClicky."
+            bumpDraftMessage = nil
+        }
+    }
+
+    private var lifecycleActions: some View {
+        HStack(spacing: 8) {
+            Image(systemName: lifecycle.isFinished(task.id) ? "checkmark.seal.fill" : lifecycle.isClosed(task.id) ? "archivebox" : "arrow.triangle.branch")
+                .foregroundStyle(lifecycle.isFinished(task.id) ? Brand.periwinkle : .secondary)
+            Text("Cruise-only task state")
+                .font(.caption2).foregroundStyle(.secondary)
+            Spacer()
+            if lifecycle.isFinished(task.id) || lifecycle.isClosed(task.id) {
+                Button("Reopen in Cruise") { confirmingReopen = true }
+                    .buttonStyle(ClickyPillButtonStyle(primary: true))
+                    .accessibilityIdentifier("reopen-task-\(task.id)")
+            } else {
+                Button("Close in Cruise…") { confirmingClose = true }
+                    .buttonStyle(TaskControlPillStyle(selected: false))
+                    .accessibilityIdentifier("close-task-\(task.id)")
+                Button("Mark finished…") { confirmingFinish = true }
+                    .buttonStyle(ClickyPillButtonStyle(primary: false))
+                    .accessibilityIdentifier("finish-task-\(task.id)")
+            }
+        }
+        .padding(.top, 4)
     }
 
     var body: some View {
@@ -708,6 +989,11 @@ private struct TaskProjectRow: View {
                         Text(stateLabel)
                             .font(.caption2).padding(.horizontal, 7).padding(.vertical, 3)
                             .background(Brand.card, in: Capsule())
+                        if lifecycle.isClosed(task.id) {
+                            Text("Closed in Cruise").font(.caption2).foregroundStyle(.secondary)
+                        } else if lifecycle.isFinished(task.id) {
+                            Text("Finished in Cruise").font(.caption2).foregroundStyle(Brand.periwinkle)
+                        }
                         if store.config.taskGrouping == .none, let project = task.project.title {
                             Label(project, systemImage: "folder").font(.caption2).foregroundStyle(.secondary)
                         }
@@ -724,7 +1010,7 @@ private struct TaskProjectRow: View {
                         Button(option.title) { setPriority(option) }
                     }
                 } label: {
-                    Label("\(priority.title)", systemImage: "flag")
+                    TaskMenuPill(title: priority.title, icon: "flag")
                 }
                 .help("Cruise review priority only; it does not change HeyClicky's queue.")
                 .disabled(details == nil)
@@ -734,9 +1020,11 @@ private struct TaskProjectRow: View {
                     definingDone = true
                 }
                 .disabled(details == nil)
+                .buttonStyle(ClickyPillButtonStyle(primary: definition == nil))
                 .accessibilityIdentifier("define-done-\(task.id)")
 
                 Button(showingDetails ? "Hide details" : "Details") { showingDetails.toggle() }
+                    .buttonStyle(TaskControlPillStyle(selected: showingDetails))
                     .accessibilityIdentifier("task-details-\(task.id)")
             }
 
@@ -752,6 +1040,22 @@ private struct TaskProjectRow: View {
 
             if let details {
                 latestResponseCard(details)
+                HStack(spacing: 8) {
+                    Text("1").font(BrandFont.mono(9)).foregroundStyle(Brand.navy)
+                        .padding(5).background(Brand.periwinkle, in: Circle())
+                    Button(reviewingLatestReport ? "Reviewing latest report…" : "Review latest report") {
+                        Task { await reviewLatestReport() }
+                    }
+                    .buttonStyle(ClickyPillButtonStyle(primary: false))
+                    .disabled(reviewingLatestReport || details.isWorking || definition == nil || !details.hasReport)
+                    .help("Refresh the selected HeyClicky task, then assess its newest report against the saved criteria.")
+                    .accessibilityIdentifier("review-task-\(task.id)")
+                    if assessment != nil {
+                        Label("Current review", systemImage: "checkmark.circle.fill")
+                            .font(.caption2).foregroundStyle(Brand.periwinkle)
+                    }
+                    Spacer()
+                }
                 criteriaSummary(details)
                 HStack(spacing: 10) {
                     Toggle("Auto-bump this task", isOn: Binding(
@@ -760,19 +1064,28 @@ private struct TaskProjectRow: View {
                     ))
                     .toggleStyle(.switch)
                     .controlSize(.small)
-                    .disabled(definition == nil)
+                    .disabled(definition == nil || lifecycle.isFinished(task.id))
                     .help("Explicitly opt this task into automatic follow-ups when its latest report falls short of its saved definition.")
-                    Button(draftingBump ? "Drafting…" : "Draft follow-up") {
-                        Task { await createBumpDraft() }
+                    Text("2").font(BrandFont.mono(9)).foregroundStyle(Brand.navy)
+                        .padding(5).background(Brand.periwinkle, in: Circle())
+                    Button {
+                        if bumpDraftMessage == nil { Task { await createBumpDraft() } }
+                        else { Task { await sendBumpDraft() } }
+                    } label: {
+                        Label(draftingBump ? "Drafting…" : sendingBump ? "Sending…" : bumpDraftMessage == nil ? "Draft follow-up" : "Send to HeyClicky",
+                              systemImage: bumpDraftMessage == nil ? "doc.text" : "paperplane.fill")
                     }
-                    .disabled(!canDraftBump || draftingBump)
-                    .help("Drafts locally from the latest report and saved goal. Nothing is queued, typed, or sent.")
+                    .buttonStyle(ClickyPillButtonStyle(primary: bumpDraftMessage != nil))
+                    .disabled(bumpDraftMessage == nil ? (!canDraftBump || draftingBump) : (sendingBump || !canDraftBump))
+                    .help(bumpDraftMessage == nil
+                          ? "Drafts only from a current review with concrete gaps."
+                          : "Sends exactly the visible draft to this uniquely matched HeyClicky task after freshness and safety checks.")
                     .accessibilityIdentifier("bump-task-\(task.id)")
                     Spacer()
                 }
                 if let bumpDraftMessage {
                     VStack(alignment: .leading, spacing: 4) {
-                        Label("Draft only · not sent", systemImage: "doc.text")
+                        Label("Draft · not sent", systemImage: "doc.text")
                             .font(.caption.weight(.semibold)).foregroundStyle(Brand.periwinkle)
                         Text(bumpDraftMessage).font(.caption).textSelection(.enabled)
                     }
@@ -781,13 +1094,23 @@ private struct TaskProjectRow: View {
                     .background(Brand.card.opacity(0.75), in: RoundedRectangle(cornerRadius: 8))
                 }
                 if let bumpDraftError {
-                    Text("Draft unavailable: \(bumpDraftError)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    Text("Workflow paused: \(bumpDraftError)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+                if let bumpSendStatus {
+                    Text(bumpSendStatus).font(.caption).foregroundStyle(bumpSendStatus.hasPrefix("Sent") ? Brand.periwinkle : Brand.youBadge)
+                        .textSelection(.enabled)
                 }
                 if definition != nil {
-                    Text("Auto-bump is off until you turn it on for this task. It waits for a fresh report, stops on repeated gaps or user decisions, and never approves or publishes.")
+                    Text(lifecycle.isFinished(task.id)
+                         ? "Finished in Cruise only. HeyClicky's task state is unchanged; Auto-bump stays off until you explicitly enable it again."
+                         : autoBumpEnabled
+                            ? "Auto-bump is on for this task. It waits for fresh reports, stops on repeated gaps or user decisions, and never approves or publishes."
+                            : "Auto-bump is off for this task. Review, draft, and Send are separate manual steps; nothing is queued until you opt in.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
             }
+
+            lifecycleActions
 
             if showingDetails {
                 Divider()
@@ -796,7 +1119,49 @@ private struct TaskProjectRow: View {
         }
         .padding(.vertical, 8)
         .onAppear { showingDetails = initiallyExpanded }
-        .onChange(of: task.id) { _, _ in showingDetails = initiallyExpanded }
+        .onChange(of: task.id) { _, _ in
+            showingDetails = initiallyExpanded
+            bumpDraftMessage = nil
+            bumpDraftError = nil
+            bumpSendStatus = nil
+        }
+        .onChange(of: details?.fingerprint) { _, _ in
+            bumpDraftMessage = nil
+            bumpDraftError = nil
+            bumpSendStatus = nil
+        }
+        .onChange(of: definition) { _, _ in
+            bumpDraftMessage = nil
+            bumpDraftError = nil
+            bumpSendStatus = nil
+        }
+        .confirmationDialog("Close this task in Cruise only?", isPresented: $confirmingClose, titleVisibility: .visible) {
+            Button("Close in Cruise", role: .destructive) { lifecycle.close(task.id) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(details?.isWorking == true
+                 ? "This only hides the task from Open tasks in Cruise. The HeyClicky task is still running, its history is preserved, and it is not marked complete."
+                 : "This only hides the task from Open tasks in Cruise. It preserves history and does not stop or complete the HeyClicky task.")
+        }
+        .confirmationDialog("Mark this task finished in Cruise?", isPresented: $confirmingFinish, titleVisibility: .visible) {
+            Button("Mark finished in Cruise") {
+                var plan = store.config.taskPlans[task.id] ?? TaskPlan()
+                plan.autoBump = false
+                store.config.taskPlans[task.id] = plan
+                lifecycle.finish(task.id)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(details?.isWorking == true
+                 ? "HeyClicky is still working. This records a Cruise-local decision only; it does not stop or complete that task. Auto-bump will be turned off, and reopening will not turn it back on."
+                 : "This records a Cruise-local decision only. It does not change HeyClicky's task status. Auto-bump will be turned off for this task; reopening will not turn it back on.")
+        }
+        .confirmationDialog("Reopen this task in Cruise?", isPresented: $confirmingReopen, titleVisibility: .visible) {
+            Button("Reopen in Cruise") { lifecycle.reopen(task.id) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This restores the task to Open tasks in Cruise only. Its HeyClicky status is unchanged; Auto-bump remains off until you enable it again.")
+        }
         .accessibilityIdentifier("task-row-\(task.id)")
         .sheet(isPresented: $editingProject) {
             VStack(alignment: .leading, spacing: 14) {
@@ -866,15 +1231,22 @@ private struct TaskProjectRow: View {
         if !details.lastMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text("Latest HeyClicky response").font(.caption.weight(.semibold))
+                    Label("Latest HeyClicky response", systemImage: "text.bubble")
+                        .font(.caption.weight(.semibold))
                     Spacer()
                     if let updated = details.lastMessageAt ?? details.updatedAt {
                         Text(updated.formatted(date: .abbreviated, time: .shortened))
                             .font(.caption2).foregroundStyle(.tertiary)
                     }
+                    Button {
+                        copyReport(details.lastMessage)
+                    } label: {
+                        Label(copiedReport ? "Copied" : "Copy report", systemImage: copiedReport ? "checkmark" : "doc.on.doc")
+                    }
+                    .buttonStyle(TaskControlPillStyle(selected: copiedReport))
+                    .accessibilityLabel(copiedReport ? "Report copied" : "Copy full report")
                 }
-                Text(String(details.lastMessage.prefix(6_000)))
-                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                TaskReportContent(text: String(details.lastMessage.prefix(6_000)))
                 if details.lastMessage.count > 6_000 {
                     Text("Report shortened after 6,000 characters; open the task thread in HeyClicky for the remainder.")
                         .font(.caption2).foregroundStyle(.secondary)
@@ -899,10 +1271,14 @@ private struct TaskProjectRow: View {
                 Label(meets == true ? "Criteria appear met in report" : meets == false ? "Criteria gap found" : "Criteria not yet verified",
                       systemImage: meets == true ? "checkmark.seal" : meets == false ? "exclamationmark.circle" : "questionmark.circle")
                     .font(.caption.weight(.semibold))
-                Text(assessment.reason).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-                ForEach(Array(assessment.missing.prefix(3)), id: \.self) { gap in
+                Text("Assessment: \(assessment.state.title) · \(assessment.reason)")
+                    .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                ForEach(Array(assessment.missing.prefix(6)), id: \.self) { gap in
                     Label(gap, systemImage: "arrow.turn.down.right")
-                        .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                        .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                if assessment.missing.count > 6 {
+                    Text("And \(assessment.missing.count - 6) more gaps in Details.").font(.caption2).foregroundStyle(.secondary)
                 }
                 Text("Compared with the saved definition using the latest report; not a test of the underlying project.")
                     .font(.caption2).foregroundStyle(.tertiary)
@@ -931,10 +1307,10 @@ private struct TaskProjectRow: View {
                     Text("\(details.runCount) runs · \(details.messageCount) messages")
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Button(tasks.assessing.contains(task.id) ? "Reviewing…" : "Review latest report") {
-                        Task { await tasks.assess(details, config: store.config) }
+                    if assessment != nil {
+                        Label("Review is current", systemImage: "checkmark.circle")
+                            .font(.caption2).foregroundStyle(Brand.periwinkle)
                     }
-                    .disabled(tasks.assessing.contains(task.id))
                 }
                 Text("Job ID: \(task.sourceID ?? "legacy saved record")")
                     .font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
@@ -1015,7 +1391,7 @@ private struct TaskProjectRow: View {
                 }
                 if !details.lastMessage.isEmpty {
                     DisclosureGroup("Latest report") {
-                        Text(String(details.lastMessage.prefix(6000))).font(.caption).textSelection(.enabled)
+                        TaskReportContent(text: String(details.lastMessage.prefix(6_000)))
                         if details.lastMessage.count > 6000 {
                             Text("Report shortened here; open the thread in HeyClicky for the full text.")
                                 .font(.caption).foregroundStyle(.secondary)
@@ -1029,5 +1405,49 @@ private struct TaskProjectRow: View {
             Text("Saved metadata is not matched to a current HeyClicky job. It is kept for reference, not resumed automatically.")
                 .font(.caption).foregroundStyle(.secondary)
         }
+    }
+}
+
+private struct TaskControlPillStyle: ButtonStyle {
+    let selected: Bool
+    @State private var hovering = false
+    @Environment(\.isFocused) private var isFocused
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(BrandFont.inter(9.5, .semibold))
+            .foregroundStyle(selected ? Color.white : Color.white.opacity(0.82))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(selected ? Brand.navy : hovering ? Color.white.opacity(0.10) : Brand.card.opacity(0.7), in: Capsule())
+            .overlay(Capsule().strokeBorder(isFocused ? Color.white.opacity(0.95) : selected ? Brand.periwinkle.opacity(0.7) : Color.white.opacity(hovering ? 0.16 : 0.08), lineWidth: isFocused ? 2 : 1))
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.86 : 1)
+            .onHover { hovering = $0 }
+            .contentShape(Capsule())
+            .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+private struct TaskMenuPill: View {
+    let title: String
+    let icon: String
+    @State private var hovering = false
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon).font(.system(size: 9, weight: .semibold))
+            Text(title).font(BrandFont.inter(9.5, .semibold)).lineLimit(1)
+            Image(systemName: "chevron.down").font(.system(size: 7, weight: .bold)).foregroundStyle(.secondary)
+        }
+        .foregroundStyle(Color.white.opacity(0.88))
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity)
+        .background(hovering ? Color.white.opacity(0.10) : Brand.card.opacity(0.7), in: Capsule())
+        .overlay(Capsule().strokeBorder(isFocused ? Color.white.opacity(0.95) : Color.white.opacity(hovering ? 0.18 : 0.09), lineWidth: isFocused ? 2 : 1))
+        .contentShape(Capsule())
+        .onHover { hovering = $0 }
     }
 }

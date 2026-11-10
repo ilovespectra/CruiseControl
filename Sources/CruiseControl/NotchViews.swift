@@ -197,6 +197,7 @@ struct SettingsContent: View {
             }
             .pickerStyle(.segmented)
             selectedPage
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .onReceive(NotificationCenter.default.publisher(for: SettingsController.focusOllamaSettingsNotification)) { _ in
             selectedTab = 1
@@ -321,9 +322,7 @@ struct SettingsContent: View {
                 }
             }
         } else if selectedTab == 4 {
-            settingsPage {
-                TasksSettingsView(store: store, monitor: monitor)
-            }
+            TasksSettingsView(store: store, monitor: monitor)
         } else if selectedTab == 5 {
             settingsPage {
                 CacheManagerSettingsView(store: store, monitor: monitor)

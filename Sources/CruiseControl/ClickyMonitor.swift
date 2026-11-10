@@ -413,6 +413,103 @@ final class ClickyMonitor: ObservableObject {
         return true
     }
 
+    /// Sends the exact visible, user-approved draft to its unique task after refreshing and rechecking evidence.
+    /// Returns nil only after HeyClicky's transcript confirms delivery; otherwise returns a truthful blocked/pending status.
+    func sendReviewedTaskDraft(taskID: String, text: String, definition: String,
+                               reportFingerprint: String, missing: [String]) async -> String? {
+        let config = store.config
+        let source = ClickyTaskStore.shared
+        guard config.mode == .cruise, config.autoContinueReports, config.continueUntilDefinedDone,
+              config.ollamaEnabled, Ollama.isLocalServer(config), !config.usageCutoffReached else {
+            return "Send blocked: Cruise follow-up, local Ollama, or the global completion-review guard is off."
+        }
+        guard messageHistoryReadable, pendingMessage == nil, source.canPersist else {
+            return "Send blocked: a saved delivery is pending or task history cannot be safely updated."
+        }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= 8_000 else {
+            return "Send blocked: the draft is empty or exceeds the safe message length."
+        }
+        let requestedAt = Date()
+        await source.refresh(measure: false)
+        guard let loadedAt = source.loadedAt, loadedAt >= requestedAt, source.loadError == nil,
+              let task = source.task(taskID), task.fingerprint == reportFingerprint,
+              DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[taskID]) == DefinitionOfDone.normalized(definition),
+              !task.isWorking, !task.isStopped, !task.dismissed, task.hasReport,
+              !TaskAudit.requiresUser(task.lastMessage),
+              !ClickyTaskLibrary.ambiguousNames(source.tasks).contains(Matcher.normalize(task.name)),
+              !taskRecovery.isStopped(task: task.name),
+              let assessment = source.currentAssessment(for: task, definition: definition),
+              assessment.meetsDefinition == false, !assessment.missing.isEmpty,
+              assessment.missing == missing, [.unfinished, .failed].contains(assessment.state) else {
+            return "Send blocked: the task, report, criteria, review, or user-decision status changed. Review again."
+        }
+        let maxRounds = min(max(1, config.maxDefinitionRounds), DefinitionOfDone.maxRounds)
+        let previousProgress = source.record(taskID).progress
+        let rounds = source.rounds(for: task, definition: definition)
+        guard rounds < maxRounds, !DefinitionOfDone.hasNoProgress(assessment, progress: previousProgress),
+              previousProgress.lastFingerprint != task.fingerprint else {
+            return "Send blocked: this report was already followed up, its gaps repeated, or the round limit was reached."
+        }
+        var nextGate = gate
+        var nextLimiter = nudgeLimiter
+        guard nextGate.canContinue(now: Date(), limits: ReportGate.Limits(config: config)),
+              nextLimiter.allow(task: task.name, now: Date(), maxPerHour: config.maxNudgesPerTaskPerHour) else {
+            return "Send blocked: Cruise's hourly or interval limit is active. Try again after it clears."
+        }
+
+        guard source.recordFollowUp(task, definition: definition, missing: missing) else {
+            return "Send blocked: Cruise couldn't safely save the follow-up receipt before delivery."
+        }
+        let target = PendingMessage.CompletionTarget(taskID: taskID, definition: definition,
+                                                     reportFingerprint: reportFingerprint, oneShot: true)
+        guard let chat = await revealChat(config: config),
+              let selected = await selectTask(task.name, from: chat, config: config, unique: true),
+              let composer = selected.composer, recoveryAllowed(selected),
+              ![selected.selectedStatus, selected.latestTurnStatus].compactMap({ $0 }).contains(where: StallTracker.isBusy) else {
+            _ = source.restoreProgress(previousProgress, for: taskID)
+            return "Send blocked: HeyClicky couldn't verify the exact task and an idle composer. Nothing was sent."
+        }
+        let finalRead = Date()
+        await source.refresh(measure: false)
+        guard let finalLoadedAt = source.loadedAt, finalLoadedAt >= finalRead, source.loadError == nil,
+              let latest = source.task(taskID), latest.fingerprint == reportFingerprint,
+              DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[taskID]) == DefinitionOfDone.normalized(definition),
+              !latest.isWorking, !latest.isStopped, !latest.dismissed,
+              !TaskAudit.requiresUser(latest.lastMessage),
+              !ClickyTaskLibrary.ambiguousNames(source.tasks).contains(Matcher.normalize(latest.name)),
+              completionTargetMatches(target),
+              source.currentAssessment(for: latest, definition: definition) == assessment else {
+            _ = source.restoreProgress(previousProgress, for: taskID)
+            return "Send blocked: the task changed while HeyClicky was being opened. Nothing was sent."
+        }
+        guard await Worker.run({ AX.stringValue(composer.input) == "" }) else {
+            _ = source.restoreProgress(previousProgress, for: taskID)
+            return "Send blocked: the HeyClicky composer already contains a draft; it was left untouched."
+        }
+        let sendAt = Date()
+        nextGate.recordContinue(at: sendAt)
+        nextLimiter.record(task: task.name, at: sendAt)
+        let previousGate = gate
+        let previousLimiter = nudgeLimiter
+        gate = nextGate
+        nudgeLimiter = nextLimiter
+        saveBudget()
+        let confirmed = await send(text, via: composer, task: task.name, completionTarget: target)
+        if confirmed {
+            stats.continued += 1
+            record("user-approved reviewed follow-up confirmed in ‘\(task.name)’")
+            return nil
+        }
+        if let pendingMessage, pendingMessage.completionTarget?.taskID == taskID, pendingMessage.text == text {
+            return pendingMessage.holdReason ?? "Saved for a bounded retry; delivery is not yet confirmed."
+        }
+        gate = previousGate
+        nudgeLimiter = previousLimiter
+        saveBudget()
+        _ = source.restoreProgress(previousProgress, for: taskID)
+        return "Send not confirmed. The draft was not reported as sent; review the HeyClicky task before retrying."
+    }
+
     /// Queues a one-shot report check. Sending waits for Cruise's normal quiet-time and task-safety gates.
     func bumpTaskNow(_ taskID: String) {
         let config = store.config
