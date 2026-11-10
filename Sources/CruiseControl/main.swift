@@ -1,6 +1,59 @@
 import AppKit
 import CruiseCore
 
+if let index = CommandLine.arguments.firstIndex(of: "--infer-task-project") {
+    MainActor.assumeIsolated {
+        Task { @MainActor in
+            do {
+                guard CommandLine.arguments.count == index + 2 else {
+                    throw NSError(domain: "CruiseControl", code: 1, userInfo: [
+                        NSLocalizedDescriptionKey: "Specify exactly one stable HeyClicky job ID.",
+                    ])
+                }
+                let id = CommandLine.arguments[index + 1]
+                let root = FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent("Library/Application Support/CruiseControl")
+                let configURL = root.appendingPathComponent("config.json")
+                let config = FileManager.default.fileExists(atPath: configURL.path)
+                    ? try JSONDecoder().decode(Config.self, from: Data(contentsOf: configURL)) : Config()
+                let tasks = try ClickyTaskLibrary.load(jobsData: ClickyTaskStore.readJobsData())
+                guard let task = tasks.first(where: { $0.id == id }) else {
+                    throw NSError(domain: "CruiseControl", code: 2, userInfo: [
+                        NSLocalizedDescriptionKey: "No HeyClicky job has that ID.",
+                    ])
+                }
+                let catalogURL = root.appendingPathComponent("task-catalog.json")
+                let catalog = FileManager.default.fileExists(atPath: catalogURL.path)
+                    ? try JSONDecoder().decode(TaskCatalog.self, from: Data(contentsOf: catalogURL)) : TaskCatalog()
+                let known = catalog.groups(by: .project, sort: .name).filter { $0.id != "unassigned" }.map(\.project)
+                let (project, model, answer) = try await Ollama.inferProject(task, known: known, config: config)
+                print("Task: \(task.name) (\(task.id))")
+                print("Exact thread joins: \(task.threadIDs.count); cache references: \(task.threadReferences.count)")
+                for id in task.threadIDs {
+                    let refs = task.threadReferences.filter { $0.threadID == id }
+                    print("  \(id): \(refs.count) excerpts; \(Set(refs.map(\.source)).count) source locations")
+                }
+                task.evidenceErrors.forEach { print("Cache warning: \($0)") }
+                print("Project: \(project?.title ?? "Unspecified"); model: \(model)")
+                print("Model proposal: \(answer.name) | \(answer.repository); confidence: \(answer.confidence)")
+                print("Supporting quote: \(answer.evidence)")
+                print("Literal quote found: \(ProjectInference.evidence(for: task).contains(answer.evidence)); matching known labels: "
+                    + known.filter {
+                        Matcher.normalize($0.title ?? "").filter { $0.isLetter || $0.isNumber }
+                            == Matcher.normalize(answer.name).filter { $0.isLetter || $0.isNumber }
+                    }.map { "\($0.title ?? "") [\($0.repositoryName ?? "no repository")]" }.joined(separator: ", "))
+                print("Read-only local inference; no assignments, goals or chats changed. No message sent.")
+                exit(0)
+            } catch {
+                fputs("Project inference failed: \(error.localizedDescription)\n", stderr)
+                exit(1)
+            }
+        }
+        NSApplication.shared.setActivationPolicy(.accessory)
+        NSApplication.shared.run()
+    }
+}
+
 if CommandLine.arguments.contains("--inspect-vscode") {
     VSCodeScanner(config: Config()).diagnosticTree().forEach { print($0) }
     exit(0)
@@ -40,6 +93,24 @@ if let index = CommandLine.arguments.firstIndex(of: "--approve-vscode-sidebar") 
                 && pointer == CGEvent(source: nil)?.location
             print("Approval verified: \(approved); selected chat, foreground app and pointer unchanged: \(unchanged)")
             exit(approved && unchanged ? 0 : 1)
+        }
+        NSApplication.shared.setActivationPolicy(.accessory)
+        NSApplication.shared.run()
+    }
+}
+
+if let index = CommandLine.arguments.firstIndex(of: "--verify-clicky-delivery") {
+    MainActor.assumeIsolated {
+        Task { @MainActor in
+            let task = CommandLine.arguments.dropFirst(index + 1).joined(separator: " ")
+            guard !task.isEmpty else {
+                fputs("Specify the HeyClicky task for the receipt-only test.\n", stderr)
+                exit(1)
+            }
+            let monitor = ClickyMonitor(store: ConfigStore())
+            let delivered = await monitor.verifyMessageDelivery(task: task)
+            monitor.log.reversed().forEach { print($0.text) }
+            exit(delivered ? 0 : 1)
         }
         NSApplication.shared.setActivationPolicy(.accessory)
         NSApplication.shared.run()
@@ -109,6 +180,66 @@ if let index = CommandLine.arguments.firstIndex(of: "--inspect-clicky-task") {
                 fputs("Task inspection failed: \(error.localizedDescription)\n", stderr)
                 exit(1)
             }
+        }
+        NSApplication.shared.run()
+    }
+}
+
+if let index = CommandLine.arguments.firstIndex(of: "--clicky-tasks") {
+    // Diagnostic: print the Clicky agent task list. `--sort <newest|recentlyUpdated|oldest|longestThread|largestCache|name>`,
+    // `--sizes` measures cache sizes, `--assess N` reads the first N tasks with Ollama. Never sends anything.
+    MainActor.assumeIsolated {
+        Task { @MainActor in
+            let args = Array(CommandLine.arguments.dropFirst(index + 1))
+            func value(_ flag: String) -> String? { args.firstIndex(of: flag).flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil } }
+            var config = Config()
+            if let data = try? Data(contentsOf: FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support/CruiseControl/config.json")),
+               let saved = try? JSONDecoder().decode(Config.self, from: data) { config = saved }
+            let store = ClickyTaskStore.shared
+            await store.refresh(measure: false)
+            if let error = store.loadError { fputs("\(error)\n", stderr); exit(1) }
+            if let error = store.persistenceError { fputs("warning: \(error)\n", stderr) }
+            if args.contains("--sizes") {
+                await store.refresh(measure: true, maxSizeAge: 0)
+                while store.measuring { try? await Task.sleep(nanoseconds: 200_000_000) }
+            }
+            if let job = value("--job"), let definition = value("--definition") {
+                config.clickyDefinitionsOfDone[job] = definition
+            }
+            let sort = value("--sort").flatMap(ClickyTaskSort.init(rawValue:)) ?? .newest
+            let jobFilter = value("--job")
+            let tasks = ClickyTaskLibrary.sorted(store.tasks.filter { task in
+                (!task.dismissed || args.contains("--all")) && (jobFilter.map { [task.id, task.name].contains($0) } ?? true)
+            }, by: sort)
+            let assessCount = Int(value("--assess") ?? "") ?? 0
+            let bytes = ByteCountFormatter()
+            print("\(tasks.count) tasks · sorted by \(sort.title)")
+            for (offset, task) in tasks.prefix(Int(value("--limit") ?? "") ?? tasks.count).enumerated() {
+                let definition = config.clickyDefinitionsOfDone[task.id]
+                var assessment = store.currentAssessment(for: task, definition: definition)
+                if offset < assessCount { assessment = await store.assess(task, config: config) }
+                print("""
+                — \(task.name) [\(task.outcome)] job \(task.id)\(task.title.isEmpty ? "" : " · \(task.title)")
+                  created \(task.createdAt?.formatted() ?? "?") · updated \(task.updatedAt?.formatted() ?? "?") · \(task.runCount) runs · \(task.messageCount) messages · cache \(task.cacheBytes.map(bytes.string) ?? "?") + job folder \(task.folderBytes.map(bytes.string) ?? "?")
+                  last: \(task.lastMessage.replacingOccurrences(of: "\n", with: " ").prefix(220))
+                """)
+                if let error = store.measureErrors[task.id] { print("  size error: \(error)") }
+                if let definition { print("  definition of done: \(definition)") }
+                if let assessment {
+                    print("  assumed: \(assessment.state.title) via \(assessment.source) — \(assessment.reason)"
+                          + (assessment.meetsDefinition.map { " · meets definition: \($0)" } ?? "")
+                          + (assessment.missing.isEmpty ? "" : " · missing: \(assessment.missing.joined(separator: "; "))"))
+                    if DefinitionOfDone.shouldContinue(task, definition: definition, assessment: assessment,
+                                                       progress: store.record(task.id).progress, maxRounds: config.maxDefinitionRounds),
+                       let definition {
+                        print("  would send (not sent):\n" + DefinitionOfDone.followUp(task: task, definition: definition, missing: assessment.missing,
+                            round: store.rounds(for: task, definition: definition) + 1, maxRounds: config.maxDefinitionRounds)
+                            .split(separator: "\n").map { "    \($0)" }.joined(separator: "\n"))
+                    }
+                }
+            }
+            exit(0)
         }
         NSApplication.shared.run()
     }
@@ -221,7 +352,10 @@ if CommandLine.arguments.contains("--scan") {
     print("Interrupted cards: \(result.interrupted.isEmpty ? "none (only shown while the notch is hovered)" : result.interrupted.map { "“\($0.task)”\($0.retry != nil ? " (retry ✓)" : "")" }.joined(separator: ", "))")
     print("VS Code confirmation: \(VSCodeScanner(config: Config()).scan().map { "“\($0.allowLabel)” for \($0.request.prefix(160))" } ?? "none")")
     print("Chat transcript lines: \(result.transcript.count)")
-    if CommandLine.arguments.contains("--verbose") { result.transcript.suffix(60).forEach { print("  > \($0.prefix(220))") } }
+    if CommandLine.arguments.contains("--verbose") {
+        print("Sidebar rows: " + result.chatButtons.compactMap { TaskRow.parse($0.label) }.map { "\($0.name) [\($0.status)]" }.joined(separator: " · "))
+        result.transcript.suffix(60).forEach { print("  > \($0.prefix(220))") }
+    }
     exit(0)
 }
 

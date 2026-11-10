@@ -7,6 +7,8 @@ final class SettingsController {
     static let openNotification = Notification.Name("CruiseControl.openSettings")
     static let openOllamaNotification = Notification.Name("CruiseControl.openOllamaSettings")
     static let focusOllamaSettingsNotification = Notification.Name("CruiseControl.focusOllamaSettings")
+    static let openTasksNotification = Notification.Name("CruiseControl.openTasksSettings")
+    static let focusTasksNotification = Notification.Name("CruiseControl.focusTasksSettings")
     private let window: NSWindow
     private let store: ConfigStore
     private var cancellables: Set<AnyCancellable> = []
@@ -33,11 +35,22 @@ final class SettingsController {
         DistributedNotificationCenter.default().publisher(for: Self.openOllamaNotification)
             .sink { [weak self] _ in self?.showOllamaSettings() }
             .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: Self.openTasksNotification)
+            .sink { [weak self] _ in self?.showTasksSettings() }
+            .store(in: &cancellables)
+        DistributedNotificationCenter.default().publisher(for: Self.openTasksNotification)
+            .sink { [weak self] _ in self?.showTasksSettings() }
+            .store(in: &cancellables)
     }
 
     private func showOllamaSettings() {
         show()
         NotificationCenter.default.post(name: Self.focusOllamaSettingsNotification, object: nil)
+    }
+
+    private func showTasksSettings() {
+        show()
+        NotificationCenter.default.post(name: Self.focusTasksNotification, object: nil)
     }
 
     func show() {

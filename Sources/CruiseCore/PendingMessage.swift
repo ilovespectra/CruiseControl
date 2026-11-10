@@ -8,16 +8,56 @@ public struct PendingMessage: Codable, Equatable {
     public var createdAt = Date()
     public var submissionAttempted = false
     public private(set) var holdReason: String?
+    public var completionTarget: CompletionTarget?
+    public var chatOnly: Bool?
+
+    public struct CompletionTarget: Codable, Equatable, Sendable {
+        public let taskID: String
+        public let definition: String
+        public let reportFingerprint: String?
+        /// Explicit user-requested one-shot bump; absent/false requires the task's persistent Auto-bump opt-in.
+        public let oneShot: Bool?
+
+        public init(taskID: String, definition: String, reportFingerprint: String? = nil, oneShot: Bool = false) {
+            self.taskID = taskID
+            self.definition = definition
+            self.reportFingerprint = reportFingerprint
+            self.oneShot = oneShot
+        }
+
+        public func matches(definition current: String?, enabled: Bool) -> Bool {
+            enabled && DefinitionOfDone.normalized(definition) != nil
+                && DefinitionOfDone.normalized(definition) == DefinitionOfDone.normalized(current)
+        }
+    }
 
     /// Old messages require review; they remain on disk until delivered or explicitly discarded.
     public static let maxAge: TimeInterval = 30 * 60
     private static let contextLength = 24
 
-    public init(task: String, text: String, transcript: [String], createdAt: Date = Date()) {
+    public init(task: String, text: String, transcript: [String], createdAt: Date = Date(), completionTarget: CompletionTarget? = nil,
+                chatOnly: Bool? = nil) {
         self.task = task
         self.text = text
         self.transcript = transcript
         self.createdAt = createdAt
+        self.completionTarget = completionTarget
+        self.chatOnly = chatOnly
+    }
+
+    public func automationAllowed(config: Config) -> Bool {
+        guard !config.usageCutoffReached else { return false }
+        if chatOnly != true {
+            guard config.mode != .manual, config.autoContinueReports else { return false }
+            guard let target = completionTarget else { return true }
+            return target.matches(definition: config.clickyDefinitionsOfDone[target.taskID],
+                                  enabled: config.continueUntilDefinedDone)
+                && (target.oneShot == true || config.taskPlans[target.taskID]?.autoBump == true)
+        }
+        guard let target = completionTarget, target.reportFingerprint != nil else { return false }
+        return config.backgroundTaskReview && config.backgroundTaskDelivery == .chatOnly && config.ollamaEnabled
+            && config.taskPlans[target.taskID]?.enabled == true
+            && target.matches(definition: config.clickyDefinitionsOfDone[target.taskID], enabled: true)
     }
 
     public enum Delivery {

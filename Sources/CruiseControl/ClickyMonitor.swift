@@ -20,6 +20,19 @@ final class ClickyMonitor: ObservableObject {
     @Published private(set) var log: [LogLine] = []
     @Published private(set) var lastActionAt: Date?
     @Published private(set) var vscodeStatus = "Waiting for a VS Code request."
+    @Published private(set) var taskCatalog = TaskCatalog()
+    @Published private(set) var taskCatalogError: String?
+    @Published private(set) var projectInferenceStatus = "Projects are inferred locally from conversation evidence."
+    @Published private(set) var backgroundTaskStatus = TaskPlanning.deliveryHold
+    @Published private(set) var bumpingTaskIDs: Set<String> = []
+    private var queuedManualBumpIDs: Set<String> = []
+    private var inferringProjects = false
+    private var backgroundReviewBusy = false
+    private var lastBackgroundReviewAt = Date.distantPast
+    private let taskCatalogURL = ConfigStore.directory.appendingPathComponent("task-catalog.json")
+    private var taskCatalogReadable = true
+    private var taskCatalogRefreshing = false
+    private var lastTaskCatalogRefreshAt = Date.distantPast
 
     /// Hides Cruise Control's own notch panel while synthetic mouse clicks happen.
     var setOverlayHidden: ((Bool) -> Void)?
@@ -92,6 +105,7 @@ final class ClickyMonitor: ObservableObject {
     private var usageScanBusy = false
     private var lastUsageScanAt = Date.distantPast
     private var lastTaskAuditAt = Date.distantPast
+    private var lastDefinitionCheckAt = Date.distantPast
     private var taskAuditStates: [String: ChatBump.State] = [:]
     private let taskAuditURL = ConfigStore.directory.appendingPathComponent("clicky-task-audits.json")
     private var taskRecovery = TaskRecovery()
@@ -128,6 +142,16 @@ final class ClickyMonitor: ObservableObject {
             loadingStats = false
         }
         saveStats()
+        if FileManager.default.fileExists(atPath: taskCatalogURL.path) {
+            do {
+                taskCatalog = try JSONDecoder().decode(TaskCatalog.self, from: Data(contentsOf: taskCatalogURL))
+            } catch {
+                taskCatalogReadable = false
+                let message = "Couldn't load the saved task catalog: \(error.localizedDescription). The file will not be overwritten."
+                taskCatalogError = message
+                record(message)
+            }
+        }
         if FileManager.default.fileExists(atPath: pendingMessageURL.path) {
             do {
                 pendingMessage = try JSONDecoder().decode(PendingMessage.self, from: Data(contentsOf: pendingMessageURL))
@@ -183,6 +207,263 @@ final class ClickyMonitor: ObservableObject {
 
     var logFileURL: URL { logURL }
 
+    func refreshTaskCatalog() async {
+        guard !taskCatalogRefreshing else { return }
+        taskCatalogRefreshing = true
+        lastTaskCatalogRefreshAt = Date()
+        defer { taskCatalogRefreshing = false }
+        let source = ClickyTaskStore.shared
+        await source.refresh(measure: false)
+        if let error = source.loadError {
+            taskCatalogError = error
+            return
+        }
+        guard source.loadedAt != nil else { return }
+        updateTaskCatalog(source.tasks)
+        if !inferringProjects {
+            Task { await inferTaskProjects() }
+        }
+    }
+
+    func inferTaskProjects() async {
+        guard !inferringProjects, store.config.inferTaskProjects, store.config.ollamaEnabled, taskCatalogReadable else { return }
+        inferringProjects = true
+        defer { inferringProjects = false }
+        let source = ClickyTaskStore.shared
+        let candidates = source.tasks.filter { task in
+            guard let saved = taskCatalog.tasks.first(where: { $0.id == task.id }) else { return false }
+            return !saved.projectAssigned
+                && (saved.inferredBy == nil || saved.inferenceFingerprint != ProjectInference.fingerprint(for: task))
+        }
+        for (index, task) in candidates.enumerated() {
+            guard store.config.inferTaskProjects, store.config.ollamaEnabled else { break }
+            projectInferenceStatus = "Reviewing task projects locally: \(index + 1) / \(candidates.count)…"
+            let known = taskCatalog.groups(by: .project, sort: .name).filter { $0.id != "unassigned" }.map(\.project)
+            do {
+                let (project, model, _) = try await Ollama.inferProject(task, known: known, config: store.config)
+                guard store.config.inferTaskProjects, store.config.ollamaEnabled,
+                      let latest = source.task(task.id),
+                      ProjectInference.fingerprint(for: latest) == ProjectInference.fingerprint(for: task) else { continue }
+                var catalog = taskCatalog
+                catalog.infer(project, for: task.id, fingerprint: ProjectInference.fingerprint(for: task), model: model)
+                saveTaskCatalog(catalog)
+                if taskCatalogError != nil { return }
+            } catch {
+                projectInferenceStatus = "Project review paused: \(error.localizedDescription). Existing assignments are unchanged; uncertain tasks remain unspecified."
+                record(projectInferenceStatus)
+                return
+            }
+        }
+        projectInferenceStatus = "Project review complete. Only high-confidence, evidence-backed matches are grouped; other tasks remain unspecified."
+    }
+
+    func resetProject(for task: String) {
+        var catalog = taskCatalog
+        catalog.resetProject(for: task)
+        saveTaskCatalog(catalog)
+        Task { await inferTaskProjects() }
+    }
+
+    private func reviewBackgroundTasks() async {
+        guard !backgroundReviewBusy, store.config.backgroundTaskReview else { return }
+        backgroundReviewBusy = true
+        lastBackgroundReviewAt = Date()
+        defer { backgroundReviewBusy = false }
+        let source = ClickyTaskStore.shared
+        guard source.canPersist else {
+            backgroundTaskStatus = source.persistenceError ?? "Background review paused: saved task state is unreadable."
+            return
+        }
+        let requested = Date()
+        await source.refresh()
+        guard source.loadError == nil, let loaded = source.loadedAt, loaded >= requested else {
+            backgroundTaskStatus = source.loadError ?? "Background review is waiting for a fresh local task read."
+            return
+        }
+        guard store.config.ollamaEnabled, Ollama.isLocalServer(store.config) else {
+            backgroundTaskStatus = "Background review paused: enable a local Ollama server."
+            return
+        }
+        // Review only saves drafts. Chat-only delivery is separately opted in and serialized by cycle().
+        let candidates = TaskPlanning.ranked(source.tasks, catalog: taskCatalog, config: store.config).filter { task in
+            if let assessment = source.currentAssessment(for: task, definition: store.config.clickyDefinitionsOfDone[task.id]),
+               assessment.source.hasPrefix("ollama"),
+               assessment.meetsDefinition != false || assessment.state == .unknown { return false }
+            let reply = source.record(task.id).backgroundReply
+            return reply?.fingerprint != task.fingerprint
+                || reply?.definition != DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id])
+        }
+        for task in candidates.prefix(3) {
+            let config = store.config
+            guard let definition = DefinitionOfDone.normalized(config.clickyDefinitionsOfDone[task.id]) else { continue }
+            if let reply = source.record(task.id).backgroundReply,
+               reply.fingerprint == task.fingerprint, reply.definition == definition { continue }
+            backgroundTaskStatus = "Reviewing “\(task.name)” with local Ollama…"
+            let assessment = await source.assess(task, config: config, localOnly: true)
+            guard assessment.source.hasPrefix("ollama") else {
+                backgroundTaskStatus = "Background review paused for “\(task.name)”: \(assessment.reason)"
+                record(backgroundTaskStatus)
+                return
+            }
+            let recheck = Date()
+            await source.refresh()
+            guard source.loadError == nil, let read = source.loadedAt, read >= recheck,
+                  let latest = source.task(task.id), latest.fingerprint == task.fingerprint,
+                  TaskPlanning.eligible(latest, config: store.config),
+                  DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id]) == definition else { continue }
+            guard assessment.state != .unknown,
+                  DefinitionOfDone.shouldContinue(task, definition: definition, assessment: assessment,
+                                                  progress: source.record(task.id).progress,
+                                                  maxRounds: config.maxDefinitionRounds),
+                  !TaskAudit.requiresUser(definition + "\n" + assessment.missing.joined(separator: "\n")) else { continue }
+            let text = DefinitionOfDone.followUp(task: task, definition: definition, missing: assessment.missing,
+                                                 round: source.rounds(for: task, definition: definition) + 1,
+                                                 maxRounds: config.maxDefinitionRounds)
+                + "\nWork only without screen control. Do not approve permissions, tool grants or drive requests. If blocked by one, stop and report the blocker."
+            guard source.saveBackgroundReply(text, for: task, definition: definition) else {
+                backgroundTaskStatus = source.loadError ?? "Couldn't save the background reply; nothing sent."
+                return
+            }
+        }
+        backgroundTaskStatus = store.config.backgroundTaskDelivery == .chatOnly ? TaskPlanning.chatOnlyStatus : TaskPlanning.deliveryHold
+    }
+
+    private func deliverBackgroundReply(config: Config) async -> Bool {
+        guard config.backgroundTaskReview, config.backgroundTaskDelivery == .chatOnly,
+              !backgroundReviewBusy, pendingMessage == nil, messageHistoryReadable,
+              Self.idleSeconds() >= config.awayIdleSeconds else { return false }
+        let source = ClickyTaskStore.shared
+        let requested = Date()
+        await source.refresh()
+        guard source.canPersist, source.loadError == nil, let read = source.loadedAt, read >= requested else { return false }
+        let ambiguous = ClickyTaskLibrary.ambiguousNames(source.tasks)
+        let candidate = TaskPlanning.ranked(source.tasks, catalog: taskCatalog, config: store.config).first { task in
+            guard !ambiguous.contains(Matcher.normalize(task.name)),
+                  !taskRecovery.isStopped(task: task.name),
+                  let reply = source.record(task.id).backgroundReply else { return false }
+            let progress = source.record(task.id).progress
+            return reply.deliveredAt == nil && reply.fingerprint == task.fingerprint
+                && reply.definition == DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id])
+                && source.rounds(for: task, definition: reply.definition) < config.maxDefinitionRounds
+                && !(progress.lastFingerprint == task.fingerprint
+                     && DefinitionOfDone.normalized(progress.definition) == reply.definition)
+        }
+        guard let task = candidate, let reply = source.record(task.id).backgroundReply else { return false }
+        guard store.config.backgroundTaskDelivery == .chatOnly,
+              TaskPlanning.eligible(task, config: store.config),
+              Self.idleSeconds() >= store.config.awayIdleSeconds else { return false }
+        let limits = ReportGate.Limits(config: config)
+        guard gate.canContinue(now: Date(), limits: limits),
+              nudgeLimiter.allow(task: task.name, now: Date(), maxPerHour: config.maxNudgesPerTaskPerHour) else { return false }
+        let interaction = InputSynth.UserInteractionWatch()
+        defer { interaction.stop() }
+        let previousApp = NSWorkspace.shared.frontmostApplication
+        let original = await Worker.run { ClickyScanner(config: config).scan() }
+        if let composer = original.composer {
+            guard await Worker.run({ AX.stringValue(composer.input) == "" }) else {
+                backgroundTaskStatus = "Chat-only delivery is waiting: HeyClicky already contains a draft."
+                return false
+            }
+        }
+        guard let chat = await revealChat(config: config), !interaction.interrupted,
+              let selected = await selectTask(task.name, from: chat, config: config, unique: true),
+              let composer = selected.composer else { return true }
+        let recheck = Date()
+        await source.refresh()
+        guard !interaction.interrupted, source.loadError == nil,
+              let refreshed = source.loadedAt, refreshed >= recheck,
+              let latest = source.task(task.id), latest.fingerprint == reply.fingerprint,
+              TaskPlanning.eligible(latest, config: store.config),
+              store.config.backgroundTaskDelivery == .chatOnly,
+              !ClickyTaskLibrary.ambiguousNames(source.tasks).contains(Matcher.normalize(task.name)),
+              DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id]) == reply.definition else {
+            record("chat-only delivery paused: task, goal, opt-in or input changed while opening the chat")
+            return true
+        }
+        let previousProgress = source.record(task.id).progress
+        guard source.recordFollowUp(latest, definition: reply.definition) else {
+            backgroundTaskStatus = source.loadError ?? "Couldn't reserve a durable chat-only follow-up round."
+            return true
+        }
+        let previousGate = gate
+        let previousLimiter = nudgeLimiter
+        gate.recordContinue(at: Date())
+        nudgeLimiter.record(task: task.name, at: Date())
+        saveBudget()
+        let target = PendingMessage.CompletionTarget(taskID: task.id, definition: reply.definition, reportFingerprint: reply.fingerprint)
+        let delivered = await send(reply.text, via: composer, task: task.name, completionTarget: target, chatOnly: true)
+        if delivered {
+            stats.continued += 1
+            backgroundTaskStatus = "Chat-only reply confirmed in “\(task.name)”."
+            record(backgroundTaskStatus)
+        } else if pendingMessage == nil {
+            gate = previousGate
+            nudgeLimiter = previousLimiter
+            saveBudget()
+            if !source.restoreProgress(previousProgress, for: task.id) {
+                record("chat-only round rollback failed: \(source.loadError ?? "saved state is unreadable")")
+            }
+            backgroundTaskStatus = "Chat-only reply was not sent; draft remains saved."
+        } else {
+            backgroundTaskStatus = "Chat-only reply saved for delivery verification or retry."
+        }
+        if pendingMessage == nil, !interaction.interrupted {
+            previousApp?.activate()
+        }
+        return true
+    }
+
+    /// Queues a one-shot report check. Sending waits for Cruise's normal quiet-time and task-safety gates.
+    func bumpTaskNow(_ taskID: String) {
+        let config = store.config
+        guard !queuedManualBumpIDs.contains(taskID), !bumpingTaskIDs.contains(taskID) else { return }
+        let source = ClickyTaskStore.shared
+        guard let task = source.task(taskID),
+              TaskPlanning.manualBumpAvailable(task, allTasks: source.tasks, config: config) else {
+            record("bump not queued: add a current report and saved definition, use Cruise mode with local Ollama, and resolve any user decision or duplicate task name")
+            return
+        }
+        queuedManualBumpIDs.insert(taskID)
+        bumpingTaskIDs.insert(taskID)
+        lastDefinitionCheckAt = .distantPast
+        backgroundTaskStatus = "One-time bump queued for “\(task.name)”; it waits for quiet input and a current safe report."
+        record("one-time bump queued for “\(task.name)” — no message sent yet")
+    }
+
+    func assignProject(_ project: TaskProject, to task: String) {
+        var catalog = taskCatalog
+        catalog.assign(project, to: task)
+        saveTaskCatalog(catalog)
+    }
+
+    func updateTaskCatalog(_ tasks: [ClickyAgentTask]) {
+        guard taskCatalogReadable else { return }
+        var catalog = taskCatalog
+        do {
+            try catalog.synchronize(tasks)
+        } catch {
+            let message = "Couldn't update task projects: \(error.localizedDescription)"
+            if taskCatalogError != message { record(message) }
+            taskCatalogError = message
+            return
+        }
+        if catalog != taskCatalog { saveTaskCatalog(catalog) }
+        else { taskCatalogError = nil }
+    }
+
+    private func saveTaskCatalog(_ catalog: TaskCatalog) {
+        guard taskCatalogReadable else { return }
+        do {
+            try JSONEncoder().encode(catalog).write(to: taskCatalogURL, options: .atomic)
+            taskCatalog = catalog
+            taskCatalogError = nil
+        } catch {
+            let message = "Couldn't save the task catalog: \(error.localizedDescription)"
+            if taskCatalogError != message { record(message) }
+            taskCatalogError = message
+        }
+    }
+
     func start() {
         record("cruise control started in \(store.config.mode.title) mode")
         refreshClickyRunning()
@@ -219,6 +500,9 @@ final class ClickyMonitor: ObservableObject {
         axTrusted = AXIsProcessTrusted()
         screenTrusted = CGPreflightScreenCaptureAccess()
         refreshClickyRunning()
+        if !taskCatalogRefreshing, Date().timeIntervalSince(lastTaskCatalogRefreshAt) >= 60 {
+            Task { await refreshTaskCatalog() }
+        }
         if axTrusted, !usageScanBusy, Date().timeIntervalSince(lastUsageScanAt) >= 5 {
             lastUsageScanAt = Date()
             usageScanBusy = true
@@ -228,6 +512,10 @@ final class ClickyMonitor: ObservableObject {
             }
         }
         guard !enforceUsageGuard() else { return }
+        if store.config.backgroundTaskReview, !backgroundReviewBusy,
+           Date().timeIntervalSince(lastBackgroundReviewAt) >= 60 {
+            Task { await reviewBackgroundTasks() }
+        }
         checkAppcastIfDue()
         relaunchClickyIfStuck()
         tickVSCode()
@@ -296,6 +584,11 @@ final class ClickyMonitor: ObservableObject {
 
     private func cycle() async {
         let config = store.config
+        if pendingMessage?.chatOnly == true {
+            await retryPendingMessage(config: config)
+            return
+        }
+        if await deliverBackgroundReply(config: config) { return }
         if config.autoContinueReports && !autoContinueReportsEnabled {
             lastInterruptedProbeAt = .distantPast
             lastNotchInspectionAt = .distantPast
@@ -353,6 +646,8 @@ final class ClickyMonitor: ObservableObject {
         if await handleMainChatTapOut(result, config: config) { return }
         guard pendingMessage == nil else { return }
         if await auditOtherClickyTasks(config: config) { return }
+        guard pendingMessage == nil else { return }
+        if await continueToDefinitionOfDone(config: config) { return }
         guard pendingMessage == nil else { return }
         await handleReports(result, config: config)
         guard pendingMessage == nil else { return }
@@ -624,13 +919,12 @@ final class ClickyMonitor: ObservableObject {
         return await waitForComposer(config: config)
     }
 
-    private func selectTask(_ task: String, from chat: ScanResult, config: Config) async -> ScanResult? {
+    private func selectTask(_ task: String, from chat: ScanResult, config: Config, unique: Bool = false) async -> ScanResult? {
         if Self.chatName(chat).map({ Matcher.normalize($0) == Matcher.normalize(task) }) == true { return chat }
-        guard
-            let row = chat.chatButtons.first(where: {
+        let matches = chat.chatButtons.filter {
                 Matcher.normalize($0.label) == Matcher.normalize(task) || Matcher.isTaskRow($0.label, title: task)
-            })
-        else {
+        }
+        guard let row = matches.first, !unique || matches.count == 1 else {
             record("couldn't find HeyClicky task “\(task)” — leaving other chats alone")
             return nil
         }
@@ -804,6 +1098,202 @@ final class ClickyMonitor: ObservableObject {
                 }
             } catch {
                 record("task audit failed for “\(task)”: \(error.localizedDescription)")
+            }
+        }
+        if let task = original.selectedTask {
+            let scan = await Worker.run { ClickyScanner(config: config).scan() }
+            _ = await selectTask(task, from: scan, config: config)
+        }
+        if pendingMessage == nil, let previousApp, previousApp.bundleIdentifier.map({ !config.clickyBundleIDs.contains($0) }) ?? true {
+            previousApp.activate()
+        }
+        return sent
+    }
+
+    /// Tasks with a user-written definition of done keep going until HeyClicky's latest report meets it. Each report is
+    /// read once (Ollama, or rules as a fallback) and earns at most one follow-up, up to `maxDefinitionRounds`.
+    private func continueToDefinitionOfDone(config: Config) async -> Bool {
+        let now = Date()
+        guard config.continueUntilDefinedDone, !config.clickyDefinitionsOfDone.isEmpty,
+              config.mode == .cruise, config.autoContinueReports, config.ollamaEnabled,
+              Ollama.isLocalServer(config), !config.usageCutoffReached,
+              Self.idleSeconds() >= config.awayIdleSeconds,
+              now.timeIntervalSince(lastDefinitionCheckAt) >= config.clickyTaskAuditMinutes * 60
+        else { return false }
+        lastDefinitionCheckAt = now
+        let tasks = ClickyTaskStore.shared
+        guard tasks.canPersist else {
+            record("define done paused: \(tasks.persistenceError ?? "saved task state is unreadable")")
+            return false
+        }
+        let requestedAt = Date()
+        await tasks.refresh(measure: false)
+        guard let loadedAt = tasks.loadedAt, loadedAt >= requestedAt, tasks.loadError == nil else {
+            record("define done: \(tasks.loadError ?? "waiting for a fresh task-list read")")
+            return false
+        }
+        let maxRounds = config.maxDefinitionRounds
+        let manualRequests = queuedManualBumpIDs
+        var due: [(task: ClickyAgentTask, definition: String, assessment: ClickyTaskAssessment)] = []
+        let ambiguous = ClickyTaskLibrary.ambiguousNames(tasks.tasks)
+        for task in ClickyTaskLibrary.sorted(tasks.tasks, by: .recentlyUpdated) {
+            guard TaskPlanning.autoBumpEnabled(task, config: store.config) || manualRequests.contains(task.id),
+                  let definition = DefinitionOfDone.normalized(config.clickyDefinitionsOfDone[task.id]),
+                  task.hasReport, !task.dismissed, !task.isWorking, !task.isStopped,
+                  !taskRecovery.isStopped(task: task.name),
+                  tasks.rounds(for: task, definition: definition) < maxRounds else { continue }
+            let progress = tasks.record(task.id).progress
+            // Already followed up on this exact report; wait for Clicky's next one.
+            if progress.lastFingerprint == task.fingerprint,
+               DefinitionOfDone.normalized(progress.definition) == definition { continue }
+            if let reply = tasks.record(task.id).backgroundReply,
+               reply.fingerprint == task.fingerprint, reply.definition == definition { continue }
+            let assessment: ClickyTaskAssessment
+            if let current = tasks.currentAssessment(for: task, definition: definition), current.source.hasPrefix("ollama") {
+                assessment = current
+            } else {
+                assessment = await tasks.assess(task, config: config, localOnly: true)
+                record("define done: “\(task.name)” reads as \(assessment.state.title.lowercased())"
+                    + (assessment.meetsDefinition == true ? " — meets your definition" : ""))
+            }
+            guard assessment.source.hasPrefix("ollama") else {
+                record("define done: no automatic bump for “\(task.name)” because local Ollama review was unavailable")
+                continue
+            }
+            if DefinitionOfDone.hasNoProgress(assessment, progress: progress) {
+                record("define done: “\(task.name)” repeated the same completion gaps — automatic bump stopped for review")
+                continue
+            }
+            if DefinitionOfDone.shouldContinue(task, definition: definition, assessment: assessment,
+                                               progress: progress, maxRounds: maxRounds) {
+                if ambiguous.contains(Matcher.normalize(task.name)) {
+                    record("define done: more than one HeyClicky task is named “\(task.name)” — rename one; no follow-up sent")
+                    continue
+                }
+                due.append((task, definition, assessment))
+            }
+        }
+        let waitingForReport = Set(tasks.tasks.filter {
+            manualRequests.contains($0.id) && ($0.isWorking || !$0.hasReport)
+        }.map(\.id))
+        let consumedRequests = manualRequests.subtracting(waitingForReport)
+        queuedManualBumpIDs.subtract(consumedRequests)
+        bumpingTaskIDs.subtract(consumedRequests)
+        guard !due.isEmpty, store.config.mode == .cruise, store.config.continueUntilDefinedDone,
+              Self.idleSeconds() >= config.awayIdleSeconds else {
+            if !consumedRequests.isEmpty {
+                backgroundTaskStatus = "No safe completion gap was found, or a decision/error stopped the one-time bump. Nothing was sent."
+            }
+            return false
+        }
+        let recheckAt = Date()
+        await tasks.refresh(measure: false)
+        guard let reloadedAt = tasks.loadedAt, reloadedAt >= recheckAt, tasks.loadError == nil else {
+            record("define done: task-list recheck did not complete — no follow-up sent")
+            return false
+        }
+
+        let previousApp = NSWorkspace.shared.frontmostApplication
+        guard let original = await revealChat(config: config) else {
+            record("define done couldn't open HeyClicky — will retry later")
+            return false
+        }
+        var sent = false
+        for item in due {
+            let task = item.task
+            guard TaskPlanning.autoBumpEnabled(task, config: store.config) || manualRequests.contains(task.id),
+                  DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id]) == item.definition,
+                  let latest = tasks.task(task.id), latest.fingerprint == task.fingerprint,
+                  !latest.isWorking, !latest.isStopped, !latest.dismissed,
+                  !ClickyTaskLibrary.ambiguousNames(tasks.tasks).contains(Matcher.normalize(task.name)) else {
+                record("define done: “\(task.name)” or its definition changed during review — no follow-up sent")
+                continue
+            }
+            let limits = ReportGate.Limits(config: config)
+            guard store.config.mode == .cruise, store.config.continueUntilDefinedDone,
+                  Self.idleSeconds() >= config.awayIdleSeconds,
+                  gate.canContinue(now: Date(), limits: limits) else { break }
+            guard nudgeLimiter.allow(task: task.name, now: Date(), maxPerHour: config.maxNudgesPerTaskPerHour) else { continue }
+            let scan = await Worker.run { ClickyScanner(config: config).scan() }
+            if let row = scan.chatButtons.compactMap({ TaskRow.parse($0.label) })
+                .first(where: { Matcher.normalize($0.name) == Matcher.normalize(task.name) }), StallTracker.isBusy(row.status) {
+                record("define done: “\(task.name)” is \(row.status) — follow-up waits")
+                continue
+            }
+            guard let chat = await selectTask(task.name, from: scan, config: config), let composer = chat.composer,
+                  recoveryAllowed(chat) else { continue }
+            if let status = chat.selectedStatus, StallTracker.isBusy(status) { continue }
+            let input = composer.input
+            guard await Worker.run({ (AX.stringValue(input) ?? "").isEmpty }) else {
+                record("“\(task.name)” has a draft — define-done follow-up will not overwrite it")
+                continue
+            }
+            guard DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id]) == item.definition else {
+                record("define done: the target changed while opening “\(task.name)” — no follow-up sent")
+                continue
+            }
+            let project = taskCatalog.tasks.first(where: { $0.id == task.id })?.project ?? TaskProject()
+            let priority = store.config.taskPlans[task.id]?.priority
+                ?? store.config.projectPriorities[project.priorityKey] ?? .normal
+            let draft: ChatBump.Draft
+            do {
+                draft = try await Ollama.draftTaskBump(task: task, definition: item.definition, project: project,
+                                                      priority: priority, missing: item.assessment.missing, config: config)
+            } catch {
+                record("define done: Ollama couldn't draft a safe bump for “\(task.name)”: \(error.localizedDescription)")
+                continue
+            }
+            guard draft.unfinished else {
+                record("define done: Ollama found no explicit actionable gap for “\(task.name)” — nothing sent")
+                continue
+            }
+            let afterDraft = Date()
+            await tasks.refresh(measure: false)
+            guard let refreshedAt = tasks.loadedAt, refreshedAt >= afterDraft, tasks.loadError == nil,
+                  let refreshedTask = tasks.task(task.id), refreshedTask.fingerprint == task.fingerprint,
+                  TaskPlanning.autoBumpEnabled(refreshedTask, config: store.config),
+                  DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id]) == item.definition,
+                  (TaskPlanning.autoBumpEnabled(refreshedTask, config: store.config) || manualRequests.contains(task.id)),
+                  !refreshedTask.isWorking, !refreshedTask.isStopped, !refreshedTask.dismissed,
+                  !TaskAudit.requiresUser(refreshedTask.lastMessage) else {
+                record("define done: task, report, or opt-in changed during Ollama drafting — no bump sent")
+                continue
+            }
+            let round = tasks.rounds(for: task, definition: item.definition) + 1
+            let message = draft.message
+            // Reserve the round on disk before typing, so a saved-for-retry message still counts after a restart.
+            let previous = tasks.record(task.id).progress
+            guard tasks.recordFollowUp(task, definition: item.definition, missing: item.assessment.missing) else {
+                record("define done: couldn't save the round for “\(task.name)” — no follow-up sent. "
+                    + (tasks.persistenceError ?? tasks.loadError ?? ""))
+                break
+            }
+            let previousGate = gate
+            let previousLimiter = nudgeLimiter
+            nudgeLimiter.record(task: task.name, at: Date())
+            gate.recordContinue(at: Date())
+            saveBudget()
+            let oneShot = manualRequests.contains(task.id) && !TaskPlanning.autoBumpEnabled(task, config: store.config)
+            let target = PendingMessage.CompletionTarget(taskID: task.id, definition: item.definition,
+                                                         reportFingerprint: task.fingerprint, oneShot: oneShot)
+            if await send(message, via: composer, task: task.name, completionTarget: target) {
+                stats.continued += 1
+                sent = true
+                record("define done: “\(task.name)” falls short (round \(round) of \(maxRounds)) — asked for: "
+                    + item.assessment.missing.joined(separator: "; ").prefix(160))
+            } else {
+                if pendingMessage != nil {
+                    record("define done follow-up to “\(task.name)” saved for retry — round \(round) counted")
+                    return true
+                }
+                gate = previousGate
+                nudgeLimiter = previousLimiter
+                saveBudget()
+                if !tasks.restoreProgress(previous, for: task.id) {
+                    record("define done: couldn't release the unused round for “\(task.name)” — it stays counted")
+                }
+                record("define done couldn't send to “\(task.name)” — not redirecting to another task")
+                break
             }
         }
         if let task = original.selectedTask {
@@ -1511,10 +2001,65 @@ final class ClickyMonitor: ObservableObject {
         return true
     }
 
-    private func send(_ text: String, via composer: Composer, task: String) async -> Bool {
+    func verifyMessageDelivery(task: String) async -> Bool {
         let config = store.config
         guard messageHistoryReadable, pendingMessage == nil,
-              config.mode != .manual, config.autoContinueReports else {
+              config.mode == .cruise, config.autoContinueReports else {
+            record("delivery check blocked: enable Cruise and resolve any saved message first")
+            return false
+        }
+        let idle = Self.idleSeconds()
+        guard idle >= config.awayIdleSeconds else {
+            record("delivery check blocked: input idle for \(Int(idle))s; requires \(Int(config.awayIdleSeconds))s — not interrupting active input")
+            return false
+        }
+        guard
+              let chat = await revealChat(config: config),
+              let selected = await selectTask(task, from: chat, config: config),
+              let composer = selected.composer else {
+            record("delivery check blocked: task or composer could not be verified")
+            return false
+        }
+        if [selected.selectedStatus, selected.latestTurnStatus].compactMap({ $0 }).contains(where: StallTracker.isBusy) {
+            record("delivery check blocked: “\(task)” is working — not interrupting its current task")
+            return false
+        }
+        let text = "Cruise Control delivery check \(UUID().uuidString). Please reply 'received' only. Do not start or change any other work or perform any release actions."
+        let delivered = await send(text, via: composer, task: task)
+        record(delivered ? "delivery check confirmed in “\(task)” transcript" : "delivery check not confirmed — inspect the saved message in Settings → Activity")
+        return delivered
+    }
+
+    private func completionTargetMatches(_ target: PendingMessage.CompletionTarget?, chatOnly: Bool = false) -> Bool {
+        guard let target else { return true }
+        let plan = store.config.taskPlans[target.taskID]
+        guard target.matches(definition: store.config.clickyDefinitionsOfDone[target.taskID],
+                             enabled: chatOnly ? store.config.backgroundTaskReview : store.config.continueUntilDefinedDone),
+              (chatOnly ? plan?.enabled == true : (target.oneShot == true || plan?.autoBump == true)),
+              ClickyTaskStore.shared.canPersist else { return false }
+        let source = ClickyTaskStore.shared
+        guard let task = source.task(target.taskID), task.fingerprint == target.reportFingerprint,
+              !task.isWorking, !task.isStopped, !task.dismissed, !TaskAudit.requiresUser(task.lastMessage),
+              !ClickyTaskLibrary.ambiguousNames(source.tasks).contains(Matcher.normalize(task.name)) else { return false }
+        if chatOnly {
+            guard store.config.backgroundTaskDelivery == .chatOnly,
+                  TaskPlanning.eligible(task, config: store.config) else { return false }
+        } else {
+            guard store.config.mode == .cruise, store.config.autoContinueReports,
+                  store.config.ollamaEnabled, Ollama.isLocalServer(store.config) else { return false }
+        }
+        let progress = ClickyTaskStore.shared.record(target.taskID).progress
+        return DefinitionOfDone.normalized(progress.definition) == DefinitionOfDone.normalized(target.definition)
+            && progress.rounds > 0 && progress.rounds <= store.config.maxDefinitionRounds
+            && (!chatOnly || progress.lastFingerprint == target.reportFingerprint)
+    }
+
+    private func send(_ text: String, via composer: Composer, task: String,
+                      completionTarget: PendingMessage.CompletionTarget? = nil, chatOnly: Bool = false) async -> Bool {
+        let config = store.config
+        let policy = PendingMessage(task: task, text: text, transcript: [], completionTarget: completionTarget, chatOnly: chatOnly)
+        guard messageHistoryReadable, pendingMessage == nil,
+              policy.automationAllowed(config: config), !chatOnly || Self.idleSeconds() >= config.awayIdleSeconds else {
             record("message not sent — automation disabled or another delivery is pending")
             return false
         }
@@ -1530,7 +2075,11 @@ final class ClickyMonitor: ObservableObject {
             record("“\(task)” has an unreadable or existing draft — not overwriting it")
             return false
         }
-        let message = PendingMessage(task: task, text: text, transcript: fresh.transcript)
+        guard completionTargetMatches(completionTarget, chatOnly: chatOnly) else {
+            record("message not sent — its definition of done changed or was disabled")
+            return false
+        }
+        let message = PendingMessage(task: task, text: text, transcript: fresh.transcript, completionTarget: completionTarget, chatOnly: chatOnly)
         do {
             try JSONEncoder().encode(message).write(to: pendingMessageURL, options: .atomic)
         } catch {
@@ -1543,17 +2092,51 @@ final class ClickyMonitor: ObservableObject {
     }
 
     private func retryPendingMessage(config: Config) async {
-        guard config.mode != .manual, config.autoContinueReports,
-              Date().timeIntervalSince(lastMessageRetryAt) >= 15,
-              let message = pendingMessage else { return }
+        guard Date().timeIntervalSince(lastMessageRetryAt) >= 15,
+              let message = pendingMessage, message.automationAllowed(config: store.config) else { return }
         lastMessageRetryAt = Date()
         if message.holdReason != nil {
             _ = await deliverPendingMessage(config: config)
             return
         }
         guard Self.idleSeconds() >= config.awayIdleSeconds else { return }
+        if message.chatOnly != true, message.completionTarget != nil {
+            let source = ClickyTaskStore.shared
+            let requested = Date()
+            await source.refresh(measure: false)
+            guard let loadedAt = source.loadedAt, loadedAt >= requested, source.loadError == nil,
+                  completionTargetMatches(message.completionTarget) else {
+                holdPendingMessage("Task report or completion settings changed. Review the saved message; Cruise will not send it against stale task evidence.")
+                return
+            }
+        }
+        let interaction = InputSynth.UserInteractionWatch()
+        defer { interaction.stop() }
+        if message.chatOnly == true {
+            if message.isExpired() {
+                holdPendingMessage("Undelivered for 30 minutes. Review the saved chat-only message before discarding it.")
+                return
+            }
+            let source = ClickyTaskStore.shared
+            let requested = Date()
+            await source.refresh()
+            guard let read = source.loadedAt, read >= requested, source.loadError == nil,
+                  let target = message.completionTarget, let task = source.task(target.taskID),
+                  !ClickyTaskLibrary.ambiguousNames(source.tasks).contains(Matcher.normalize(task.name)) else { return }
+            let current = await Worker.run { ClickyScanner(config: config).scan() }
+            if let composer = current.composer,
+               let input = await Worker.run({ AX.stringValue(composer.input) }),
+               !input.isEmpty,
+               !(Self.chatName(current) == message.task && input == message.text) {
+                record("chat-only retry is waiting: another HeyClicky draft is present")
+                return
+            }
+        }
+        guard message.automationAllowed(config: store.config), !interaction.interrupted else { return }
         guard let chat = await revealChat(config: config),
-              await selectTask(message.task, from: chat, config: config) != nil else { return }
+              !interaction.interrupted,
+              await selectTask(message.task, from: chat, config: config, unique: message.chatOnly == true) != nil,
+              !interaction.interrupted else { return }
         if await deliverPendingMessage(config: config) {
             stats.continued += 1
             record("delivered pending message to “\(message.task)”")
@@ -1570,11 +2153,15 @@ final class ClickyMonitor: ObservableObject {
                 holdPendingMessage("Task was stopped. The saved message will not be submitted automatically.")
                 return false
             }
-            guard store.config.mode != .manual, store.config.autoContinueReports,
+            guard message.automationAllowed(config: store.config),
                   allowed, let composer = scan.composer else { return false }
             let input = await Worker.run { AX.stringValue(composer.input) }
             switch message.delivery(selectedTask: Self.chatName(scan), input: input, transcript: scan.transcript) {
             case .delivered:
+                if message.chatOnly == true, !ClickyTaskStore.shared.recordBackgroundDelivery(message) {
+                    record("couldn't persist chat-only receipt: \(ClickyTaskStore.shared.loadError ?? "unreadable saved task state")")
+                    return false
+                }
                 return clearPendingMessage()
             case .superseded:
                 holdPendingMessage("Conversation has moved on. Review the saved message; it will not be sent into a changed conversation.")
@@ -1587,7 +2174,12 @@ final class ClickyMonitor: ObservableObject {
             case .ready:
                 break
             }
+            guard completionTargetMatches(message.completionTarget, chatOnly: message.chatOnly == true) else {
+                holdPendingMessage("The definition of done, round limit or saved completion state changed. Review this saved message; its automatic follow-up is held.")
+                return false
+            }
             if attempt == 3 { break }
+            if message.chatOnly == true, Self.idleSeconds() < config.awayIdleSeconds { return false }
             if attempt == 0 {
                 let ready = await Worker.run {
                     if input != message.text {
@@ -1599,7 +2191,9 @@ final class ClickyMonitor: ObservableObject {
                 if ready {
                     let fresh = await Worker.run { ClickyScanner(config: config).scan() }
                     let value = await Worker.run { fresh.composer.flatMap { AX.stringValue($0.input) } }
-                    if store.config.mode != .manual, store.config.autoContinueReports,
+                    if message.automationAllowed(config: store.config),
+                       completionTargetMatches(message.completionTarget, chatOnly: message.chatOnly == true),
+                       message.chatOnly != true || Self.idleSeconds() >= config.awayIdleSeconds,
                        recoveryAllowed(fresh, draft: true), let current = fresh.composer,
                        CFEqual(current.input, composer.input),
                        message.delivery(selectedTask: Self.chatName(fresh), input: value, transcript: fresh.transcript) == .ready,
@@ -1675,7 +2269,8 @@ final class ClickyMonitor: ObservableObject {
         NSRunningApplication(processIdentifier: composer.pid)?.activate()
         try? await Task.sleep(nanoseconds: 400_000_000)
         let fresh = await Worker.run { ClickyScanner(config: config).scan() }
-        guard store.config.mode != .manual, store.config.autoContinueReports,
+        guard message.automationAllowed(config: store.config),
+              completionTargetMatches(message.completionTarget, chatOnly: message.chatOnly == true),
               recoveryAllowed(fresh, draft: true), let current = fresh.composer, current.pid == composer.pid,
               CFEqual(current.input, composer.input),
               !interaction.interrupted,
@@ -1709,8 +2304,8 @@ final class ClickyMonitor: ObservableObject {
             }
             let verified = await Worker.run { ClickyScanner(config: config).scan() }
             let value = await Worker.run { verified.composer.flatMap { AX.stringValue($0.input) } }
-            guard !interaction.interrupted, self.store.config.mode != .manual,
-                  self.store.config.autoContinueReports,
+            guard !interaction.interrupted, message.automationAllowed(config: self.store.config),
+                  self.completionTargetMatches(message.completionTarget, chatOnly: message.chatOnly == true),
                   NSWorkspace.shared.frontmostApplication?.processIdentifier == composer.pid,
                   self.recoveryAllowed(verified, draft: true),
                   let latest = verified.composer, CFEqual(latest.input, input),

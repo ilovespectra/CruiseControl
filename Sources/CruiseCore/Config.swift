@@ -175,6 +175,18 @@ public struct Config: Codable, Equatable, Sendable {
     public var auditClickyTasks = true
     public var trackedClickyTasks: [String] = []
     public var clickyTaskAuditMinutes: Double = 5
+    /// The user's definition of done per HeyClicky job (keyed by job ID, e.g. "09dc7e6201").
+    public var clickyDefinitionsOfDone: [String: String] = [:]
+    /// Cruise mode: when a task's latest report falls short of its definition of done, send it another round.
+    public var continueUntilDefinedDone = true
+    public var maxDefinitionRounds = DefinitionOfDone.maxRounds
+    public var taskGrouping: TaskGrouping = .project
+    public var taskSort: TaskSort = .priority
+    public var inferTaskProjects = true
+    public var backgroundTaskReview = false
+    public var backgroundTaskDelivery: TaskDeliveryMode = .apiOnly
+    public var taskPlans: [String: TaskPlan] = [:]
+    public var projectPriorities: [String: TaskPriority] = [:]
 
     public var pillSide: PillSide = .right
     /// In Manual and Rest modes, only show the notch pill while HeyClicky is running.
@@ -263,6 +275,17 @@ public struct Config: Codable, Equatable, Sendable {
         auditClickyTasks = try c.decodeIfPresent(Bool.self, forKey: .auditClickyTasks) ?? d.auditClickyTasks
         trackedClickyTasks = try c.decodeIfPresent([String].self, forKey: .trackedClickyTasks) ?? d.trackedClickyTasks
         clickyTaskAuditMinutes = max(1, try c.decodeIfPresent(Double.self, forKey: .clickyTaskAuditMinutes) ?? d.clickyTaskAuditMinutes)
+        clickyDefinitionsOfDone = (try c.decodeIfPresent([String: String].self, forKey: .clickyDefinitionsOfDone) ?? d.clickyDefinitionsOfDone)
+            .compactMapValues(DefinitionOfDone.normalized)
+        continueUntilDefinedDone = try c.decodeIfPresent(Bool.self, forKey: .continueUntilDefinedDone) ?? d.continueUntilDefinedDone
+        maxDefinitionRounds = min(30, max(1, try c.decodeIfPresent(Int.self, forKey: .maxDefinitionRounds) ?? d.maxDefinitionRounds))
+        taskGrouping = try c.decodeIfPresent(TaskGrouping.self, forKey: .taskGrouping) ?? d.taskGrouping
+        taskSort = try c.decodeIfPresent(TaskSort.self, forKey: .taskSort) ?? d.taskSort
+        inferTaskProjects = try c.decodeIfPresent(Bool.self, forKey: .inferTaskProjects) ?? d.inferTaskProjects
+        backgroundTaskReview = try c.decodeIfPresent(Bool.self, forKey: .backgroundTaskReview) ?? d.backgroundTaskReview
+        backgroundTaskDelivery = try c.decodeIfPresent(TaskDeliveryMode.self, forKey: .backgroundTaskDelivery) ?? d.backgroundTaskDelivery
+        taskPlans = try c.decodeIfPresent([String: TaskPlan].self, forKey: .taskPlans) ?? d.taskPlans
+        projectPriorities = try c.decodeIfPresent([String: TaskPriority].self, forKey: .projectPriorities) ?? d.projectPriorities
         pillSide = try c.decodeIfPresent(PillSide.self, forKey: .pillSide) ?? d.pillSide
         showOnlyWithClicky = try c.decodeIfPresent(Bool.self, forKey: .showOnlyWithClicky) ?? d.showOnlyWithClicky
     }

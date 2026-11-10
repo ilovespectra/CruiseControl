@@ -93,6 +93,17 @@ struct ExpandedPanel: View {
                     store.config.mode = mode
                 }
             }
+            Button {
+                toggle()
+                NotificationCenter.default.post(name: SettingsController.openTasksNotification, object: nil)
+            } label: {
+                Label("tasks · \(monitor.taskCatalog.currentTaskCount)", systemImage: "list.bullet.rectangle")
+                    .font(BrandFont.inter(13, .semibold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.white)
             HStack(spacing: 8) {
                 Button {
                     toggle()
@@ -175,7 +186,33 @@ struct SettingsContent: View {
     @State private var scrollTarget: String?
 
     var body: some View {
-        TabView(selection: $selectedTab) {
+        VStack(spacing: 12) {
+            Picker("Settings section", selection: $selectedTab) {
+                Text("Updates").tag(0)
+                Text("Automation").tag(1)
+                Text("Activity").tag(2)
+                Text("Tasks").tag(4)
+                Text("App & permissions").tag(3)
+            }
+            .pickerStyle(.segmented)
+            selectedPage
+        }
+        .onReceive(NotificationCenter.default.publisher(for: SettingsController.focusOllamaSettingsNotification)) { _ in
+            selectedTab = 1
+            scrollTarget = "local-ollama-settings"
+        }
+        .onReceive(NotificationCenter.default.publisher(for: SettingsController.focusTasksNotification)) { _ in
+            selectedTab = 4
+        }
+        .padding(16)
+        .frame(minWidth: 640, minHeight: 540)
+        .preferredColorScheme(.dark)
+        .tint(Brand.periwinkle)
+    }
+
+    @ViewBuilder
+    private var selectedPage: some View {
+        if selectedTab == 0 {
             settingsPage {
                 settingsSection("Cruise Control updates", detail: "Installed: \(updates.installedVersion). Public GitHub releases are checked on launch and every six hours.") {
                     Text(updates.status).textSelection(.enabled)
@@ -189,8 +226,7 @@ struct SettingsContent: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            .tabItem { Label("Updates", systemImage: "arrow.down.circle") }
-            .tag(0)
+        } else if selectedTab == 1 {
             settingsPage(scrollTarget: $scrollTarget) {
                 settingsSection("HeyClicky", detail: "Controls for drive requests, unfinished tasks and app updates.") {
                     continueToggle
@@ -260,8 +296,7 @@ struct SettingsContent: View {
                 }
                 .id("local-ollama-settings")
             }
-            .tabItem { Label("Automation", systemImage: "steeringwheel") }
-            .tag(1)
+        } else if selectedTab == 2 {
             settingsPage {
                 if let message = monitor.pendingMessage {
                     settingsSection("Pending HeyClicky message", detail: "Saved before typing. Only transcript evidence in the same chat confirms delivery.") {
@@ -284,8 +319,11 @@ struct SettingsContent: View {
                     Button("Open activity log") { NSWorkspace.shared.open(monitor.logFileURL) }
                 }
             }
-            .tabItem { Label("Activity", systemImage: "chart.bar") }
-            .tag(2)
+        } else if selectedTab == 4 {
+            settingsPage {
+                TasksSettingsView(store: store, monitor: monitor)
+            }
+        } else {
             settingsPage {
                 settingsSection("Documentation & safety", detail: "Cruise Control is an independent open-source project, not affiliated with HeyClicky.") {
                     Text("Auto-approval removes a human checkpoint. Agents can delete files, expose secrets, install malware, spend money, or change accounts. Ollama review and rate limits are not a security boundary. Use backups and restricted accounts; supervise important work.")
@@ -312,17 +350,7 @@ struct SettingsContent: View {
                     footer
                 }
             }
-            .tabItem { Label("App & permissions", systemImage: "gearshape") }
-            .tag(3)
         }
-        .onReceive(NotificationCenter.default.publisher(for: SettingsController.focusOllamaSettingsNotification)) { _ in
-            selectedTab = 1
-            scrollTarget = "local-ollama-settings"
-        }
-        .padding(16)
-        .frame(minWidth: 640, minHeight: 540)
-        .preferredColorScheme(.dark)
-        .tint(Brand.periwinkle)
     }
 
     private func settingsPage<Content: View>(scrollTarget: Binding<String?> = .constant(nil),

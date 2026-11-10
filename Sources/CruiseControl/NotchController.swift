@@ -147,6 +147,9 @@ final class NotchController {
         let frame = screen.frame
         menuBarHeight = max(screen.safeAreaInsets.top, NSStatusBar.system.thickness, frame.maxY - screen.visibleFrame.maxY)
         let side = store.config.pillSide
+        // Scale a comfortable separation from the dropdown's measured design width instead of using screen pixels.
+        // The same point-based gap is applied on both sides of the hardware notch and clamped to the active display.
+        let clearance = max(20, min(48, expandedWidth * 0.12))
 
         // Reassigning rootView re-renders synchronously, so fittingSize below is accurate.
         host.rootView = NotchRootView(
@@ -166,7 +169,7 @@ final class NotchController {
         if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
             let notchMinX = frame.minX + left.width
             let notchMaxX = frame.maxX - right.width
-            pillX = side == .right ? notchMaxX + 4 : notchMinX - 4 - pillWidth
+            pillX = side == .right ? notchMaxX + 4 + clearance : notchMinX - 4 - clearance - pillWidth
         } else {
             pillX = frame.midX - pillWidth / 2
         }
@@ -179,10 +182,13 @@ final class NotchController {
                 .fixedSize(horizontal: false, vertical: true)
                 .environment(\.colorScheme, .dark))
             let fitting = measure.fittingSize
-            size = CGSize(width: expandedWidth, height: min(max(fitting.height, 120), frame.height - 40))
+            size = CGSize(width: min(expandedWidth, max(1, frame.width - 8)),
+                          height: min(max(fitting.height, 120), max(1, frame.height - 40)))
             x = side == .right ? pillX : pillX + pillWidth - size.width
         }
-        x = min(max(x, frame.minX + 4), frame.maxX - size.width - 4)
+        let lowerBound = frame.minX + 4
+        let upperBound = max(lowerBound, frame.maxX - size.width - 4)
+        x = min(max(x, lowerBound), upperBound)
         panel.setFrame(NSRect(x: x, y: frame.maxY - size.height, width: size.width, height: size.height), display: true)
     }
 }

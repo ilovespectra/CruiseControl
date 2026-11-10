@@ -3,6 +3,85 @@ import Testing
 @testable import CruiseCore
 
 @Suite struct PendingMessageTests {
+    @Test func chatOnlyDeliveryRequiresExplicitPolicyTaskGoalAndStableReportBinding() throws {
+        let target = PendingMessage.CompletionTarget(taskID: "job", definition: "Tests pass", reportFingerprint: "report")
+        let message = PendingMessage(task: "Task", text: "Continue the tests.", transcript: [],
+                                     completionTarget: target, chatOnly: true)
+        var config = Config()
+        config.mode = .manual
+        config.autoContinueReports = false
+        config.vscodeAutoApprove = false
+        config.autoAnswerSystemDialogs = false
+        config.continueUntilDefinedDone = false
+        config.backgroundTaskReview = true
+        config.taskPlans["job"] = TaskPlan()
+        config.taskPlans["job"]?.enabled = true
+        config.clickyDefinitionsOfDone["job"] = "Tests pass"
+        #expect(!message.automationAllowed(config: config), "API-only must not leak into UI delivery.")
+        config.backgroundTaskDelivery = .chatOnly
+        #expect(message.automationAllowed(config: config))
+        let restored = try JSONDecoder().decode(PendingMessage.self, from: JSONEncoder().encode(message))
+        #expect(restored.chatOnly == true)
+        #expect(restored.completionTarget?.reportFingerprint == "report")
+        #expect(restored.automationAllowed(config: config))
+        config.taskPlans["job"]?.enabled = false
+        #expect(!restored.automationAllowed(config: config))
+        config.taskPlans["job"]?.enabled = true
+        config.clickyDefinitionsOfDone["job"] = "A different goal"
+        #expect(!restored.automationAllowed(config: config))
+        config.clickyDefinitionsOfDone["job"] = "Tests pass"
+        config.backgroundTaskReview = false
+        #expect(!restored.automationAllowed(config: config))
+        #expect(!config.vscodeAutoApprove && !config.autoAnswerSystemDialogs && !config.autoContinueReports)
+    }
+
+    @Test func enablingChatOnlyDoesNotReleaseLegacyMessagesInManualMode() {
+        let legacy = PendingMessage(task: "Task", text: "Legacy draft", transcript: [])
+        var config = Config()
+        config.backgroundTaskReview = true
+        config.backgroundTaskDelivery = .chatOnly
+        config.autoContinueReports = false
+        #expect(!legacy.automationAllowed(config: config))
+        let unbound = PendingMessage(task: "Task", text: "Draft", transcript: [], chatOnly: true)
+        #expect(!unbound.automationAllowed(config: config))
+        let missingReport = PendingMessage(task: "Task", text: "Draft", transcript: [],
+                                          completionTarget: .init(taskID: "job", definition: "Tests pass"), chatOnly: true)
+        config.clickyDefinitionsOfDone["job"] = "Tests pass"
+        config.taskPlans["job"] = TaskPlan()
+        config.taskPlans["job"]?.enabled = true
+        #expect(!missingReport.automationAllowed(config: config))
+    }
+    @Test func completionTargetSurvivesRestartAndRejectsChangedOrDisabledGoals() throws {
+        let target = PendingMessage.CompletionTarget(taskID: "job-id", definition: "Build and test")
+        let message = PendingMessage(task: "Task", text: "Continue", transcript: ["report"], completionTarget: target)
+        let restored = try JSONDecoder().decode(PendingMessage.self, from: JSONEncoder().encode(message))
+        #expect(restored.completionTarget == target)
+        #expect(target.matches(definition: " Build and test ", enabled: true))
+        #expect(!target.matches(definition: "Do something else", enabled: true))
+        #expect(!target.matches(definition: nil, enabled: true))
+        #expect(!target.matches(definition: "Build and test", enabled: false))
+    }
+    @Test func explicitOneShotBumpDoesNotRequirePersistentAutoBumpOptIn() {
+        let target = PendingMessage.CompletionTarget(taskID: "job", definition: "Tests pass",
+                                                     reportFingerprint: "report-1", oneShot: true)
+        let message = PendingMessage(task: "Task", text: "Cruise Control follow-up: run the tests.",
+                                     transcript: ["latest report"], completionTarget: target)
+        var config = Config()
+        config.mode = .cruise
+        config.autoContinueReports = true
+        config.continueUntilDefinedDone = true
+        config.taskPlans["job"] = TaskPlan()
+        config.clickyDefinitionsOfDone["job"] = "Tests pass"
+        #expect(message.automationAllowed(config: config))
+        config.continueUntilDefinedDone = false
+        #expect(!message.automationAllowed(config: config))
+        config.continueUntilDefinedDone = true
+        config.taskPlans["job"]?.autoBump = true
+        let automatic = PendingMessage(task: "Task", text: message.text, transcript: message.transcript,
+            completionTarget: .init(taskID: "job", definition: "Tests pass", reportFingerprint: "report-1"))
+        #expect(automatic.automationAllowed(config: config))
+    }
+
     private let message = PendingMessage(task: "Portfolio Scribe", text: "Cruise Control follow-up: finish testing.", transcript: ["report"])
 
     @Test func onlyTranscriptEvidenceConfirmsDelivery() {

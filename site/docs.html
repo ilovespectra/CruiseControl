@@ -34,6 +34,7 @@
         <a href="#stop">stop automation</a>
         <a href="#start">installation</a>
         <a href="#modes">modes &amp; recovery</a>
+        <a href="#tasks">task workspace</a>
         <a href="#vscode">VS Code</a>
         <a href="#privacy">permissions &amp; privacy</a>
         <a href="#troubleshooting">troubleshooting</a>
@@ -102,6 +103,19 @@
       <p>Automatic notch inspection occurs while idle. Quiet-time thresholds shorten when the user appears away. Idle time is only a heuristic, not proof of absence or consent. Use Manual to disable all HeyClicky recovery, not just one stopped task.</p>
       <p>Default nudge budgets are <strong>6 per task per hour</strong>, sharing a <strong>10-continuation hourly budget</strong> with at least <strong>90 seconds</strong> between continuations. Budgets persist across restarts; exhausting one intentionally leaves work for you. More retries are not a substitute for diagnosing a loop.</p>
       <p><strong>HeyClicky updates</strong> are separately configurable and can run in any mode. Cruise Control can press Update app, wait for a relaunch, and resume interrupted tasks where permitted. Cruise Control's own Updates tab checks public GitHub releases and offers available downloads.</p>
+    </section>
+
+    <section id="tasks">
+      <h2>HeyClicky task workspace</h2>
+      <p>Settings → Tasks is a companion view of the HeyClicky jobs on this Mac, not a second queue. Cruise groups jobs by project, an optional per-task workspace folder, and stable task identity; local priorities sort Cruise’s review list only. If a conversation does not identify a working directory, choose that task’s folder yourself. Workspace paths are labels for grouping, not permission to move or edit files. Search and filters help you find the task that needs attention. Manual project corrections and saved definitions of done remain attached to their task IDs.</p>
+      <ol>
+        <li><strong>Organize:</strong> group jobs by project, then search, filter, and sort the list. Unmatched or ambiguous records remain visible for review instead of attaching to a lookalike task.</li>
+        <li><strong>Define done:</strong> write the task-specific result you expect. Cruise shows the latest actual HeyClicky response next to the saved criteria.</li>
+        <li><strong>Compare:</strong> local Ollama can assess the report and list supported gaps. “Reported done” describes what HeyClicky said; “criteria appear met” is an assessment of that report, not a build, test, or independent proof.</li>
+        <li><strong>Bump:</strong> a one-time request waits for an idle, current HeyClicky task and sends only when the latest report supports a concrete, safe gap. Persistent Auto-bump is separately off until enabled for that task and requires the global Cruise-mode gate. Only a fresh report can earn another round; repeated gaps, no progress, errors, ambiguous identity, and user-only decisions stop automation.</li>
+      </ol>
+      <p>Cruise reads HeyClicky’s local task/job records and thread history; it does not use or claim a private HeyClicky API. Where a message is explicitly opted in, Cruise uses the visible HeyClicky interface rather than writing into private caches. Messages remain bound to a stable task ID and report fingerprint, and are held if the task, report, goal, or delivery state changes. Delivery or authorization is never assumed from a blank report.</p>
+      <p>Task priorities and definitions organize Cruise’s own review. They do not change HeyClicky’s order, grant permissions, approve requests, publish releases, or bypass a decision you need to make. Start with manual review; leave Auto-bump off until you have checked the results of a few one-time bumps.</p>
     </section>
 
     <section id="vscode">

@@ -248,8 +248,7 @@ struct ClickyScanner {
                 ctx.dismiss = e
             }
             if !label.isEmpty { ctx.buttons.append((e, label)) }
-            if ctx.inRecents, ctx.recentTasks.count < 3,
-               !label.contains(", "), !label.isEmpty {
+            if ctx.inRecents, ctx.recentTasks.count < 3, !label.contains(", "), !label.isEmpty {
                 ctx.recentTasks.append(label)
             }
             if Matcher.hasTimestamp(label) {
