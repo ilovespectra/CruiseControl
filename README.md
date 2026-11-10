@@ -12,6 +12,8 @@ In **Cruise** mode the notch dropdown stays visible even when HeyClicky is close
 
 [Website](https://cruise.kolektivkrog.si) · [Documentation & safety](https://cruise.kolektivkrog.si/docs.html) · [Maintainer console](DEVELOPER_CONSOLE.md)
 
+**Launch the maintainer console:** From the repository root on macOS 14 or newer, run `swift run --product CruiseControlPublisher`. This builds and launches the Publisher utility; it is separate from `Cruise Control.app`. See [`DEVELOPER_CONSOLE.md`](DEVELOPER_CONSOLE.md) for build-preview and publishing safeguards.
+
 ## Install
 
 Requires **macOS 14+**.
