@@ -42,6 +42,10 @@ mkdir -p "$APP/Contents/Resources/Fonts"
 cp Resources/Fonts/*.ttf Resources/Fonts/OFL-*.txt "$APP/Contents/Resources/Fonts/"
 [[ -f Resources/AppIcon.icns ]] && cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
+# External staging volumes may leave AppleDouble sidecars (for example, ._CruiseControl).
+# They are not app resources; codesign treats them as bundle contents and rejects them.
+find "$APP" -type f -name '._*' -delete
+
 IDENTITY="${CC_SIGN_IDENTITY:-}"
 if [[ -z "$IDENTITY" ]]; then
   IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/"/ {print $2; exit}')"
