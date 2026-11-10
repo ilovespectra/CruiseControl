@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package an exact production commit; explicitly opt into unsigned distribution."""
+"""Build an exact production commit for local preview or an owner-only GitHub draft."""
 import argparse
 import hashlib
 import json
@@ -8,6 +8,15 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
+
+from release_draft import (
+    generate_release_notes,
+    is_official_origin,
+    resolve_mode,
+    verify_draft_record,
+    verify_local_artifacts,
+)
 
 REPO = "ilovespectra/CruiseControl"
 ROOT = Path(__file__).resolve().parent.parent
@@ -71,32 +80,26 @@ def verify_release_owner():
     return validate_release_owner(login, metadata)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--publish", action="store_true", help="Publish after notarization succeeds")
-    parser.add_argument("--preview", action="store_true", help="Build an unsigned local preview, never publish")
-    parser.add_argument("--unsigned", action="store_true", help="Explicitly publish without Developer ID; macOS will warn")
-    args = parser.parse_args()
-    if args.publish == args.preview:
-        parser.error("Choose --publish or --preview")
-    if os.uname().sysname != "Darwin":
-        raise RuntimeError("Repackaging requires macOS, Swift, Python 3 and GitHub CLI.")
-    if run("git", "status", "--porcelain", capture=True):
-        raise RuntimeError("Commit your changes first. The build must match a clean, pushed production commit.")
-    branch = json.loads(run("gh", "repo", "view", REPO, "--json", "defaultBranchRef", capture=True))["defaultBranchRef"]["name"]
-    run("git", "fetch", "origin", branch)
-    commit = run("git", "rev-parse", f"origin/{branch}", capture=True)
-    if run("git", "rev-parse", "HEAD", capture=True) != commit:
-        raise RuntimeError(f"Checkout the latest origin/{branch} commit before repackaging; no local changes were altered.")
+def stable_release(releases):
+    stable = [release for release in releases
+              if not release.get("draft") and not release.get("prerelease")
+              and _version_tuple(str(release.get("tag_name", "")).removeprefix("v"))]
+    return max(stable, key=lambda item: _version_tuple(item["tag_name"].removeprefix("v")), default=None)
 
-    if args.publish:
-        login = verify_release_owner()
-        print(f"Owner/admin preflight passed for @{login} on {REPO}.", flush=True)
 
-    releases = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{REPO}/releases?per_page=100", capture=True))
-    releases = [release for page in releases for release in page]
-    baseline = run("/usr/libexec/PlistBuddy", "-c", "Print :CFBundleShortVersionString", "Resources/Info.plist", capture=True)
-    staged_versions = []
+def get_release_metadata():
+    pages = json.loads(run("gh", "api", "--paginate", "--slurp",
+                           f"repos/{REPO}/releases?per_page=100", capture=True))
+    if not isinstance(pages, list):
+        raise RuntimeError("GitHub returned invalid release metadata.")
+    releases = [release for page in pages for release in page]
+    if not all(isinstance(release, dict) for release in releases):
+        raise RuntimeError("GitHub returned malformed release metadata.")
+    return releases
+
+
+def staged_versions():
+    staged = []
     staged_root = ROOT / "build" / "releases"
     if staged_root.is_dir():
         for manifest_path in staged_root.glob("*/release.json"):
@@ -105,24 +108,64 @@ def main():
             except (OSError, json.JSONDecodeError):
                 continue
             if _version_tuple(staged_version) is not None:
-                staged_versions.append(staged_version)
-    version = next_version(releases, baseline, staged_versions)
+                staged.append(staged_version)
+    return staged
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument("--draft", action="store_true",
+                       help="Create an unpublished GitHub draft only when official owner/admin checks pass")
+    modes.add_argument("--preview", action="store_true",
+                       help="Build an unsigned local preview; never create or publish a GitHub release")
+    parser.add_argument("--unsigned", action="store_true",
+                        help=argparse.SUPPRESS)  # compatibility with old console invocations
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    if os.uname().sysname != "Darwin":
+        raise RuntimeError("Repackaging requires macOS, Swift, Python 3 and GitHub CLI.")
+    if run("git", "status", "--porcelain", capture=True):
+        raise RuntimeError("Commit your changes first. The build must match a clean, pushed production commit.")
+
+    # A draft request must prove the official owner/admin identity before release metadata is read.
+    # Any failed check safely downgrades to a local-only preview, never to a direct/public release.
+    requested_mode = "preview" if args.preview else "draft"
+    mode, login, owner_error = resolve_mode(requested_mode, verify_release_owner)
+    if mode == "draft":
+        print(f"Owner/admin preflight passed for @{login} on {REPO}.", flush=True)
+        origin = run("git", "remote", "get-url", "origin", capture=True)
+        if not is_official_origin(origin):
+            print(f"Draft denied: origin {origin!r} is not {REPO}; continuing as a local preview only.", flush=True)
+            mode = "preview"
+    elif owner_error:
+        print(f"Owner-only draft unavailable ({owner_error}); continuing as a local preview only.", flush=True)
+
+    branch = json.loads(run("gh", "repo", "view", REPO, "--json", "defaultBranchRef", capture=True))["defaultBranchRef"]["name"]
+    run("git", "fetch", "origin", branch)
+    commit = run("git", "rev-parse", f"origin/{branch}", capture=True)
+    if run("git", "rev-parse", "HEAD", capture=True) != commit:
+        raise RuntimeError(f"Checkout the latest origin/{branch} commit before repackaging; no local changes were altered.")
+
+    releases = get_release_metadata()
+    baseline = run("/usr/libexec/PlistBuddy", "-c", "Print :CFBundleShortVersionString",
+                   "Resources/Info.plist", capture=True)
+    version = next_version(releases, baseline, staged_versions() if mode == "preview" else ())
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise RuntimeError("Invalid release version.")
     tag = f"v{version}"
-    if any(release["tag_name"] == tag for release in releases):
+    if any(release.get("tag_name") == tag for release in releases):
         raise RuntimeError(f"{tag} already exists as a draft or prerelease. Resolve it before retrying; versions are not skipped.")
-    application_identity = os.environ.get("CC_SIGN_IDENTITY", "")
-    installer_identity = os.environ.get("CC_INSTALLER_IDENTITY", "")
-    profile = os.environ.get("CC_NOTARY_PROFILE", "CruiseControl")
-    signed = args.publish and not args.unsigned
-    if signed:
-        if not application_identity.startswith("Developer ID Application:") or not installer_identity.startswith("Developer ID Installer:"):
-            raise RuntimeError("Publishing requires CC_SIGN_IDENTITY (Developer ID Application) and CC_INSTALLER_IDENTITY (Developer ID Installer). Local signing is not sufficient.")
-        run("xcrun", "notarytool", "history", "--keychain-profile", profile)
-    output = ROOT / "build" / "releases" / (f"{version}-preview" if args.preview else version)
+
+    signed = False  # Publisher intentionally creates unsigned drafts until notarization is configured.
+    output_name = f"{version}-preview" if mode == "preview" else f"{version}-draft"
+    output = ROOT / "build" / "releases" / output_name
     if output.exists():
         raise RuntimeError(f"Output already exists: {output}. Preserve or move it before retrying this version.")
+
     # TemporaryDirectory owns only this invocation's staging directory, never the checkout or outputs.
     with tempfile.TemporaryDirectory(prefix="cruise-release-") as temporary:
         stage = Path(temporary)
@@ -138,6 +181,14 @@ def main():
         run("bash", "scripts/build-app.sh", cwd=workspace, env=env)
         app = workspace / "build" / "Cruise Control.app"
         run("codesign", "--verify", "--deep", "--strict", str(app))
+        binary = app / "Contents" / "MacOS" / "CruiseControl"
+        architectures = set(run("lipo", "-archs", str(binary), capture=True).split())
+        if not {"arm64", "x86_64"}.issubset(architectures):
+            raise RuntimeError(f"The installer is not universal; found architectures: {sorted(architectures)}")
+        actual_version = run("/usr/libexec/PlistBuddy", "-c", "Print :CFBundleShortVersionString",
+                             str(app / "Contents" / "Info.plist"), capture=True)
+        if actual_version != version:
+            raise RuntimeError(f"Built app version {actual_version} does not match selected release {version}.")
         scripts = stage / "installer-scripts"
         scripts.mkdir()
         (scripts / "postinstall").write_text((workspace / "scripts" / "package-postinstall.sh").read_text())
@@ -146,14 +197,21 @@ def main():
         command = ["pkgbuild", "--component", str(app), "--install-location", "/Applications",
                    "--identifier", "com.ilovespectra.cruisecontrol", "--version", version,
                    "--scripts", str(scripts), str(package)]
-        if signed:
-            command[-1:-1] = ["--sign", installer_identity]
         run(*command)
-        if signed:
-            run("xcrun", "notarytool", "submit", str(package), "--keychain-profile", profile, "--wait")
-            run("xcrun", "stapler", "staple", str(package))
-            run("xcrun", "stapler", "validate", str(package))
-            run("spctl", "--assess", "--type", "install", str(package))
+        print("pkgbuild exited successfully; checking the package payload and installer metadata.", flush=True)
+        expanded_package = stage / "expanded-package"
+        run("pkgutil", "--expand-full", str(package), str(expanded_package))
+        try:
+            package_info = ET.parse(expanded_package / "PackageInfo").getroot()
+        except (OSError, ET.ParseError) as error:
+            raise RuntimeError(f"Could not read packaged installer metadata: {error}") from error
+        expected_payload = expanded_package / "Payload" / "Cruise Control.app" / "Contents" / "MacOS" / "CruiseControl"
+        if package_info.attrib.get("identifier") != "com.ilovespectra.cruisecontrol" or package_info.attrib.get("version") != version:
+            raise RuntimeError("Installer package identifier or version does not match the selected release.")
+        if not expected_payload.is_file() or expected_payload.stat().st_size == 0:
+            raise RuntimeError("Installer package is missing the Cruise Control executable payload.")
+        if not (expanded_package / "Scripts" / "postinstall").is_file():
+            raise RuntimeError("Installer package is missing its postinstall script.")
         manifest = {
             "version": version, "commit": commit, "package": package.name,
             "sha256": hashlib.sha256(package.read_bytes()).hexdigest(),
@@ -166,18 +224,37 @@ def main():
         metadata.write_text(json.dumps(manifest, indent=2) + "\n")
         checksums = output / "SHA256SUMS"
         checksums.write_text(f"{manifest['sha256']}  {package.name}\n")
-        if args.publish:
-            # Creating the release is the final operation: failed builds do not advance the published version.
-            run("gh", "release", "create", tag, str(saved), str(metadata), str(checksums), "--repo", REPO,
-                "--target", commit, "--title", f"Cruise Control {version}",
-                "--notes", f"Universal macOS 14+ installer. Production source commit: {commit}. "
-                + ("Signed and notarized." if signed else "Unsigned and not notarized: macOS will warn. Review the source and use System Settings > Privacy & Security to approve installation if you trust it."),
-                "--latest")
-        print(f"{'Published' if args.publish else 'Preview built'} {version} from {commit}\n{saved}", flush=True)
+        facts = verify_local_artifacts(saved, metadata, checksums, version, commit, signed)
+        print(f"Verified local package SHA-256 {facts['sha256']} ({facts['size']} bytes), manifest, and checksum.", flush=True)
+
+    if mode == "draft":
+        latest = stable_release(releases)
+        previous_tag = latest.get("tag_name") if latest else None
+        subjects = []
+        diffstat = ""
+        if previous_tag:
+            try:
+                run("git", "fetch", "origin", f"refs/tags/{previous_tag}:refs/tags/{previous_tag}")
+                subjects = run("git", "log", "--format=%s", f"{previous_tag}..{commit}", capture=True).splitlines()
+                diffstat = run("git", "diff", "--stat", f"{previous_tag}..{commit}", capture=True)
+            except subprocess.CalledProcessError as error:
+                raise RuntimeError(f"Could not verify the change range since {previous_tag}; no GitHub draft was created: {error}") from error
+        notes_path = output / "release-notes.md"
+        notes = generate_release_notes(version, commit, previous_tag, subjects, diffstat,
+                                       notes_path, notarized=signed)
+        run("gh", "release", "create", tag, str(saved), str(metadata), str(checksums), "--repo", REPO,
+            "--target", commit, "--title", f"Cruise Control {version}",
+            "--notes-file", str(notes_path), "--draft")
+        record = json.loads(run("gh", "api", f"repos/{REPO}/releases/tags/{tag}", capture=True))
+        link = verify_draft_record(record, tag, commit, [saved, metadata, checksums])
+        print(f"Verified unpublished GitHub draft {tag} from {commit}: {link}", flush=True)
+        print(f"Assets verified: {saved.name}, {metadata.name}, {checksums.name}.", flush=True)
+    else:
+        print(f"Local preview built {version} from {commit}; no GitHub release was created.\n{saved}", flush=True)
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (RuntimeError, subprocess.CalledProcessError, OSError) as error:
+    except (RuntimeError, subprocess.CalledProcessError, OSError, json.JSONDecodeError) as error:
         raise SystemExit(f"Repackaging failed: {error}")
