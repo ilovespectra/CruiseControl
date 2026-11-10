@@ -10,14 +10,14 @@ struct PublisherApp: App {
                 Text("Repackage binaries").font(.title2.bold())
                 Text("Maintainer tool — not included in the public Cruise Control app.")
                     .foregroundStyle(.secondary)
-                Text("Commit and push changes to the production branch first. Builds use an isolated workspace that is cleaned afterward. Publishing requires the official repository owner's GitHub admin permission.")
+                Text("Commit and push changes to the production branch first. Builds use an isolated workspace that is cleaned afterward. GitHub drafts require the official repository owner's admin permission; other users get local previews only.")
                 HStack {
                     TextField("CruiseControl source folder", text: $publisher.repositoryPath)
                     Button("Choose…") { publisher.chooseRepository() }
                 }.disabled(publisher.running)
                 HStack {
-                    Button("Build preview") { publisher.publish(preview: true) }
-                    Button("Build & publish unsigned release…") { publisher.publish(preview: false) }
+                    Button("Build preview") { publisher.build(preview: true) }
+                    Button("Build GitHub draft…") { publisher.build(preview: false) }
                     if publisher.running { ProgressView().controlSize(.small) }
                 }.disabled(publisher.running)
                 ScrollView {

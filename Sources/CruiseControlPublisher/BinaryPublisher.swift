@@ -17,7 +17,7 @@ final class BinaryPublisher: ObservableObject {
         if panel.runModal() == .OK, let url = panel.url { repositoryPath = url.path }
     }
 
-    func publish(preview: Bool) {
+    func build(preview: Bool) {
         guard !running else { return }
         let root = URL(fileURLWithPath: repositoryPath, isDirectory: true)
         let script = root.appendingPathComponent("scripts/repackage-binaries.sh")
@@ -27,16 +27,16 @@ final class BinaryPublisher: ObservableObject {
         }
         if !preview {
             let alert = NSAlert()
-            alert.messageText = "Publish the next unsigned binary release?"
-            alert.informativeText = "This builds the latest clean, pushed production commit and publishes a GitHub release. macOS warnings are expected. Failed builds do not advance the published version. The script verifies that GitHub CLI is authenticated as the official repository owner with admin permission."
+            alert.messageText = "Create the next GitHub draft release?"
+            alert.informativeText = "This builds the latest clean, pushed production commit and creates an unpublished GitHub draft with locally generated Ollama release notes. It never publishes the release. GitHub CLI must confirm the official repository owner and admin permission; otherwise the build safely remains a local preview. macOS warnings are expected for unsigned packages."
             alert.addButton(withTitle: "Cancel")
-            alert.addButton(withTitle: "Build and publish")
+            alert.addButton(withTitle: "Build draft")
             guard alert.runModal() == .alertSecondButtonReturn else { return }
         }
         let child = Process()
         let pipe = Pipe()
         child.executableURL = URL(fileURLWithPath: "/bin/bash")
-        child.arguments = [script.path] + (preview ? ["--preview"] : ["--publish", "--unsigned"])
+        child.arguments = [script.path] + (preview ? ["--preview"] : ["--draft"])
         child.currentDirectoryURL = root
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"

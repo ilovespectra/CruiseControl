@@ -8,13 +8,13 @@ Build the console from the repository root with `swift build --product CruiseCon
 
 The repackage script refuses a dirty checkout or a checkout that is not exactly at the latest pushed production commit. It stages the build in a temporary directory and keeps prior output intact if the selected version's output directory already exists.
 
-The console chooses the next version from the highest stable GitHub release, the app bundle's current version, and any local `build/releases/*/release.json` candidates. Version comparison is numeric; historical versions with multi-digit minor or patch fields remain valid, but new versions roll digits at nine (`1.0.9` → `1.1.0`; `1.9.9` → `2.0.0`). A local staged `1.0.13` therefore makes the next candidate `1.1.0`, without rewriting that old candidate. A preview does not publish a release or change the public download feed.
+The console chooses versions with numeric ordering and rolls digits at nine (`1.0.9` → `1.1.0`; `1.9.9` → `2.0.0`). Draft versions follow the latest stable release and app baseline; previews also account for staged local candidates so an existing preview is never overwritten. A preview never creates a GitHub release or changes the public download feed.
 
-## Official publishing boundary
+## Owner-only GitHub drafts
 
-Publishing requires the explicit confirmation in the Publisher and `gh` authenticated to GitHub. Before reading release metadata or building for publication, the script verifies that the authenticated login is the owner of `ilovespectra/CruiseControl`, that the repository metadata names that same owner, and that the account has `admin: true`. A clone's own credentials cannot publish to the official repository unless GitHub grants that account those actual permissions. No GitHub tokens, signing keys, or owner credentials are stored in this source or the user app.
+Choose **Build GitHub draft…** to create an unpublished release for manual review. Before release metadata is read or release assets are built, the script verifies that `gh` is authenticated as the owner of `ilovespectra/CruiseControl` and that the account has `admin: true`. If that preflight fails, it safely downgrades to a local preview; it never falls back to a public release. Forks and non-owner accounts therefore keep local-only builds. No GitHub tokens or owner credentials are stored in this source or the user app.
 
-The Publisher's current release action is explicitly unsigned (`--publish --unsigned`), so macOS may show an installation warning. Signed/notarized packaging is available to the script only when the maintainer provides valid Developer ID identities and a local notary keychain profile; do not put those credentials in the repository.
+The draft flow builds the clean, pushed production commit in an isolated workspace, runs tests, verifies the app signature and universal architectures, and checks the package, release manifest, and SHA-256 file against one another. Local Ollama selects up to four relevant verified commit subjects; the notes use those exact subjects and verified build facts rather than unverified generated claims. The console creates a GitHub **draft** with the package and checksums, reads it back, and verifies its unpublished state, source commit, and uploaded asset digests/sizes. The owner reviews and publishes it manually. Unsigned packages may trigger macOS warnings.
 
 ## Scope
 
