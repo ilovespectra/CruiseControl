@@ -66,6 +66,10 @@ struct ScanResult {
     var chatButtons: [(element: AXUIElement, label: String)] = []
     var recentTasks: [String] = []
     var selectedTask: String?
+    /// Chat-header task while the composer holds a draft (HeyClicky hides the "Message <task>…" placeholder then).
+    var draftTask: String?
+    /// HeyClicky's main chat ("Your chat", "Ask HeyClicky…") rather than a task thread.
+    var mainChat = false
     var selectedStatus: String?
     /// Most recent turn outcome, including a stop footer that overrides an Interrupted badge.
     var latestTurnStatus: String?
@@ -108,6 +112,11 @@ struct ClickyScanner {
         var inRecents = false
         var recentTasks: [String] = []
         var selectedTask: String?
+        var headerTask: String?
+        var draftTask: String?
+        var draftInput: AXUIElement?
+        var mainChat = false
+        var mainChatHeader = false
         var selectedStatus: String?
         var latestTurnStatus: String?
     }
@@ -141,7 +150,8 @@ struct ClickyScanner {
                 }
 
                 // HeyClicky 1.1.3 has no labelled send button: the composer is the short (empty) box, not a report.
-                if ctx.send == nil, let box = ctx.inputs.min(by: { ($0.1, $0.2) < ($1.1, $1.2) }) { ctx.input = box.0 }
+                // A drafted composer can be longer than short reports; it is still the first text area.
+                if ctx.send == nil, let box = ctx.draftInput ?? ctx.inputs.min(by: { ($0.1, $0.2) < ($1.1, $1.2) })?.0 { ctx.input = box }
                 if let input = ctx.input, result.composer == nil || (result.composer?.send == nil && ctx.send != nil) {
                     result.composer = Composer(input: input, send: ctx.send, pid: pid)
                     result.transcript = ctx.texts
@@ -149,6 +159,8 @@ struct ClickyScanner {
                     result.conversation = ctx.texts
                     result.lastCard = ctx.lastCard
                     result.selectedTask = ctx.selectedTask
+                    result.draftTask = ctx.selectedTask == nil ? ctx.draftTask : nil
+                    result.mainChat = ctx.selectedTask == nil && result.draftTask == nil && (ctx.mainChat || ctx.mainChatHeader)
                     result.selectedStatus = ctx.selectedStatus
                     result.latestTurnStatus = ctx.latestTurnStatus
                     result.recentTasks = ctx.recentTasks
@@ -254,8 +266,16 @@ struct ClickyScanner {
             if let value, !value.isEmpty {
                 if ctx.selectedStatus == nil, ctx.texts.count < 3, StallTracker.cardStatuses.contains(Matcher.normalize(value)) {
                     ctx.selectedStatus = value
+                    // Window header: task title followed by its status ("Portfolio Scribe", "Done").
+                    if ctx.texts.count == 1, ctx.inputs.isEmpty { ctx.headerTask = ctx.texts[0] }
                 }
                 if value == "RECENTS" { ctx.inRecents = true }
+                if value == "Your chat", ctx.texts == [MainChatTapOut.chatName] { ctx.mainChatHeader = true }
+                if value.hasPrefix("Ask \(MainChatTapOut.chatName)") {
+                    ctx.mainChat = true
+                    ctx.inRecents = false
+                    ctx.texts = []
+                }
                 if let task = TaskAudit.composerTask(value) {
                     ctx.selectedTask = task
                     ctx.inRecents = false
@@ -282,6 +302,12 @@ struct ClickyScanner {
         case kAXTextAreaRole, kAXTextFieldRole:
             // The composer is the text area right before the send button; expanded reports are text areas too.
             if ctx.send == nil {
+                // A draft hides the placeholder that normally resets the transcript; reset at the composer instead.
+                if ctx.inputs.isEmpty, ctx.selectedTask == nil, let value, !value.isEmpty {
+                    ctx.draftTask = ctx.headerTask
+                    ctx.draftInput = e
+                    ctx.texts = []
+                }
                 ctx.input = e
                 ctx.inputs.append((e, value?.count ?? 0, AX.frame(e)?.height ?? 0))
             }

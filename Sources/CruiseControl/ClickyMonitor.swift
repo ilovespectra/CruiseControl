@@ -85,6 +85,9 @@ final class ClickyMonitor: ObservableObject {
     private var approvalAttempts: [String: Date] = [:]
     private var writePolicyHolds: [String: Date] = [:]
     private var toolPolicyHolds: [String: Date] = [:]
+    private var lastMainChatCheckAt = Date.distantPast
+    private var tapOutAttempts: [String: Date] = [:]
+    private var urlPolicyHolds: [String: Date] = [:]
     private var lastVSCodeThreadProbeAt = Date.distantPast
     private var usageScanBusy = false
     private var lastUsageScanAt = Date.distantPast
@@ -94,6 +97,11 @@ final class ClickyMonitor: ObservableObject {
     private var taskRecovery = TaskRecovery()
     private var recoveryHistoryReadable = true
     private let taskRecoveryURL = ConfigStore.directory.appendingPathComponent("stopped-tasks.json")
+    private let pendingMessageURL = ConfigStore.directory.appendingPathComponent("pending-message.json")
+    @Published private(set) var pendingMessage: PendingMessage?
+    private var messageHistoryReadable = true
+    private var lastMessageRetryAt = Date.distantPast
+    private var pendingHeldLogged = false
 
     private struct Budget: Codable {
         var continueTimes: [Date]
@@ -120,6 +128,14 @@ final class ClickyMonitor: ObservableObject {
             loadingStats = false
         }
         saveStats()
+        if FileManager.default.fileExists(atPath: pendingMessageURL.path) {
+            do {
+                pendingMessage = try JSONDecoder().decode(PendingMessage.self, from: Data(contentsOf: pendingMessageURL))
+            } catch {
+                messageHistoryReadable = false
+                record("couldn't load pending HeyClicky message: \(error.localizedDescription) — automatic messages disabled")
+            }
+        }
         if FileManager.default.fileExists(atPath: taskRecoveryURL.path) {
             do {
                 taskRecovery = try JSONDecoder().decode(TaskRecovery.self, from: Data(contentsOf: taskRecoveryURL))
@@ -295,6 +311,10 @@ final class ClickyMonitor: ObservableObject {
             consentAttempts = 0
             return
         }
+        guard messageHistoryReadable else { return }
+        if let message = pendingMessage, message.isExpired(), message.holdReason == nil {
+            holdPendingMessage("Undelivered for 30 minutes. Review the saved message and the task in HeyClicky before discarding it.")
+        }
         let now = Date()
         if NotchInspection.shouldInspect(workingCount: result.workingCount, mode: config.mode,
                                          idleSeconds: Self.idleSeconds(), lastProbe: lastNotchInspectionAt,
@@ -321,12 +341,21 @@ final class ClickyMonitor: ObservableObject {
         }
 
         if await handleConsent(result, config: config) { return }
+        if pendingMessage != nil {
+            await retryPendingMessage(config: config)
+            return
+        }
         if await resumeAfterRelaunch(result, config: config) { return }
         if await handleUpdate(result, config: config) { return }
         if await handleInterruptedCards(result, config: config) { return }
+        guard pendingMessage == nil else { return }
         if await handleNeedsYou(result, config: config) { return }
+        if await handleMainChatTapOut(result, config: config) { return }
+        guard pendingMessage == nil else { return }
         if await auditOtherClickyTasks(config: config) { return }
+        guard pendingMessage == nil else { return }
         await handleReports(result, config: config)
+        guard pendingMessage == nil else { return }
         if await handleInterrupt(result, config: config) { return }
         _ = await handleStall(result, config: config)
     }
@@ -483,7 +512,8 @@ final class ClickyMonitor: ObservableObject {
         do {
             let draft = try await Ollama.draftChatBump(
                 TaskAudit.context(task: task, transcript: rescan.transcript.joined(separator: "\n")),
-                config: config, system: TaskAudit.system, taskName: task, latestReport: latestReport)
+                config: config, system: TaskAudit.system, taskName: task,
+                latestReport: TaskAudit.latestTurn(rescan.transcript, report: latestReport), implicitYes: config.mode == .cruise)
             guard draft.unfinished else {
                 record("report for “\(task)” has no actionable unfinished work")
                 return
@@ -506,7 +536,7 @@ final class ClickyMonitor: ObservableObject {
             record("couldn't assess task report: \(error.localizedDescription) — no generic fallback sent")
         }
 
-        if let previousApp, previousApp.bundleIdentifier.map({ !config.clickyBundleIDs.contains($0) }) ?? true {
+        if pendingMessage == nil, let previousApp, previousApp.bundleIdentifier.map({ !config.clickyBundleIDs.contains($0) }) ?? true {
             previousApp.activate()
         }
     }
@@ -563,7 +593,7 @@ final class ClickyMonitor: ObservableObject {
             record("failed to send nudge to “\(task)”")
         }
 
-        if let previousApp, previousApp.bundleIdentifier.map({ !config.clickyBundleIDs.contains($0) }) ?? true {
+        if pendingMessage == nil, let previousApp, previousApp.bundleIdentifier.map({ !config.clickyBundleIDs.contains($0) }) ?? true {
             previousApp.activate()
         }
         return true
@@ -595,7 +625,7 @@ final class ClickyMonitor: ObservableObject {
     }
 
     private func selectTask(_ task: String, from chat: ScanResult, config: Config) async -> ScanResult? {
-        if chat.selectedTask.map({ Matcher.normalize($0) == Matcher.normalize(task) }) == true { return chat }
+        if Self.chatName(chat).map({ Matcher.normalize($0) == Matcher.normalize(task) }) == true { return chat }
         guard
             let row = chat.chatButtons.first(where: {
                 Matcher.normalize($0.label) == Matcher.normalize(task) || Matcher.isTaskRow($0.label, title: task)
@@ -612,10 +642,83 @@ final class ClickyMonitor: ObservableObject {
         for _ in 0..<10 {
             try? await Task.sleep(nanoseconds: 300_000_000)
             let scan = await Worker.run { ClickyScanner(config: config).scan() }
-            if scan.selectedTask.map({ Matcher.normalize($0) == Matcher.normalize(task) }) == true { return scan }
+            if Self.chatName(scan).map({ Matcher.normalize($0) == Matcher.normalize(task) }) == true { return scan }
         }
         record("HeyClicky didn't confirm task “\(task)” — no message sent")
         return nil
+    }
+
+    /// Clicky taps out in its main chat ("…shall I retry in smaller checkpoints?") while work is unfinished. In Cruise
+    /// mode that is answered yes, asking for smaller tasks that can each be verified.
+    private func handleMainChatTapOut(_ result: ScanResult, config: Config) async -> Bool {
+        let now = Date()
+        guard config.mode == .cruise, config.autoContinueReports, config.replyToTapOuts,
+              Self.idleSeconds() >= config.awayIdleSeconds else { return false }
+        var chat = result
+        var navigatedFrom: String?
+        var previousApp: NSRunningApplication?
+        if !result.mainChat || result.composer == nil {
+            guard now.timeIntervalSince(lastMainChatCheckAt) >= config.clickyTaskAuditMinutes * 60 else { return false }
+            lastMainChatCheckAt = now
+            previousApp = NSWorkspace.shared.frontmostApplication
+            guard let revealed = await revealChat(config: config) else { return false }
+            navigatedFrom = revealed.selectedTask
+            guard let main = await selectTask(MainChatTapOut.chatName, from: revealed, config: config) else { return false }
+            chat = main
+        }
+        let handled = await answerMainChatTapOut(chat, config: config, now: now)
+        if !handled, let task = navigatedFrom {
+            let scan = await Worker.run { ClickyScanner(config: config).scan() }
+            _ = await selectTask(task, from: scan, config: config)
+        }
+        if pendingMessage == nil, let previousApp,
+           previousApp.bundleIdentifier.map({ !config.clickyBundleIDs.contains($0) }) ?? true {
+            previousApp.activate()
+        }
+        return handled
+    }
+
+    private func answerMainChatTapOut(_ chat: ScanResult, config: Config, now: Date) async -> Bool {
+        guard chat.mainChat, let composer = chat.composer,
+              let tapOut = MainChatTapOut.detect(chat.transcript),
+              now.timeIntervalSince(tapOutAttempts[tapOut.fingerprint] ?? .distantPast) >= config.clickyTaskAuditMinutes * 60
+        else { return false }
+        if taskRecovery.isStopped(task: tapOut.task) { return false }
+        if let row = chat.chatButtons.compactMap({ TaskRow.parse($0.label) })
+            .first(where: { [tapOut.task, MainChatTapOut.chatName].map(Matcher.normalize).contains(Matcher.normalize($0.name)) && StallTracker.isBusy($0.status) }) {
+            record("“\(row.name)” is \(row.status) — tap-out reply waits")
+            return false
+        }
+        let limits = ReportGate.Limits(config: config)
+        guard gate.canContinue(now: now, limits: limits),
+              nudgeLimiter.allow(task: tapOut.task, now: now, maxPerHour: config.maxNudgesPerTaskPerHour) else { return false }
+        let input = composer.input
+        guard await Worker.run({ (AX.stringValue(input) ?? "").isEmpty }) else {
+            record("main chat has a draft — not answering “\(tapOut.task)” tap-out")
+            return false
+        }
+        if tapOutAttempts.count > 100 { tapOutAttempts.removeAll() }
+        tapOutAttempts[tapOut.fingerprint] = now
+        record("clicky tapped out on “\(tapOut.task)” in the main chat — drafting a smaller-checkpoints reply")
+        let reply = await Ollama.draftTapOutReply(tapOut, config: config)
+        let fresh = await Worker.run { ClickyScanner(config: config).scan() }
+        guard fresh.mainChat, MainChatTapOut.detect(fresh.transcript) == tapOut, let freshComposer = fresh.composer,
+              store.config.mode == .cruise, store.config.replyToTapOuts,
+              Self.idleSeconds() >= config.awayIdleSeconds else {
+            record("main chat changed while drafting — tap-out reply for “\(tapOut.task)” not sent")
+            return false
+        }
+        nudgeLimiter.record(task: tapOut.task, at: Date())
+        gate.recordContinue(at: Date())
+        saveBudget()
+        let sent = await send(reply.message, via: freshComposer, task: MainChatTapOut.chatName)
+        if sent {
+            stats.continued += 1
+            record("answered “\(tapOut.task)” tap-out in the main chat via \(reply.source): \(reply.message.prefix(160))")
+        } else if pendingMessage == nil {
+            record("couldn't send the main-chat reply for “\(tapOut.task)”")
+        }
+        return sent || pendingMessage != nil
     }
 
     private func auditOtherClickyTasks(config: Config) async -> Bool {
@@ -666,11 +769,11 @@ final class ClickyMonitor: ObservableObject {
             do {
                 let draft = try await Ollama.draftChatBump(
                     TaskAudit.context(task: task, transcript: transcript), config: config, system: TaskAudit.system, taskName: task,
-                    latestReport: latestReport)
-                state.answeredTranscript = transcript
-                taskAuditStates[task] = state
-                guard saveTaskAudits() else { break }
+                    latestReport: TaskAudit.latestTurn(chat.transcript, report: latestReport), implicitYes: config.mode == .cruise)
                 guard draft.unfinished else {
+                    state.answeredTranscript = transcript
+                    taskAuditStates[task] = state
+                    guard saveTaskAudits() else { break }
                     record("task audit: “\(task)” has no actionable unfinished work")
                     continue
                 }
@@ -691,9 +794,13 @@ final class ClickyMonitor: ObservableObject {
                 if await send(draft.message, via: freshComposer, task: task) {
                     stats.continued += 1
                     sent = true
+                    state.answeredTranscript = transcript
+                    taskAuditStates[task] = state
+                    guard saveTaskAudits() else { return sent }
                     record("task audit resumed “\(task)”: \(draft.message.prefix(160))")
                 } else {
                     record("task audit couldn't send to “\(task)” — not redirecting to another task")
+                    if pendingMessage != nil { return sent }
                 }
             } catch {
                 record("task audit failed for “\(task)”: \(error.localizedDescription)")
@@ -703,7 +810,7 @@ final class ClickyMonitor: ObservableObject {
             let scan = await Worker.run { ClickyScanner(config: config).scan() }
             _ = await selectTask(task, from: scan, config: config)
         }
-        if let previousApp, previousApp.bundleIdentifier.map({ !config.clickyBundleIDs.contains($0) }) ?? true {
+        if pendingMessage == nil, let previousApp, previousApp.bundleIdentifier.map({ !config.clickyBundleIDs.contains($0) }) ?? true {
             previousApp.activate()
         }
         return sent
@@ -809,7 +916,7 @@ final class ClickyMonitor: ObservableObject {
         } else {
             record("failed to send the apology on “\(task)”")
         }
-        if let previousApp, previousApp.bundleIdentifier.map({ !config.clickyBundleIDs.contains($0) }) ?? true {
+        if pendingMessage == nil, let previousApp, previousApp.bundleIdentifier.map({ !config.clickyBundleIDs.contains($0) }) ?? true {
             previousApp.activate()
         }
         return true
@@ -842,7 +949,7 @@ final class ClickyMonitor: ObservableObject {
         lastInterruptedBump[task] = now
         let previousApp = NSWorkspace.shared.frontmostApplication
         defer {
-            if let previousApp, previousApp.bundleIdentifier.map({ !config.clickyBundleIDs.contains($0) }) ?? true {
+            if pendingMessage == nil, let previousApp, previousApp.bundleIdentifier.map({ !config.clickyBundleIDs.contains($0) }) ?? true {
                 previousApp.activate()
             }
         }
@@ -934,7 +1041,15 @@ final class ClickyMonitor: ObservableObject {
                 record("vscode: tool permission held — enable “allow tool permissions (including session grants)” in Settings → Automation to review tool/provider identity and grant scope.")
             }
         }
+        for pending in pendingRequests where pending.urlFetch && config.vscodeURLFetchPolicy == .hold {
+            if now.timeIntervalSince(urlPolicyHolds[pending.key] ?? .distantPast) >= 60 {
+                if urlPolicyHolds.count > 300 { urlPolicyHolds.removeAll() }
+                urlPolicyHolds[pending.key] = now
+                record("vscode: URL fetch held — Settings → Automation → URL fetches is set to leave them for you.")
+            }
+        }
         guard let pending = pendingRequests.first(where: { pending in
+            if pending.urlFetch && config.vscodeURLFetchPolicy == .hold { return false }
             if pending.writeMetadataOnly && !config.vscodeAllowWriteMetadata { return false }
             if pending.toolPermission && !config.vscodeAllowToolPermissions { return false }
             if let onlyKey, pending.key != onlyKey || pending.sidebarThread == nil { return false }
@@ -950,6 +1065,9 @@ final class ClickyMonitor: ObservableObject {
         let verdict: ApprovalReview.Verdict
         if let cached = reviews[key]?.verdict {
             verdict = cached
+        } else if pending.urlFetch && config.vscodeURLFetchPolicy == .allowAll {
+            verdict = ApprovalReview.Verdict(safe: true, reason: "URL fetches allowed by your setting")
+            remember(key, verdict)
         } else if let reason = ApprovalReview.hardBlockReason(pending.request) {
             verdict = ApprovalReview.Verdict(safe: false, reason: reason)
             remember(key, verdict)
@@ -979,7 +1097,10 @@ final class ClickyMonitor: ObservableObject {
         guard let still = await Worker.run({ VSCodeScanner(config: config).scanAll().first { $0.key == key } }),
               still.request == pending.request, store.config.vscodeAutoApprove,
               !still.writeMetadataOnly || store.config.vscodeAllowWriteMetadata,
-              !still.toolPermission || store.config.vscodeAllowToolPermissions, permitAction() else { return true }
+              !still.toolPermission || store.config.vscodeAllowToolPermissions,
+              !still.urlFetch || store.config.vscodeURLFetchPolicy != .hold,
+              !still.urlFetch || config.vscodeURLFetchPolicy != .allowAll || store.config.vscodeURLFetchPolicy == .allowAll,
+              permitAction() else { return true }
         approvalAttempts[key] = Date()
         let pressed = await pressVSCodeConfirmation(still, config: config, permitAction: permitAction)
         if pressed {
@@ -1327,7 +1448,7 @@ final class ClickyMonitor: ObservableObject {
         } else {
             record("failed to send the reply on “\(task)”")
         }
-        if let previousApp, previousApp.bundleIdentifier.map({ !config.clickyBundleIDs.contains($0) }) ?? true {
+        if pendingMessage == nil, let previousApp, previousApp.bundleIdentifier.map({ !config.clickyBundleIDs.contains($0) }) ?? true {
             previousApp.activate()
         }
         return true
@@ -1356,13 +1477,19 @@ final class ClickyMonitor: ObservableObject {
         }
     }
 
+    /// The thread on screen: a task, the drafted task header, or HeyClicky's main chat.
+    static func chatName(_ scan: ScanResult, draft: Bool = true) -> String? {
+        scan.selectedTask ?? (draft ? scan.draftTask : nil) ?? (scan.mainChat ? MainChatTapOut.chatName : nil)
+    }
+
     /// Shared by every HeyClicky continuation path, including delayed Ollama drafts.
-    private func recoveryAllowed(_ scan: ScanResult) -> Bool {
+    private func recoveryAllowed(_ scan: ScanResult, draft: Bool = false) -> Bool {
+        let selected = Self.chatName(scan, draft: draft)
         let previous = taskRecovery
         for row in scan.chatButtons.compactMap({ TaskRow.parse($0.label) }) where TaskRecovery.isStopped(row.status) {
             taskRecovery.observe(task: row.name, status: row.status, latestTurnStatus: nil)
         }
-        if let task = scan.selectedTask {
+        if let task = selected, !scan.mainChat {
             taskRecovery.observe(task: task, status: scan.selectedStatus, latestTurnStatus: scan.latestTurnStatus)
         }
         if taskRecovery != previous {
@@ -1374,7 +1501,7 @@ final class ClickyMonitor: ObservableObject {
             }
         }
         guard recoveryHistoryReadable else { return false }
-        guard let task = scan.selectedTask else { return false }
+        guard let task = selected else { return false }
         if taskRecovery.isStopped(task: task) {
             if !previous.isStopped(task: task) {
                 record("“\(task)” was stopped by you — leaving it stopped until you resume it")
@@ -1386,79 +1513,219 @@ final class ClickyMonitor: ObservableObject {
 
     private func send(_ text: String, via composer: Composer, task: String) async -> Bool {
         let config = store.config
+        guard messageHistoryReadable, pendingMessage == nil,
+              config.mode != .manual, config.autoContinueReports else {
+            record("message not sent — automation disabled or another delivery is pending")
+            return false
+        }
         let fresh = await Worker.run { ClickyScanner(config: config).scan() }
         guard recoveryAllowed(fresh),
-              fresh.selectedTask.map({ Matcher.normalize($0) == Matcher.normalize(task) }) == true,
+              Self.chatName(fresh, draft: false).map({ Matcher.normalize($0) == Matcher.normalize(task) }) == true,
               let current = fresh.composer, current.pid == composer.pid,
               CFEqual(current.input, composer.input) else {
             record("recovery for “\(task)” blocked: task stopped or chat could not be verified")
             return false
         }
-        if await Worker.run({ Self.sendViaAccessibility(composer, text: text) }) { return true }
-        let retry = await Worker.run { ClickyScanner(config: config).scan() }
-        guard recoveryAllowed(retry), retry.selectedTask == fresh.selectedTask else {
-            record("task stopped or changed — paste fallback not sent")
+        guard await Worker.run({ AX.stringValue(current.input) == "" }) else {
+            record("“\(task)” has an unreadable or existing draft — not overwriting it")
             return false
         }
-        return await sendViaPaste(composer, text: text, task: task)
-    }
-
-    nonisolated private static func sendViaAccessibility(_ composer: Composer, text: String) -> Bool {
-        AX.setFocused(composer.input)
-        guard AX.setValue(composer.input, text) else { return false }
-        usleep(300_000)
-        guard AX.stringValue(composer.input)?.contains(text.prefix(24)) == true else { return false }
-
-        if let send = composer.send, AX.isEnabled(send) {
-            AX.press(send)
-        } else {
+        let message = PendingMessage(task: task, text: text, transcript: fresh.transcript)
+        do {
+            try JSONEncoder().encode(message).write(to: pendingMessageURL, options: .atomic)
+        } catch {
+            record("couldn't persist HeyClicky message: \(error.localizedDescription) — not sent")
             return false
         }
-        usleep(800_000)
-        let remaining = AX.stringValue(composer.input) ?? ""
-        return !remaining.contains(text.prefix(24))
+        pendingMessage = message
+        pendingHeldLogged = false
+        return await deliverPendingMessage(config: config)
     }
 
-    private func sendViaPaste(_ composer: Composer, text: String, task: String) async -> Bool {
+    private func retryPendingMessage(config: Config) async {
+        guard config.mode != .manual, config.autoContinueReports,
+              Date().timeIntervalSince(lastMessageRetryAt) >= 15,
+              let message = pendingMessage else { return }
+        lastMessageRetryAt = Date()
+        if message.holdReason != nil {
+            _ = await deliverPendingMessage(config: config)
+            return
+        }
+        guard Self.idleSeconds() >= config.awayIdleSeconds else { return }
+        guard let chat = await revealChat(config: config),
+              await selectTask(message.task, from: chat, config: config) != nil else { return }
+        if await deliverPendingMessage(config: config) {
+            stats.continued += 1
+            record("delivered pending message to “\(message.task)”")
+        }
+    }
+
+    private func deliverPendingMessage(config: Config) async -> Bool {
+        for attempt in 0...3 {
+            guard let message = pendingMessage else { return false }
+            let scan = await Worker.run { ClickyScanner(config: config).scan() }
+            let allowed = recoveryAllowed(scan, draft: true)
+            if Self.chatName(scan).map({ Matcher.normalize($0) == Matcher.normalize(message.task) }) == true,
+               taskRecovery.isStopped(task: message.task) {
+                holdPendingMessage("Task was stopped. The saved message will not be submitted automatically.")
+                return false
+            }
+            guard store.config.mode != .manual, store.config.autoContinueReports,
+                  allowed, let composer = scan.composer else { return false }
+            let input = await Worker.run { AX.stringValue(composer.input) }
+            switch message.delivery(selectedTask: Self.chatName(scan), input: input, transcript: scan.transcript) {
+            case .delivered:
+                return clearPendingMessage()
+            case .superseded:
+                holdPendingMessage("Conversation has moved on. Review the saved message; it will not be sent into a changed conversation.")
+                return false
+            case .held:
+                guard !pendingHeldLogged else { return false }
+                pendingHeldLogged = true
+                record("pending message for “\(message.task)” held: \(message.holdReason ?? "chat, draft or submission cannot be verified") — saved in Settings → Activity; not overwriting or resending")
+                return false
+            case .ready:
+                break
+            }
+            if attempt == 3 { break }
+            if attempt == 0 {
+                let ready = await Worker.run {
+                    if input != message.text {
+                        guard AX.setValue(composer.input, message.text) else { return false }
+                        usleep(300_000)
+                    }
+                    return AX.stringValue(composer.input) == message.text
+                }
+                if ready {
+                    let fresh = await Worker.run { ClickyScanner(config: config).scan() }
+                    let value = await Worker.run { fresh.composer.flatMap { AX.stringValue($0.input) } }
+                    if store.config.mode != .manual, store.config.autoContinueReports,
+                       recoveryAllowed(fresh, draft: true), let current = fresh.composer,
+                       CFEqual(current.input, composer.input),
+                       message.delivery(selectedTask: Self.chatName(fresh), input: value, transcript: fresh.transcript) == .ready,
+                       let send = current.send, AX.isEnabled(send), markMessageSubmission() {
+                        _ = await Worker.run { AX.press(send) }
+                    }
+                }
+            } else {
+                await submitPendingViaKeyboard(composer, message: message, config: config)
+            }
+            try? await Task.sleep(nanoseconds: 900_000_000)
+        }
+        record("HeyClicky message is still pending — saved for retry before navigating away")
+        return false
+    }
+
+    private func clearPendingMessage() -> Bool {
+        do {
+            try FileManager.default.removeItem(at: pendingMessageURL)
+            pendingMessage = nil
+            pendingHeldLogged = false
+            return true
+        } catch {
+            record("couldn't clear pending HeyClicky message: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    private func holdPendingMessage(_ reason: String) {
+        guard var message = pendingMessage, message.holdReason != reason else { return }
+        message.hold(reason)
+        do {
+            try JSONEncoder().encode(message).write(to: pendingMessageURL, options: .atomic)
+            pendingMessage = message
+            record("pending message for “\(message.task)” saved for review: \(reason)")
+        } catch {
+            messageHistoryReadable = false
+            record("couldn't persist held message: \(error.localizedDescription) — automatic HeyClicky delivery disabled")
+        }
+    }
+
+    func discardPendingMessage() {
+        guard let message = pendingMessage else { return }
+        let alert = NSAlert()
+        alert.messageText = "Discard the saved message to \(message.task)?"
+        alert.informativeText = "This removes Cruise Control's delivery record, not any draft already in HeyClicky. Review that chat before allowing another follow-up."
+        alert.addButton(withTitle: "Keep saved")
+        alert.addButton(withTitle: "Discard saved message")
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        if clearPendingMessage() { record("user discarded saved message for “\(message.task)”") }
+    }
+
+    private func markMessageSubmission() -> Bool {
+        guard var message = pendingMessage else { return false }
+        message.submissionAttempted = true
+        do {
+            try JSONEncoder().encode(message).write(to: pendingMessageURL, options: .atomic)
+            pendingMessage = message
+            return true
+        } catch {
+            record("couldn't persist HeyClicky submission attempt: \(error.localizedDescription) — not submitted")
+            return false
+        }
+    }
+
+    private func submitPendingViaKeyboard(_ composer: Composer, message: PendingMessage, config: Config) async {
+        guard Self.idleSeconds() >= config.awayIdleSeconds else {
+            record("waiting for idle input before submitting pending message")
+            return
+        }
+        let interaction = InputSynth.UserInteractionWatch()
+        defer { interaction.stop() }
+        NSRunningApplication(processIdentifier: composer.pid)?.activate()
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        let fresh = await Worker.run { ClickyScanner(config: config).scan() }
+        guard store.config.mode != .manual, store.config.autoContinueReports,
+              recoveryAllowed(fresh, draft: true), let current = fresh.composer, current.pid == composer.pid,
+              CFEqual(current.input, composer.input),
+              !interaction.interrupted,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == composer.pid else {
+            record("task or focus changed before submission — message remains pending")
+            return
+        }
+        let value = await Worker.run { AX.stringValue(current.input) }
+        guard message.delivery(selectedTask: Self.chatName(fresh), input: value, transcript: fresh.transcript) == .ready else {
+            record("chat changed before submission — message remains pending")
+            return
+        }
         let pasteboard = NSPasteboard.general
         let saved = pasteboard.string(forType: .string)
         pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-
-        NSRunningApplication(processIdentifier: composer.pid)?.activate()
-        try? await Task.sleep(nanoseconds: 400_000_000)
-
-        let config = store.config
-        let fresh = await Worker.run { ClickyScanner(config: config).scan() }
-        guard recoveryAllowed(fresh),
-              fresh.selectedTask.map({ Matcher.normalize($0) == Matcher.normalize(task) }) == true,
-              let current = fresh.composer,
-              CFEqual(current.input, composer.input) else {
+        pasteboard.setString(message.text, forType: .string)
+        defer {
             pasteboard.clearContents()
             if let saved { pasteboard.setString(saved, forType: .string) }
-            record("task stopped or changed before paste — continuation not sent")
-            return false
         }
-        let input = composer.input
+        let input = current.input
         await withOverlayHidden {
             await Worker.run {
-                AX.setFocused(input)
-                if let frame = AX.frame(input) {
-                    InputSynth.click(at: CGPoint(x: frame.midX, y: frame.midY))
-                }
+                guard AX.setFocused(input), AX.stringValue(input) == value,
+                      let focused: AXUIElement = AX.attr(AXUIElementCreateApplication(composer.pid), kAXFocusedUIElementAttribute),
+                      CFEqual(focused, input) else { return }
+                // Re-pasting also updates composers whose model ignores AX value changes.
                 InputSynth.key(InputSynth.keyA, flags: .maskCommand)
                 InputSynth.key(InputSynth.keyV, flags: .maskCommand)
                 usleep(250_000)
+            }
+            let verified = await Worker.run { ClickyScanner(config: config).scan() }
+            let value = await Worker.run { verified.composer.flatMap { AX.stringValue($0.input) } }
+            guard !interaction.interrupted, self.store.config.mode != .manual,
+                  self.store.config.autoContinueReports,
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == composer.pid,
+                  self.recoveryAllowed(verified, draft: true),
+                  let latest = verified.composer, CFEqual(latest.input, input),
+                  value == message.text,
+                  message.delivery(selectedTask: Self.chatName(verified), input: value, transcript: verified.transcript) == .ready,
+                  self.markMessageSubmission() else {
+                self.record("pending message could not be verified before Return — not submitted")
+                return
+            }
+            await Worker.run {
+                guard let focused: AXUIElement = AX.attr(AXUIElementCreateApplication(composer.pid), kAXFocusedUIElementAttribute),
+                      CFEqual(focused, input), AX.stringValue(input) == message.text else { return }
                 InputSynth.key(InputSynth.keyReturn)
             }
         }
-        try? await Task.sleep(nanoseconds: 900_000_000)
-
-        pasteboard.clearContents()
-        if let saved { pasteboard.setString(saved, forType: .string) }
-
-        let remaining = await Worker.run { AX.stringValue(input) ?? "" }
-        return !remaining.contains(text.prefix(24))
     }
 
     // MARK: HeyClicky updates ("Update app" → relaunch → nudge)
@@ -1588,10 +1855,11 @@ final class ClickyMonitor: ObservableObject {
                 record("nudged “\(name)” after the update: \(message.prefix(90))\(message.count > 90 ? "…" : "")")
             } else {
                 record("failed to send the post-update nudge to “\(name)”")
+                if pendingMessage != nil { return true }
             }
             try? await Task.sleep(nanoseconds: 1_500_000_000)
         }
-        if let previousApp, previousApp.bundleIdentifier.map({ !config.clickyBundleIDs.contains($0) }) ?? true {
+        if pendingMessage == nil, let previousApp, previousApp.bundleIdentifier.map({ !config.clickyBundleIDs.contains($0) }) ?? true {
             previousApp.activate()
         }
         return true

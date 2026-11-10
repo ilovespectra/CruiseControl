@@ -4,6 +4,11 @@ public enum ChatBump {
     public struct Draft: Codable, Equatable, Sendable {
         public let unfinished: Bool
         public let message: String
+
+        public init(unfinished: Bool, message: String) {
+            self.unfinished = unfinished
+            self.message = message
+        }
     }
 
     public struct State: Codable, Sendable {

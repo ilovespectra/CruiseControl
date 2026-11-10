@@ -13,6 +13,7 @@ struct VSCodeConfirmation {
     let sidebarThread: String?
     var writeMetadataOnly = false
     var toolPermission = false
+    var urlFetch: Bool { request.hasPrefix(VSCodeApprovalContext.urlFetchPrefix) }
 }
 
 struct VSCodeAttentionThread {
@@ -161,15 +162,16 @@ struct VSCodeScanner {
                     let isTool = VSCodeApprovalContext.isToolPermissionDialog(dialog.description)
                     let toolRequest = VSCodeApprovalContext.toolPermissionRequest(
                         description: dialog.description, allowLabel: dialog.label)
-                    let request = isTool ? toolRequest : isWrite ? metadata : dialog.title.flatMap {
+                    let fetchRequest = VSCodeApprovalContext.urlFetchDialogRequest(title: dialog.title, requests: w.requests)
+                    let request = fetchRequest ?? (isTool ? toolRequest : isWrite ? metadata : dialog.title.flatMap {
                         VSCodeApprovalContext.dialogRequest(title: $0, description: dialog.description, requests: w.requests)
-                    }
-                    if let request {
+                    })
+                    if let request = request.map(VSCodeApprovalContext.classifyFetch) {
                         confirmations.append(VSCodeConfirmation(
                             allow: dialog.allow, allowLabel: dialog.label, request: request,
                             key: "\(windowKey)|\(w.session)|\(request)",
-                            window: window, sidebarThread: nil, writeMetadataOnly: metadata != nil,
-                            toolPermission: isTool))
+                            window: window, sidebarThread: nil, writeMetadataOnly: !request.hasPrefix(VSCodeApprovalContext.urlFetchPrefix) && metadata != nil,
+                            toolPermission: !request.hasPrefix(VSCodeApprovalContext.urlFetchPrefix) && isTool))
                     }
                 }
             }

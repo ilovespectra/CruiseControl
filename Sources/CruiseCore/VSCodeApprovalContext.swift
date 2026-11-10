@@ -3,25 +3,81 @@ import Foundation
 public enum VSCodeApprovalContext {
     public static let writeMetadataPrefix = "Write-file approval (metadata only; full diff and absolute paths unavailable):"
 
+    public static let urlFetchPrefix = "URL fetch approval:"
+    private static let fetchTitle = "fetch url?"
+
+    /// VS Code's fetch tool dialog: "Fetch URL? Allow fetching web content?".
+    public static func isURLFetchDialog(title: String?) -> Bool {
+        title.map { Matcher.normalize($0).hasPrefix(fetchTitle) } ?? false
+    }
+
+    /// The http(s) URLs in fetch-tool inputs ({"url": …} or {"urls": […]}), or nil if the inputs hold anything else.
+    public static func fetchURLs(_ json: String) -> [String]? {
+        guard let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              !object.isEmpty,
+              Set(object.keys).isSubset(of: ["url", "urls"]) else { return nil }
+        var urls: [String] = []
+        for (key, value) in object {
+            if key == "url", let url = value as? String { urls.append(url) }
+            else if key == "urls", let list = value as? [String] { urls += list }
+            else { return nil }
+        }
+        guard !urls.isEmpty, urls.count <= 20, urls.allSatisfy({ url in
+            guard let components = URLComponents(string: url), let scheme = components.scheme?.lowercased(),
+                  ["http", "https"].contains(scheme), components.host?.isEmpty == false else { return false }
+            return !url.contains("\n")
+        }) else { return nil }
+        return urls
+    }
+
+    /// Re-labels a resolved "Fetch URL?: {"url":…}" request; other requests pass through unchanged.
+    public static func classifyFetch(_ request: String) -> String {
+        guard Matcher.normalize(request).hasPrefix(fetchTitle), let brace = request.firstIndex(of: "{"),
+              let urls = fetchURLs(String(request[brace...]).trimmingCharacters(in: .whitespacesAndNewlines)) else { return request }
+        return urlFetchRequest(urls)
+    }
+
+    public static func urlFetchRequest(_ urls: [String]) -> String {
+        "\(urlFetchPrefix)\nURLs: \(urls.joined(separator: ", "))"
+    }
+
+    /// Pairs a "Fetch URL?" dialog with its pending request ("Fetch URL?: {"url":…}"). Several different pending
+    /// fetches are ambiguous, so the URL is reported as unavailable instead of guessed.
+    public static func urlFetchDialogRequest(title: String?, requests: [String]) -> String? {
+        guard isURLFetchDialog(title: title) else { return nil }
+        let fetches = Set(requests.compactMap { request -> [String]? in
+            guard Matcher.normalize(request).hasPrefix(fetchTitle),
+                  let brace = request.firstIndex(of: "{") else { return nil }
+            return fetchURLs(String(request[brace...]))
+        })
+        if fetches.count == 1, let urls = fetches.first { return urlFetchRequest(urls) }
+        return "\(urlFetchPrefix)\nURLs: unavailable (VS Code did not expose a unique URL for this dialog)"
+    }
+
     public static func isToolPermissionDialog(_ description: String) -> Bool {
         description.hasPrefix("Chat Confirmation Dialog Allow tool from ")
     }
 
     public static func toolPermissionRequest(description: String, allowLabel: String) -> String? {
         let prefix = "Chat Confirmation Dialog Allow tool from "
+        let description = description.replacingOccurrences(of: "\u{00a0}", with: " ")
         guard isToolPermissionDialog(description),
               ["allow in this session", "allow once"].contains(Matcher.normalize(allowLabel)),
               let separator = description.range(of: "? ", range: description.index(description.startIndex, offsetBy: prefix.count)..<description.endIndex)
         else { return nil }
         let provider = String(description[description.index(description.startIndex, offsetBy: prefix.count)..<separator.lowerBound])
         let detail = String(description[separator.upperBound...])
+            .components(separatedBy: "Show MoreInput").first ?? ""
         guard !provider.isEmpty, provider.count <= 200,
               detail.hasPrefix(provider + ": "),
               detail.count > provider.count + 2, detail.count <= 1000,
               !detail.contains("…"), !detail.contains("..."),
               !provider.contains("\n"), !detail.contains("\n") else { return nil }
+        let tool = String(detail.dropFirst(provider.count + 2))
+        guard tool.range(of: #"^[A-Za-z0-9_][A-Za-z0-9_.-]*$"#, options: .regularExpression) != nil else { return nil }
         let scope = Matcher.normalize(allowLabel) == "allow in this session" ? "this VS Code session" : "this request only"
-        return "Tool permission approval (identity only; tool inputs unavailable):\nProvider: \(provider)\nTool: \(detail.dropFirst(provider.count + 2))\nGrant scope: \(scope)\nThis grant can permit subsequent tool calls without individual confirmation."
+        return "Tool permission approval (identity only; tool inputs unavailable):\nProvider: \(provider)\nTool: \(tool)\nGrant scope: \(scope)\nThis grant can permit subsequent tool calls without individual confirmation."
     }
 
     public static func isFileMutationDialog(_ description: String) -> Bool {
@@ -59,6 +115,9 @@ public enum VSCodeApprovalContext {
         guard !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               request.count <= 4000,
               !command.contains("…"), !command.contains("...") else { return nil }
+        if structured, let urls = fetchURLs(command.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            return urlFetchRequest(urls)
+        }
         if structured {
             guard let data = command.data(using: .utf8),
                   let inputs = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

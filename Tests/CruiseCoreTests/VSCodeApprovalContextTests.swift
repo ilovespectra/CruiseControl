@@ -3,6 +3,17 @@ import Testing
 @testable import CruiseCore
 
 @Suite struct VSCodeApprovalContextTests {
+    @Test func toolIdentityNormalizesElectronSpacesAndExcludesStaleInputs() {
+        let request = VSCodeApprovalContext.toolPermissionRequest(
+            description: "Chat Confirmation Dialog Allow tool from pylance mcp server? pylance\u{00a0}mcp\u{00a0}server:\u{00a0}pylanceDocumentsShow MoreInputstale terminal commandSee more",
+            allowLabel: "Allow in this Session")
+        #expect(request?.contains("Provider: pylance mcp server\nTool: pylanceDocuments\n") == true)
+        #expect(request?.contains("stale") == false)
+        #expect(VSCodeApprovalContext.toolPermissionRequest(
+            description: "Chat Confirmation Dialog Allow tool from server? server: tool injected text",
+            allowLabel: "Allow in this Session") == nil)
+    }
+
     @Test func toolPermissionPolicyIsSeparateOptInAndPersists() throws {
         let legacy = try JSONDecoder().decode(Config.self, from: Data(#"{"vscodeAutoApprove":true,"vscodeAllowWriteMetadata":true}"#.utf8))
         #expect(!legacy.vscodeAllowToolPermissions)
@@ -114,7 +125,7 @@ import Testing
     }
 
     @Test func reviewsStructuredSidebarInputsWithoutInventingToolName() {
-        let input = #"{"url":"http://127.0.0.1:11434/api/tags"}"#
+        let input = #"{"query":"ollama tags","limit":5}"#
         #expect(VSCodeApprovalContext.sidebarRequest("Allow once: \(input)")
                 == "Tool approval inputs (operation unspecified):\n\(input)")
         let unsafe = VSCodeApprovalContext.sidebarRequest(#"Allow once: {"command":"rm\u0020-rf\u0020/"}"#)
@@ -172,5 +183,44 @@ import Testing
         #expect(VSCodeApprovalContext.needsInspection("Twitter agent, State: In Progress", hasInlineApproval: true))
         #expect(!VSCodeApprovalContext.needsInspection("Twitter agent, State: In Progress", hasInlineApproval: false))
         #expect(!VSCodeApprovalContext.needsInspection("CruiseControl, 2", hasInlineApproval: true))
+    }
+
+    @Test func fetchDialogPairsWithItsPendingURLRequest() {
+        let request = VSCodeApprovalContext.urlFetchDialogRequest(
+            title: "Fetch URL? Allow fetching web content?",
+            requests: ["Run in terminal: stale command", "Fetch URL?: {\"url\":\"http://127.0.0.1:8765/setup\"}"])
+        #expect(request == "URL fetch approval:\nURLs: http://127.0.0.1:8765/setup")
+        #expect(VSCodeApprovalContext.urlFetchDialogRequest(title: "Run in terminal?", requests: []) == nil)
+        let ambiguous = VSCodeApprovalContext.urlFetchDialogRequest(
+            title: "Fetch URL? Allow fetching web content?",
+            requests: ["Fetch URL?: {\"url\":\"https://a.example\"}", "Fetch URL?: {\"url\":\"https://b.example\"}"])
+        #expect(ambiguous?.hasPrefix(VSCodeApprovalContext.urlFetchPrefix) == true)
+        #expect(ambiguous?.contains("unavailable") == true)
+    }
+
+    @Test func fetchURLsAcceptOnlyHTTPURLInputs() {
+        #expect(VSCodeApprovalContext.fetchURLs("{\"urls\":[\"https://a.example/x\",\"http://b.example\"]}")?.count == 2)
+        #expect(VSCodeApprovalContext.fetchURLs("{\"url\":\"file:///etc/passwd\"}") == nil)
+        #expect(VSCodeApprovalContext.fetchURLs("{\"url\":\"https://a.example\",\"command\":\"rm\"}") == nil)
+        #expect(VSCodeApprovalContext.fetchURLs("{}") == nil)
+    }
+
+    @Test func sidebarURLOnlyApprovalIsAURLFetch() {
+        #expect(VSCodeApprovalContext.sidebarRequest("Allow once: {\"url\":\"http://127.0.0.1:8765/setup\"}")
+            == "URL fetch approval:\nURLs: http://127.0.0.1:8765/setup")
+        #expect(VSCodeApprovalContext.sidebarRequest("Allow once: {\"path\":\"/tmp/x\"}")?.hasPrefix("Tool approval inputs") == true)
+    }
+
+    @Test func urlFetchPolicyDefaultsToReviewAndDecodes() throws {
+        #expect(Config().vscodeURLFetchPolicy == .review)
+        let config = try JSONDecoder().decode(Config.self, from: Data(#"{"vscodeURLFetchPolicy":"allowAll"}"#.utf8))
+        #expect(config.vscodeURLFetchPolicy == .allowAll)
+    }
+
+    @Test func classifiesResolvedFetchRequests() {
+        #expect(VSCodeApprovalContext.classifyFetch(#"Fetch URL?: {"url":"https://cruise.kolektivkrog.si/"}"#)
+            == "URL fetch approval:\nURLs: https://cruise.kolektivkrog.si/")
+        #expect(VSCodeApprovalContext.classifyFetch("Run in terminal: ls") == "Run in terminal: ls")
+        #expect(VSCodeApprovalContext.classifyFetch(#"Fetch URL?: {"url":"file:///etc/hosts"}"#).hasPrefix("Fetch URL?"))
     }
 }

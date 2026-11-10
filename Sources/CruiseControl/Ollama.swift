@@ -91,10 +91,67 @@ enum Ollama {
         return assessment
     }
 
-    static func draftChatBump(_ transcript: String, config: Config, system: String = ChatBump.system, taskName: String? = nil, latestReport: String? = nil) async throws -> ChatBump.Draft {
-        if let latestReport, TaskAudit.requiresUser(latestReport) {
+    /// `implicitYes` (Cruise mode): when the latest report still lists unfinished work, a closing question is answered
+    /// with yes and the follow-up must address that work; a declined or ungrounded draft falls back to quoting it verbatim.
+    static func draftChatBump(_ transcript: String, config: Config, system: String = ChatBump.system, taskName: String? = nil,
+                              latestReport: String? = nil, implicitYes: Bool = false) async throws -> ChatBump.Draft {
+        let evidence = implicitYes && taskName != nil ? latestReport.map { TaskAudit.unfinishedEvidence($0) } ?? [] : []
+        if let latestReport, TaskAudit.requiresUser(latestReport, implicitYes: !evidence.isEmpty) {
             throw OllamaError.userRequired
         }
+        guard let taskName, !evidence.isEmpty else {
+            return try await requestChatBump(transcript, config: config, system: system, taskName: taskName, latestReport: latestReport)
+        }
+        let fallback = ChatBump.Draft(unfinished: true, message: TaskAudit.implicitYesFollowUp(task: taskName, evidence: evidence))
+        let encoded = try JSONEncoder().encode(fallback)
+        guard ChatBump.parse(String(decoding: encoded, as: UTF8.self)) != nil,
+              !TaskAudit.requiresUser(fallback.message) else {
+            throw OllamaError.invalidFollowUp
+        }
+        do {
+            let draft = try await requestChatBump(transcript + TaskAudit.implicitYesNote(evidence), config: config,
+                                                  system: system, taskName: taskName, latestReport: latestReport)
+            return draft.unfinished ? draft : fallback
+        } catch OllamaError.invalidFollowUp, OllamaError.ungroundedFollowUp, OllamaError.userRequired, OllamaError.emptyResponse {
+            return fallback
+        }
+    }
+
+    /// Main-chat answer to a Clicky tap-out. Falls back to the deterministic reply when Ollama's draft is unusable.
+    static func draftTapOutReply(_ tapOut: MainChatTapOut, config: Config) async -> (message: String, source: String) {
+        do {
+            let model = try await resolveModel(config)
+            var request = URLRequest(url: try endpoint(config, "api/generate"))
+            request.httpMethod = "POST"
+            request.timeoutInterval = 45
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "model": model, "system": MainChatTapOut.system, "prompt": tapOut.prompt, "stream": false,
+                "format": [
+                    "type": "object",
+                    "properties": ["message": ["type": "string"]],
+                    "required": ["message"],
+                    "additionalProperties": false,
+                ], "keep_alive": "10m",
+                "options": ["temperature": 0.2, "num_predict": 300, "num_ctx": 4096],
+            ])
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200,
+                  let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let raw = (json["response"] as? String)?.data(using: .utf8),
+                  let fields = try JSONSerialization.jsonObject(with: raw) as? [String: Any],
+                  let message = (fields["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  tapOut.accepts(message) else {
+                return (tapOut.fallbackReply, "fallback (ollama draft rejected)")
+            }
+            return (message, "ollama (\(model))")
+        } catch {
+            return (tapOut.fallbackReply, "fallback (\(error.localizedDescription))")
+        }
+    }
+
+    private static func requestChatBump(_ transcript: String, config: Config, system: String, taskName: String?,
+                                        latestReport: String?) async throws -> ChatBump.Draft {
         let model = try await resolveModel(config)
         var properties: [String: Any] = [
             "unfinished": ["type": "boolean"],

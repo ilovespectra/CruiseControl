@@ -47,7 +47,7 @@ final class CruiseIndicatorController {
             panel.ignoresMouseEvents = true
             panel.hidesOnDeactivate = false
             panel.isMovable = false
-            let host = NSHostingView(rootView: CruiseIndicatorView())
+            let host = NSHostingView(rootView: CruiseIndicatorView(store: store))
             host.sizingOptions = []
             panel.contentView = host
             return panel
@@ -57,39 +57,50 @@ final class CruiseIndicatorController {
 
     private func updateVisibility(mode: DriveMode) {
         for panel in panels {
-            if mode == .cruise { panel.orderFrontRegardless() }
+            panel.title = mode == .rest ? "Cruise Control rest area" : "Cruise Control active"
+            if mode != .manual { panel.orderFrontRegardless() }
             else { panel.orderOut(nil) }
         }
     }
 }
 
 private struct CruiseIndicatorView: View {
-    private let green = Brand.accent(for: .cruise)
+    @ObservedObject var store: ConfigStore
+
+    private var mode: DriveMode { store.config.mode }
+    private var accent: Color { Brand.accent(for: mode) }
 
     var body: some View {
         HStack(spacing: 8) {
-            ZStack {
-                let stroke = StrokeStyle(lineWidth: 4, lineCap: .round)
-                CruiseGauge(part: .travelled).stroke(green, style: stroke)
-                CruiseGauge(part: .remaining).stroke(green.opacity(0.35), style: stroke)
-                CruiseGauge(part: .needle).fill(green)
+            Group {
+                if mode == .rest {
+                    Image(systemName: Brand.symbol(for: .rest))
+                        .font(.system(size: 38, weight: .semibold))
+                } else {
+                    ZStack {
+                        let stroke = StrokeStyle(lineWidth: 4, lineCap: .round)
+                        CruiseGauge(part: .travelled).stroke(accent, style: stroke)
+                        CruiseGauge(part: .remaining).stroke(accent.opacity(0.35), style: stroke)
+                        CruiseGauge(part: .needle).fill(accent)
+                    }
+                }
             }
             .frame(width: 68, height: 68)
-            Text("CRUISE")
+            Text(mode.shortTitle)
                 .font(BrandFont.inter(20, .bold))
                 .tracking(1.6)
         }
-        .foregroundStyle(green)
-        .shadow(color: green.opacity(0.65), radius: 8)
+        .foregroundStyle(accent)
+        .shadow(color: accent.opacity(0.65), radius: 8)
         .padding(.horizontal, 18)
         .background {
             Capsule()
                 .fill(Color.black.opacity(0.88))
-                .overlay { Capsule().strokeBorder(green.opacity(0.45), lineWidth: 2) }
+                .overlay { Capsule().strokeBorder(accent.opacity(0.45), lineWidth: 2) }
         }
         .padding(10)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Cruise Control is active")
+        .accessibilityLabel(mode == .rest ? "Cruise Control rest area is active" : "Cruise Control is active")
         .allowsHitTesting(false)
     }
 }

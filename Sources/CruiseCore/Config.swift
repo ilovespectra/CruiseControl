@@ -32,6 +32,26 @@ public enum DriveMode: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// How VS Code's "Fetch URL? Allow fetching web content?" confirmations are handled.
+public enum URLFetchPolicy: String, Codable, CaseIterable, Identifiable, Sendable {
+    /// Ollama reviews the exposed URL like any other tool input.
+    case review
+    /// Approve every URL fetch without review.
+    case allowAll
+    /// Never approve URL fetches; leave them for the user.
+    case hold
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .review: return "Review each URL with Ollama"
+        case .allowAll: return "Allow all URL fetches"
+        case .hold: return "Leave URL fetches for me"
+        }
+    }
+}
+
 public enum PillSide: String, Codable, Sendable {
     case left
     case right
@@ -83,6 +103,9 @@ public struct Config: Codable, Equatable, Sendable {
     public var systemAllowLabels = ["Allow", "OK", "Always Allow"]
     public var systemDenyLabels = ["Don’t Allow", "Don't Allow", "Deny"]
     public var replyToStalls = true
+    /// Cruise mode: answer Clicky's main-chat tap-outs ("shall I retry in smaller checkpoints?") with a yes that asks
+    /// for smaller, independently verifiable tasks.
+    public var replyToTapOuts = true
     /// Minutes without any new chat line before it counts as stalled (`busyStallMinutes` while a card still says working/sent).
     public var stallMinutes: Double = 5
     public var busyStallMinutes: Double = 20
@@ -115,6 +138,7 @@ public struct Config: Codable, Equatable, Sendable {
     public var vscodeAllowWriteMetadata = false
     /// Allow session-scoped tool/provider grants after review of the exposed tool identity.
     public var vscodeAllowToolPermissions = false
+    public var vscodeURLFetchPolicy: URLFetchPolicy = .review
     public var vscodeBundleIDs = ["com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.vscodium"]
     public var vscodeAllowLabels = ["Allow Once", "Allow", "Continue", "Run"]
     public var vscodeCheckSeconds: Double = 1.5
@@ -196,6 +220,7 @@ public struct Config: Codable, Equatable, Sendable {
         systemAllowLabels = try c.decodeIfPresent([String].self, forKey: .systemAllowLabels) ?? d.systemAllowLabels
         systemDenyLabels = try c.decodeIfPresent([String].self, forKey: .systemDenyLabels) ?? d.systemDenyLabels
         replyToStalls = try c.decodeIfPresent(Bool.self, forKey: .replyToStalls) ?? d.replyToStalls
+        replyToTapOuts = try c.decodeIfPresent(Bool.self, forKey: .replyToTapOuts) ?? d.replyToTapOuts
         stallMinutes = max(1, try c.decodeIfPresent(Double.self, forKey: .stallMinutes) ?? d.stallMinutes)
         busyStallMinutes = max(2, try c.decodeIfPresent(Double.self, forKey: .busyStallMinutes) ?? d.busyStallMinutes)
         awayAfterMinutes = max(1, try c.decodeIfPresent(Double.self, forKey: .awayAfterMinutes) ?? d.awayAfterMinutes)
@@ -213,6 +238,7 @@ public struct Config: Codable, Equatable, Sendable {
         vscodeAutoApprove = try c.decodeIfPresent(Bool.self, forKey: .vscodeAutoApprove) ?? d.vscodeAutoApprove
         vscodeAllowWriteMetadata = try c.decodeIfPresent(Bool.self, forKey: .vscodeAllowWriteMetadata) ?? d.vscodeAllowWriteMetadata
         vscodeAllowToolPermissions = try c.decodeIfPresent(Bool.self, forKey: .vscodeAllowToolPermissions) ?? d.vscodeAllowToolPermissions
+        vscodeURLFetchPolicy = try c.decodeIfPresent(URLFetchPolicy.self, forKey: .vscodeURLFetchPolicy) ?? d.vscodeURLFetchPolicy
         vscodeBundleIDs = try c.decodeIfPresent([String].self, forKey: .vscodeBundleIDs) ?? d.vscodeBundleIDs
         vscodeAllowLabels = try c.decodeIfPresent([String].self, forKey: .vscodeAllowLabels) ?? d.vscodeAllowLabels
         vscodeCheckSeconds = max(0.5, try c.decodeIfPresent(Double.self, forKey: .vscodeCheckSeconds) ?? d.vscodeCheckSeconds)

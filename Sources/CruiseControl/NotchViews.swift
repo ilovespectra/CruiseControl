@@ -204,6 +204,9 @@ struct SettingsContent: View {
                         set: { store.config.trackedClickyTasks = $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } }
                     ))
                     Toggle("Reply when HeyClicky goes quiet", isOn: $store.config.replyToStalls)
+                    Toggle("Answer tap-outs in the main chat", isOn: $store.config.replyToTapOuts)
+                    Text("Cruise mode only. When Clicky stops with unfinished work and asks what next, reply yes and ask for smaller tasks that can each be verified.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Toggle("Answer HeyClicky system permission dialogs", isOn: $store.config.autoAnswerSystemDialogs)
                 }
                 settingsSection("VS Code", detail: "Independent opt-in controls. Higher-cost model switches always require confirmation.") {
@@ -215,6 +218,12 @@ struct SettingsContent: View {
                     Toggle("Allow tool permissions (including session grants)", isOn: $store.config.vscodeAllowToolPermissions)
                         .disabled(!store.config.vscodeAutoApprove)
                     Text("Off by default. Covers Pylance and other tool providers. Ollama reviews exposed provider/tool identity and grant scope, not hidden inputs. “Allow in this Session” can permit later calls without individual review. Permanent/always-allow grants are never pressed.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Picker("URL fetches", selection: $store.config.vscodeURLFetchPolicy) {
+                        ForEach(URLFetchPolicy.allCases) { Text($0.title).tag($0) }
+                    }
+                    .disabled(!store.config.vscodeAutoApprove)
+                    Text("Applies to “Fetch URL? Allow fetching web content?”. Allow all skips the Ollama review, including local and private-network addresses.")
                         .font(.caption).foregroundStyle(.secondary)
                     Text("Approval status: \(monitor.vscodeStatus)")
                         .font(.caption).foregroundStyle(.secondary)
@@ -254,6 +263,19 @@ struct SettingsContent: View {
             .tabItem { Label("Automation", systemImage: "steeringwheel") }
             .tag(1)
             settingsPage {
+                if let message = monitor.pendingMessage {
+                    settingsSection("Pending HeyClicky message", detail: "Saved before typing. Only transcript evidence in the same chat confirms delivery.") {
+                        Text("Task: \(message.task)").font(.headline)
+                        Text(message.holdReason ?? (message.submissionAttempted
+                            ? "Submission attempted; waiting for transcript confirmation. An empty composer alone is not delivery."
+                            : "Waiting to send. Cruise retries the unchanged draft while idle."))
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text(message.text).textSelection(.enabled)
+                        Text("Saved \(message.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("Discard saved message…") { monitor.discardPendingMessage() }
+                    }
+                }
                 settingsSection("Recorded activity", detail: "Real action counts since \(monitor.stats.trackingSince.formatted(date: .abbreviated, time: .shortened)). Saved across app restarts; historical logs are not guessed or backfilled.") {
                     stats
                 }

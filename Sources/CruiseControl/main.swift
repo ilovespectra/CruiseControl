@@ -46,6 +46,39 @@ if let index = CommandLine.arguments.firstIndex(of: "--approve-vscode-sidebar") 
     }
 }
 
+if CommandLine.arguments.contains("--inspect-main-chat") {
+    // Dry run: open HeyClicky's main chat, look for a tap-out and print the reply Cruise would send. Never sends.
+    MainActor.assumeIsolated {
+        Task { @MainActor in
+            var config = Config()
+            if let data = try? Data(contentsOf: FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support/CruiseControl/config.json")),
+               let saved = try? JSONDecoder().decode(Config.self, from: data) { config = saved }
+            var scan = ClickyScanner(config: config).scan()
+            if !scan.mainChat, let row = scan.chatButtons.first(where: {
+                Matcher.normalize($0.label) == Matcher.normalize(MainChatTapOut.chatName) || Matcher.isTaskRow($0.label, title: MainChatTapOut.chatName)
+            }) {
+                _ = AX.press(row.element)
+                for _ in 0..<10 where !scan.mainChat {
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    scan = ClickyScanner(config: config).scan()
+                }
+            }
+            print("Main chat on screen: \(scan.mainChat); composer: \(scan.composer != nil ? "found" : "missing")")
+            print(scan.transcript.suffix(8).map { "  > \($0.prefix(200))" }.joined(separator: "\n"))
+            guard let tapOut = MainChatTapOut.detect(scan.transcript) else {
+                print("Tap-out: none (latest turn has no unfinished work with a closing question, or it was already answered)")
+                exit(0)
+            }
+            print("Tap-out: “\(tapOut.task)” · \(tapOut.status)\nEvidence:\n" + tapOut.evidence.map { "  - \($0)" }.joined(separator: "\n"))
+            let reply = await Ollama.draftTapOutReply(tapOut, config: config)
+            print("Reply via \(reply.source) (not sent):\n\(reply.message)")
+            exit(0)
+        }
+        NSApplication.shared.run()
+    }
+}
+
 if let index = CommandLine.arguments.firstIndex(of: "--inspect-clicky-task") {
     MainActor.assumeIsolated {
         Task { @MainActor in
@@ -67,7 +100,9 @@ if let index = CommandLine.arguments.firstIndex(of: "--inspect-clicky-task") {
                 print(selected.transcript.suffix(12).joined(separator: "\n"))
                 let draft = try await Ollama.draftChatBump(
                     TaskAudit.context(task: task, transcript: selected.transcript.joined(separator: "\n")),
-                    config: config, system: TaskAudit.system, taskName: task, latestReport: selected.latestReport)
+                    config: config, system: TaskAudit.system, taskName: task,
+                    latestReport: TaskAudit.latestTurn(selected.transcript, report: selected.latestReport),
+                    implicitYes: true)
                 print("Unfinished: \(draft.unfinished); draft (not sent): \(draft.message)")
                 exit(0)
             } catch {
