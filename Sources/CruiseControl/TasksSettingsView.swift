@@ -842,7 +842,12 @@ private struct TaskProjectRow: View {
     @State private var confirmingClose = false
     @State private var confirmingFinish = false
     @State private var confirmingReopen = false
+    @State private var sendingLifecycleNotice = false
+    @State private var lifecycleNoticeStatus: String?
     @ObservedObject private var lifecycle = TaskLifecycleStore.shared
+
+    private static let closeNotice = "Cruise Control asks you to stop work and close or dismiss this task in HeyClicky. Preserve its history; do not delete anything or take further actions."
+    private static let finishNotice = "Cruise Control is marking this task finished. Please stop work, post a brief final status, and close or dismiss this task in HeyClicky without deleting its history or taking further actions."
 
     private var details: ClickyAgentTask? { tasks.task(task.id) }
     private var stateLabel: String {
@@ -957,6 +962,35 @@ private struct TaskProjectRow: View {
         }
     }
 
+    private func finishLocally() {
+        var plan = store.config.taskPlans[task.id] ?? TaskPlan()
+        plan.autoBump = false
+        store.config.taskPlans[task.id] = plan
+        lifecycle.finish(task.id)
+    }
+
+    private func sendLifecycleNotice(_ text: String, finish: Bool) async {
+        guard !sendingLifecycleNotice else { return }
+        sendingLifecycleNotice = true
+        lifecycleNoticeStatus = nil
+        defer { sendingLifecycleNotice = false }
+
+        if let result = await monitor.sendTaskLifecycleNotice(taskID: task.id, text: text) {
+            lifecycleNoticeStatus = result
+            return
+        }
+        if finish { finishLocally() } else { lifecycle.close(task.id) }
+
+        let verifyStarted = Date()
+        await tasks.refresh(measure: false)
+        if let loadedAt = tasks.loadedAt, loadedAt >= verifyStarted, tasks.loadError == nil,
+           tasks.task(task.id)?.dismissed == true {
+            lifecycleNoticeStatus = "HeyClicky now shows this task dismissed; Cruise also marked it \(finish ? "finished" : "closed") locally."
+        } else {
+            lifecycleNoticeStatus = "Message delivery was confirmed. Cruise marked this task \(finish ? "finished" : "closed") locally; HeyClicky's sidebar/state change is not confirmed."
+        }
+    }
+
     private var lifecycleActions: some View {
         HStack(spacing: 8) {
             Image(systemName: lifecycle.isFinished(task.id) ? "checkmark.seal.fill" : lifecycle.isClosed(task.id) ? "archivebox" : "arrow.triangle.branch")
@@ -1015,46 +1049,56 @@ private struct TaskProjectRow: View {
                 .help("Cruise review priority only; it does not change HeyClicky's queue.")
                 .disabled(details == nil)
 
-                Button(definition == nil ? "Define done" : "Edit done") {
-                    definitionDraft = store.config.clickyDefinitionsOfDone[task.id] ?? ""
-                    definingDone = true
-                }
-                .disabled(details == nil)
-                .buttonStyle(ClickyPillButtonStyle(primary: definition == nil))
-                .accessibilityIdentifier("define-done-\(task.id)")
-
                 Button(showingDetails ? "Hide details" : "Details") { showingDetails.toggle() }
                     .buttonStyle(TaskControlPillStyle(selected: showingDetails))
                     .accessibilityIdentifier("task-details-\(task.id)")
             }
 
-            if let definition {
-                Text("Done when: \(definition)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-            } else if details != nil {
-                Text("Add a short, verifiable completion goal to enable review.")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else {
+            if details == nil {
                 Text("This saved record is not matched to a current HeyClicky job.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
             if let details {
-                latestResponseCard(details)
-                HStack(spacing: 8) {
+                HStack(alignment: .top, spacing: 10) {
                     Text("1").font(BrandFont.mono(9)).foregroundStyle(Brand.navy)
-                        .padding(5).background(Brand.periwinkle, in: Circle())
+                        .frame(width: 20, height: 20)
+                        .background(Brand.periwinkle, in: Circle())
+                        .accessibilityLabel("Step 1")
+                    VStack(alignment: .leading, spacing: 4) {
+                        Button(definition == nil ? "Define what done looks like" : "Edit completion criteria") {
+                            definitionDraft = store.config.clickyDefinitionsOfDone[task.id] ?? ""
+                            definingDone = true
+                        }
+                        .buttonStyle(ClickyPillButtonStyle(primary: definition == nil))
+                        .accessibilityIdentifier("define-done-\(task.id)")
+                        if let definition {
+                            Text("Done when: \(definition)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        } else {
+                            Text("Choose a short, verifiable goal before reviewing the report.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                latestResponseCard(details)
+                HStack(alignment: .center, spacing: 10) {
+                    Text("2").font(BrandFont.mono(9)).foregroundStyle(Brand.navy)
+                        .frame(width: 20, height: 20)
+                        .background(Brand.periwinkle, in: Circle())
+                        .accessibilityLabel("Step 2")
                     Button(reviewingLatestReport ? "Reviewing latest report…" : "Review latest report") {
                         Task { await reviewLatestReport() }
                     }
                     .buttonStyle(ClickyPillButtonStyle(primary: false))
                     .disabled(reviewingLatestReport || details.isWorking || definition == nil || !details.hasReport)
-                    .help("Refresh the selected HeyClicky task, then assess its newest report against the saved criteria.")
+                    .help("Refresh the selected HeyClicky task, then compare its newest response with your saved completion criteria.")
                     .accessibilityIdentifier("review-task-\(task.id)")
                     if assessment != nil {
-                        Label("Current review", systemImage: "checkmark.circle.fill")
+                        Label("Gaps reviewed", systemImage: "checkmark.circle.fill")
                             .font(.caption2).foregroundStyle(Brand.periwinkle)
                     }
-                    Spacer()
+                    Spacer(minLength: 0)
                 }
                 criteriaSummary(details)
                 HStack(spacing: 10) {
@@ -1065,24 +1109,35 @@ private struct TaskProjectRow: View {
                     .toggleStyle(.switch)
                     .controlSize(.small)
                     .disabled(definition == nil || lifecycle.isFinished(task.id))
-                    .help("Explicitly opt this task into automatic follow-ups when its latest report falls short of its saved definition.")
-                    Text("2").font(BrandFont.mono(9)).foregroundStyle(Brand.navy)
-                        .padding(5).background(Brand.periwinkle, in: Circle())
-                    Button {
-                        if bumpDraftMessage == nil { Task { await createBumpDraft() } }
-                        else { Task { await sendBumpDraft() } }
-                    } label: {
-                        Label(draftingBump ? "Drafting…" : sendingBump ? "Sending…" : bumpDraftMessage == nil ? "Draft follow-up" : "Send to HeyClicky",
-                              systemImage: bumpDraftMessage == nil ? "doc.text" : "paperplane.fill")
-                    }
-                    .buttonStyle(ClickyPillButtonStyle(primary: bumpDraftMessage != nil))
-                    .disabled(bumpDraftMessage == nil ? (!canDraftBump || draftingBump) : (sendingBump || !canDraftBump))
-                    .help(bumpDraftMessage == nil
-                          ? "Drafts only from a current review with concrete gaps."
-                          : "Sends exactly the visible draft to this uniquely matched HeyClicky task after freshness and safety checks.")
-                    .accessibilityIdentifier("bump-task-\(task.id)")
-                    Spacer()
+                    .help("Opt this task into automatic follow-ups when a fresh report falls short of its saved criteria.")
+                    Spacer(minLength: 0)
                 }
+                Text(autoBumpEnabled && store.config.mode == .cruise
+                     ? "Auto-bump is on: Cruise reviews fresh reports and sends eligible follow-ups automatically after its safety checks."
+                     : autoBumpEnabled
+                        ? "Auto-bump is selected, but Cruise mode is off; automatic sending waits until Cruise mode is active."
+                        : "Manual flow: review, draft, then press Send. Turn on Auto-bump in Cruise mode for automatic eligible follow-ups.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    HStack(alignment: .center, spacing: 10) {
+                        Text("3").font(BrandFont.mono(9)).foregroundStyle(Brand.navy)
+                            .frame(width: 20, height: 20)
+                            .background(Brand.periwinkle, in: Circle())
+                            .accessibilityLabel("Step 3")
+                        Button {
+                            if bumpDraftMessage == nil { Task { await createBumpDraft() } }
+                            else { Task { await sendBumpDraft() } }
+                        } label: {
+                            Label(draftingBump ? "Drafting…" : sendingBump ? "Sending…" : bumpDraftMessage == nil ? "Draft follow-up" : "Send to HeyClicky",
+                                  systemImage: bumpDraftMessage == nil ? "doc.text" : "paperplane.fill")
+                        }
+                        .buttonStyle(ClickyPillButtonStyle(primary: bumpDraftMessage != nil))
+                        .disabled(bumpDraftMessage == nil ? (!canDraftBump || draftingBump) : (sendingBump || !canDraftBump))
+                        .help(bumpDraftMessage == nil
+                              ? "Drafts only from a current review with concrete gaps. After drafting, this button becomes Send to HeyClicky."
+                              : "Sends exactly the visible draft to this uniquely matched HeyClicky task after freshness and safety checks.")
+                        .accessibilityIdentifier("bump-task-\(task.id)")
+                        Spacer(minLength: 0)
+                    }
                 if let bumpDraftMessage {
                     VStack(alignment: .leading, spacing: 4) {
                         Label("Draft · not sent", systemImage: "doc.text")
@@ -1100,17 +1155,15 @@ private struct TaskProjectRow: View {
                     Text(bumpSendStatus).font(.caption).foregroundStyle(bumpSendStatus.hasPrefix("Sent") ? Brand.periwinkle : Brand.youBadge)
                         .textSelection(.enabled)
                 }
-                if definition != nil {
-                    Text(lifecycle.isFinished(task.id)
-                         ? "Finished in Cruise only. HeyClicky's task state is unchanged; Auto-bump stays off until you explicitly enable it again."
-                         : autoBumpEnabled
-                            ? "Auto-bump is on for this task. It waits for fresh reports, stops on repeated gaps or user decisions, and never approves or publishes."
-                            : "Auto-bump is off for this task. Review, draft, and Send are separate manual steps; nothing is queued until you opt in.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
             }
 
             lifecycleActions
+            if let lifecycleNoticeStatus {
+                Text(lifecycleNoticeStatus)
+                    .font(.caption).foregroundStyle(lifecycleNoticeStatus.localizedCaseInsensitiveContains("not confirmed") ? Brand.youBadge : Brand.periwinkle)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("lifecycle-notice-status-\(task.id)")
+            }
 
             if showingDetails {
                 Divider()
@@ -1135,26 +1188,25 @@ private struct TaskProjectRow: View {
             bumpDraftError = nil
             bumpSendStatus = nil
         }
-        .confirmationDialog("Close this task in Cruise only?", isPresented: $confirmingClose, titleVisibility: .visible) {
-            Button("Close in Cruise", role: .destructive) { lifecycle.close(task.id) }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(details?.isWorking == true
-                 ? "This only hides the task from Open tasks in Cruise. The HeyClicky task is still running, its history is preserved, and it is not marked complete."
-                 : "This only hides the task from Open tasks in Cruise. It preserves history and does not stop or complete the HeyClicky task.")
-        }
-        .confirmationDialog("Mark this task finished in Cruise?", isPresented: $confirmingFinish, titleVisibility: .visible) {
-            Button("Mark finished in Cruise") {
-                var plan = store.config.taskPlans[task.id] ?? TaskPlan()
-                plan.autoBump = false
-                store.config.taskPlans[task.id] = plan
-                lifecycle.finish(task.id)
+        .confirmationDialog("Close this task?", isPresented: $confirmingClose, titleVisibility: .visible) {
+            Button(sendingLifecycleNotice ? "Sending close request…" : "Send close request & close in Cruise") {
+                Task { await sendLifecycleNotice(Self.closeNotice, finish: false) }
             }
+            .disabled(sendingLifecycleNotice)
+            Button("Close in Cruise only", role: .destructive) { lifecycle.close(task.id) }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(details?.isWorking == true
-                 ? "HeyClicky is still working. This records a Cruise-local decision only; it does not stop or complete that task. Auto-bump will be turned off, and reopening will not turn it back on."
-                 : "This records a Cruise-local decision only. It does not change HeyClicky's task status. Auto-bump will be turned off for this task; reopening will not turn it back on.")
+            Text("The first option sends this exact message to the uniquely matched HeyClicky task, then hides it in Cruise after delivery is confirmed. It asks HeyClicky to close the task; it cannot force the sidebar/status change.\n\n\(Self.closeNotice)")
+        }
+        .confirmationDialog("Mark this task finished?", isPresented: $confirmingFinish, titleVisibility: .visible) {
+            Button(sendingLifecycleNotice ? "Sending finish notice…" : "Send notice & mark finished") {
+                Task { await sendLifecycleNotice(Self.finishNotice, finish: true) }
+            }
+            .disabled(sendingLifecycleNotice)
+            Button("Mark finished in Cruise only") { finishLocally() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The first option sends this exact notice to the uniquely matched HeyClicky task. Cruise marks it finished only after delivery is confirmed; HeyClicky's sidebar/status change is not guaranteed.\n\n\(Self.finishNotice)")
         }
         .confirmationDialog("Reopen this task in Cruise?", isPresented: $confirmingReopen, titleVisibility: .visible) {
             Button("Reopen in Cruise") { lifecycle.reopen(task.id) }

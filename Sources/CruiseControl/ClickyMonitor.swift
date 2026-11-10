@@ -510,6 +510,58 @@ final class ClickyMonitor: ObservableObject {
         return "Send not confirmed. The draft was not reported as sent; review the HeyClicky task before retrying."
     }
 
+    /// Sends the exact finish/close notice shown in the Tasks confirmation dialog to its uniquely matched task.
+    /// This is a user-initiated UI delivery; it asks HeyClicky to close but never claims to change remote task state.
+    func sendTaskLifecycleNotice(taskID: String, text: String) async -> String? {
+        let config = store.config
+        let source = ClickyTaskStore.shared
+        guard config.mode == .cruise, config.autoContinueReports, !config.usageCutoffReached else {
+            return "Notice not sent: switch Cruise to Cruise mode and enable automatic continuation first."
+        }
+        guard messageHistoryReadable, pendingMessage == nil, source.canPersist else {
+            return "Notice not sent: another message is pending or task history cannot be safely updated."
+        }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= 2_000 else {
+            return "Notice not sent: the message is empty or too long."
+        }
+
+        let requestedAt = Date()
+        await source.refresh(measure: false)
+        guard let loadedAt = source.loadedAt, loadedAt >= requestedAt, source.loadError == nil,
+              let task = source.task(taskID), !task.dismissed, !task.isStopped,
+              !TaskAudit.requiresUser(task.lastMessage),
+              !ClickyTaskLibrary.ambiguousNames(source.tasks).contains(Matcher.normalize(task.name)) else {
+            return "Notice not sent: this task is stale, stopped, awaiting your decision, dismissed, or has an ambiguous name."
+        }
+        let fingerprint = task.fingerprint
+        guard let chat = await revealChat(config: config),
+              let selected = await selectTask(task.name, from: chat, config: config, unique: true),
+              Matcher.normalize(Self.chatName(selected, draft: false) ?? "") == Matcher.normalize(task.name),
+              let composer = selected.composer, recoveryAllowed(selected) else {
+            return "Notice not sent: Cruise couldn't verify this exact HeyClicky task."
+        }
+
+        let finalRead = Date()
+        await source.refresh(measure: false)
+        guard let finalLoadedAt = source.loadedAt, finalLoadedAt >= finalRead, source.loadError == nil,
+              let latest = source.task(taskID), latest.fingerprint == fingerprint,
+              !latest.dismissed, !latest.isStopped, !TaskAudit.requiresUser(latest.lastMessage),
+              !ClickyTaskLibrary.ambiguousNames(source.tasks).contains(Matcher.normalize(latest.name)),
+              Matcher.normalize(latest.name) == Matcher.normalize(task.name),
+              await Worker.run({ AX.stringValue(composer.input) == "" }) else {
+            return "Notice not sent: the task changed or its composer was not empty. Nothing was overwritten."
+        }
+
+        if await send(text, via: composer, task: task.name) {
+            record("user-confirmed lifecycle notice confirmed in ‘\(task.name)’")
+            return nil
+        }
+        if let pendingMessage, pendingMessage.task == task.name, pendingMessage.text == text {
+            return pendingMessage.holdReason ?? "Notice saved, but HeyClicky's receipt is not confirmed; no Cruise lifecycle state changed."
+        }
+        return "Notice not confirmed; no Cruise lifecycle state changed. Check the task before retrying."
+    }
+
     /// Queues a one-shot report check. Sending waits for Cruise's normal quiet-time and task-safety gates.
     func bumpTaskNow(_ taskID: String) {
         let config = store.config
