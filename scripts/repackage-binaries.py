@@ -11,6 +11,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 from release_draft import (
+    find_draft_record,
     generate_release_notes,
     is_official_origin,
     resolve_mode,
@@ -245,7 +246,9 @@ def main():
         run("gh", "release", "create", tag, str(saved), str(metadata), str(checksums), "--repo", REPO,
             "--target", commit, "--title", f"Cruise Control {version}",
             "--notes-file", str(notes_path), "--draft")
-        record = json.loads(run("gh", "api", f"repos/{REPO}/releases/tags/{tag}", capture=True))
+        # GitHub does not expose an unpublished draft through /releases/tags/{tag};
+        # the authenticated, paginated releases list includes it and its asset digests.
+        record = find_draft_record(get_release_metadata(), tag)
         link = verify_draft_record(record, tag, commit, [saved, metadata, checksums])
         print(f"Verified unpublished GitHub draft {tag} from {commit}: {link}", flush=True)
         print(f"Assets verified: {saved.name}, {metadata.name}, {checksums.name}.", flush=True)

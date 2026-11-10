@@ -153,6 +153,13 @@ def verify_local_artifacts(package, metadata_path, checksums_path, version, comm
     return {"sha256": digest, "size": package.stat().st_size}
 
 
+def find_draft_record(releases, tag):
+    matches = [release for release in releases if release.get("tag_name") == tag]
+    if len(matches) != 1 or matches[0].get("draft") is not True:
+        raise RuntimeError(f"GitHub did not return exactly one unpublished draft for {tag}.")
+    return matches[0]
+
+
 def verify_draft_record(record, tag, commit, asset_paths):
     if record.get("tag_name") != tag or record.get("draft") is not True:
         raise RuntimeError(f"GitHub did not confirm an unpublished draft for {tag}.")

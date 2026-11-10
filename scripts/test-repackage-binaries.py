@@ -131,6 +131,12 @@ class DraftSafetyTests(unittest.TestCase):
             self.assertNotIn("invent", notes)
             self.assertEqual(output.stat().st_mode & 0o777, 0o600)
 
+    def test_draft_lookup_uses_authenticated_release_list(self):
+        record = {"tag_name": "v1.1.0", "draft": True, "assets": []}
+        self.assertIs(draft.find_draft_record([{"tag_name": "v1.0.11", "draft": False}, record], "v1.1.0"), record)
+        with self.assertRaisesRegex(RuntimeError, "unpublished draft"):
+            draft.find_draft_record([{"tag_name": "v1.1.0", "draft": False}], "v1.1.0")
+
     def test_github_draft_requires_unpublished_state_and_matching_assets(self):
         with tempfile.TemporaryDirectory() as tmp:
             package = Path(tmp) / "CruiseControl.pkg"
