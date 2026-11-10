@@ -192,6 +192,7 @@ struct SettingsContent: View {
                 Text("Automation").tag(1)
                 Text("Activity").tag(2)
                 Text("Tasks").tag(4)
+                Text("Storage").tag(5)
                 Text("App & permissions").tag(3)
             }
             .pickerStyle(.segmented)
@@ -205,7 +206,7 @@ struct SettingsContent: View {
             selectedTab = 4
         }
         .padding(16)
-        .frame(minWidth: 640, minHeight: 540)
+        .frame(minWidth: 980, minHeight: 640)
         .preferredColorScheme(.dark)
         .tint(Brand.periwinkle)
     }
@@ -322,6 +323,10 @@ struct SettingsContent: View {
         } else if selectedTab == 4 {
             settingsPage {
                 TasksSettingsView(store: store, monitor: monitor)
+            }
+        } else if selectedTab == 5 {
+            settingsPage {
+                CacheManagerSettingsView(store: store, monitor: monitor)
             }
         } else {
             settingsPage {

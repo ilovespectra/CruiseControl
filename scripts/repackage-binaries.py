@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import plistlib
 from pathlib import Path
 import re
 import subprocess
@@ -21,6 +22,7 @@ from release_draft import (
 
 REPO = "ilovespectra/CruiseControl"
 ROOT = Path(__file__).resolve().parent.parent
+SUPPORTED_STAGING_FILESYSTEMS = {"apfs", "hfs"}
 
 
 def run(*args, cwd=ROOT, capture=False, env=None):
@@ -113,8 +115,36 @@ def staged_versions():
     return staged
 
 
+def prepare_staging_root(path=None):
+    root = Path(path or tempfile.gettempdir()).expanduser()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        root = root.resolve()
+        df_output = run("df", "-P", str(root), capture=True)
+        rows = [line for line in df_output.splitlines() if line.strip()]
+        if len(rows) < 2:
+            raise RuntimeError("df did not report the staging volume")
+        fields = rows[-1].split(maxsplit=5)
+        if len(fields) < 6:
+            raise RuntimeError("df returned an incomplete staging-volume row")
+        mountpoint = fields[5]
+        metadata = plistlib.loads(run("diskutil", "info", "-plist", mountpoint, capture=True).encode("utf-8"))
+    except (OSError, subprocess.CalledProcessError, plistlib.InvalidFileException, ValueError) as error:
+        raise RuntimeError(f"Could not verify the temporary build volume at {root}: {error}") from error
+    filesystem = str(metadata.get("FilesystemType", "")).lower()
+    display_name = str(metadata.get("FilesystemName", filesystem or "unknown"))
+    if filesystem not in SUPPORTED_STAGING_FILESYSTEMS:
+        raise RuntimeError(
+            f"Temporary build volume is {display_name}; pkgbuild's package output must be on APFS or HFS+. "
+            "Choose an APFS/HFS+ --staging-root (exFAT output triggers BOMStream buffer overflow)."
+        )
+    return root
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--staging-root", type=Path,
+                        help="Temporary build directory on APFS/HFS+ (for example, an external drive)")
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--draft", action="store_true",
                        help="Create an unpublished GitHub draft only when official owner/admin checks pass")
@@ -167,16 +197,20 @@ def main():
     if output.exists():
         raise RuntimeError(f"Output already exists: {output}. Preserve or move it before retrying this version.")
 
+    staging_root = prepare_staging_root(args.staging_root)
+    print(f"Using verified APFS/HFS+ staging volume: {staging_root}", flush=True)
+    stage_env = dict(os.environ, TMPDIR=str(staging_root))
+
     # TemporaryDirectory owns only this invocation's staging directory, never the checkout or outputs.
-    with tempfile.TemporaryDirectory(prefix="cruise-release-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="cruise-release-", dir=str(staging_root)) as temporary:
         stage = Path(temporary)
         archive = stage / "source.tar"
         run("git", "archive", "--format=tar", f"--output={archive}", commit)
         workspace = stage / "source"
         workspace.mkdir()
         run("tar", "-xf", str(archive), "-C", str(workspace))
-        run("swift", "test", cwd=workspace)
-        env = dict(os.environ, CC_VERSION=version, CC_BUILD=str(int(version.split(".")[0]) * 1000000
+        run("swift", "test", cwd=workspace, env=stage_env)
+        env = dict(stage_env, CC_VERSION=version, CC_BUILD=str(int(version.split(".")[0]) * 1000000
                    + int(version.split(".")[1]) * 1000 + int(version.split(".")[2])),
                    CC_SOURCE_COMMIT=commit, CC_UNIVERSAL="1")
         run("bash", "scripts/build-app.sh", cwd=workspace, env=env)
@@ -198,10 +232,10 @@ def main():
         command = ["pkgbuild", "--component", str(app), "--install-location", "/Applications",
                    "--identifier", "com.ilovespectra.cruisecontrol", "--version", version,
                    "--scripts", str(scripts), str(package)]
-        run(*command)
+        run(*command, env=stage_env)
         print("pkgbuild exited successfully; checking the package payload and installer metadata.", flush=True)
         expanded_package = stage / "expanded-package"
-        run("pkgutil", "--expand-full", str(package), str(expanded_package))
+        run("pkgutil", "--expand-full", str(package), str(expanded_package), env=stage_env)
         try:
             package_info = ET.parse(expanded_package / "PackageInfo").getroot()
         except (OSError, ET.ParseError) as error:

@@ -13,6 +13,17 @@ public enum TaskPriority: String, Codable, CaseIterable, Identifiable, Sendable 
     }
 }
 
+public enum TaskPriorityFilter: String, CaseIterable, Identifiable, Sendable {
+    case all, high, normal, low
+
+    public var id: String { rawValue }
+    public var title: String { self == .all ? "All priorities" : rawValue.capitalized }
+
+    public func includes(_ priority: TaskPriority) -> Bool {
+        self == .all || rawValue == priority.rawValue
+    }
+}
+
 public struct TaskPlan: Codable, Equatable, Sendable {
     /// Existing opt-in for the separate background-review workflow.
     public var enabled = false

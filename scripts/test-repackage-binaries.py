@@ -39,6 +39,39 @@ class VersionTests(unittest.TestCase):
         self.assertEqual(release.next_version(versions, "1.0.12"), "1.1.0")
 
 
+class StagingRootTests(unittest.TestCase):
+    def df_output(self, path, mountpoint="/Volumes/External Drive"):
+        return "\n".join((
+            "Filesystem 512-blocks Used Available Capacity Mounted on",
+            f"/dev/disk5s1 100 20 80 20% {mountpoint}",
+        ))
+
+    def metadata(self, filesystem, label):
+        return __import__("plistlib").dumps({
+            "FilesystemType": filesystem, "FilesystemName": label,
+        }).decode("utf-8")
+
+    def test_apfs_and_hfs_staging_roots_are_accepted(self):
+        for filesystem, label in (("apfs", "APFS"), ("hfs", "Journaled HFS+")):
+            with self.subTest(filesystem=filesystem), tempfile.TemporaryDirectory() as tmp:
+                with mock.patch.object(release, "run", side_effect=[
+                    self.df_output(tmp), self.metadata(filesystem, label),
+                ]) as run:
+                    self.assertEqual(release.prepare_staging_root(tmp), Path(tmp).resolve())
+                self.assertEqual(run.call_args_list, [
+                    mock.call("df", "-P", str(Path(tmp).resolve()), capture=True),
+                    mock.call("diskutil", "info", "-plist", "/Volumes/External Drive", capture=True),
+                ])
+
+    def test_exfat_staging_root_fails_before_build_with_actionable_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(release, "run", side_effect=[
+                self.df_output(tmp), self.metadata("exfat", "ExFAT"),
+            ]):
+                with self.assertRaisesRegex(RuntimeError, "exFAT output triggers BOMStream buffer overflow"):
+                    release.prepare_staging_root(tmp)
+
+
 class OwnerPreflightTests(unittest.TestCase):
     def metadata(self, *, owner="ilovespectra", admin=True):
         return {
@@ -77,6 +110,9 @@ class OwnerPreflightTests(unittest.TestCase):
             self.assertTrue(release.parse_args().draft)
         with mock.patch.object(sys, "argv", ["repackage-binaries.py", "--preview"]):
             self.assertTrue(release.parse_args().preview)
+        with mock.patch.object(sys, "argv", ["repackage-binaries.py", "--preview", "--staging-root", "/Volumes/BIGGERDRIVE/stage"]):
+            self.assertTrue(release.parse_args().preview)
+            self.assertEqual(str(release.parse_args().staging_root), "/Volumes/BIGGERDRIVE/stage")
 
 
 class DraftSafetyTests(unittest.TestCase):

@@ -49,6 +49,37 @@ import Testing
         #expect(outbox.entries.isEmpty)
     }
 
+    @Test func noticeRedactsHomePathsAndCredentialMaterialBeforeLocalAnalysis() throws {
+        let record = VerifiedCacheChange(
+            eventID: "event-1", taskID: "job-7", taskName: "Cache QA",
+            operation: .modify, result: .completed,
+            items: [.init(result: .applied,
+                          oldPath: "/Users/tanny/Library/Caches/api_key=sk-abcdefghijklmnopqrstuvwxyz123456",
+                          newPath: "/Users/tanny/Library/Caches/updated?access_token=ghp_abcdefghijklmnopqrstuvwxyz123456")],
+            verification: .verified, verificationNote: "Authorization: Bearer top-secret-token",
+            preservedContext: ["Password=local-password-value"],
+            recoverySteps: ["Retain the token=private-token-value until review"])
+
+        let message = record.factualMessage
+        var outbox = CacheChangeNoticeOutbox()
+        try #expect(outbox.queue(record, currentTaskIDs: ["job-7"]) == .queued)
+        let queuedPath = try #require(outbox.entries["event-1"]?.change.items.first?.oldPath)
+        #expect(!queuedPath.contains("/Users/tanny"))
+        #expect(!queuedPath.contains("sk-abcdefghijklmnopqrstuvwxyz123456"))
+        #expect(message.contains("~/Library/Caches"))
+        #expect(message.contains("[REDACTED]"))
+        #expect(!message.contains("/Users/tanny"))
+        #expect(!message.contains("sk-abcdefghijklmnopqrstuvwxyz123456"))
+        #expect(!message.contains("ghp_abcdefghijklmnopqrstuvwxyz123456"))
+        #expect(!message.contains("top-secret-token"))
+        #expect(!message.contains("local-password-value"))
+        #expect(!message.contains("private-token-value"))
+
+        let parsed = CacheChangeAnalysis.parse(#"{"summary":"The task keeps token=private-token-value for continuity."}"#)
+        #expect(parsed?.contains("[REDACTED]") == true)
+        #expect(parsed?.contains("private-token-value") == false)
+    }
+
     @Test func partialChangeCarriesFailureVerificationAndRecoveryFacts() throws {
         var outbox = CacheChangeNoticeOutbox()
         let record = VerifiedCacheChange(
@@ -82,7 +113,7 @@ import Testing
         }
         try outbox.storeDraft("The task should retain its updated cache location.", for: "op-123")
         #expect(outbox.entries["op-123"]?.state == .ready)
-        #expect(outbox.entries["op-123"]?.message?.contains("/Volumes/Old/agent/cache → /Users/tanny/Library/Caches/agent/cache") == true)
+        #expect(outbox.entries["op-123"]?.message?.contains("/Volumes/Old/agent/cache → ~/Library/Caches/agent/cache") == true)
         #expect(outbox.entries["op-123"]?.message?.contains("Ollama context analysis") == true)
         try outbox.markFailed("op-123", reason: "HeyClicky UI could not be verified")
         #expect(outbox.entries["op-123"]?.state == .failed)
@@ -95,6 +126,16 @@ import Testing
         #expect(throws: CacheChangeNoticeOutbox.StateError.self) {
             try outbox.markFailed("op-123", reason: "duplicate")
         }
+    }
+
+    @Test func storedOllamaDraftIsRedactedEvenWhenCallerSkipsParser() throws {
+        var outbox = CacheChangeNoticeOutbox()
+        try #expect(outbox.queue(change(), currentTaskIDs: ["job-7"]) == .queued)
+        try outbox.storeDraft("Keep token=private-token-value for continuity.", for: "op-123")
+        let entry = try #require(outbox.entries["op-123"])
+        #expect(entry.analysis?.contains("private-token-value") == false)
+        #expect(entry.message?.contains("private-token-value") == false)
+        #expect(entry.analysis?.contains("[REDACTED]") == true)
     }
 
     @Test func roundTripPersistsPendingAndSentOutboxStates() throws {

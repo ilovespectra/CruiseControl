@@ -187,6 +187,8 @@ public struct Config: Codable, Equatable, Sendable {
     public var backgroundTaskDelivery: TaskDeliveryMode = .apiOnly
     public var taskPlans: [String: TaskPlan] = [:]
     public var projectPriorities: [String: TaskPriority] = [:]
+    /// Cruise-only, read-only inventory scope. Empty uses HeyClicky's default support folder; it does not change Clicky's own storage settings.
+    public var clickyCacheInventoryLocation = ""
 
     public var pillSide: PillSide = .right
     /// In Manual and Rest modes, only show the notch pill while HeyClicky is running.
@@ -286,6 +288,7 @@ public struct Config: Codable, Equatable, Sendable {
         backgroundTaskDelivery = try c.decodeIfPresent(TaskDeliveryMode.self, forKey: .backgroundTaskDelivery) ?? d.backgroundTaskDelivery
         taskPlans = try c.decodeIfPresent([String: TaskPlan].self, forKey: .taskPlans) ?? d.taskPlans
         projectPriorities = try c.decodeIfPresent([String: TaskPriority].self, forKey: .projectPriorities) ?? d.projectPriorities
+        clickyCacheInventoryLocation = try c.decodeIfPresent(String.self, forKey: .clickyCacheInventoryLocation) ?? d.clickyCacheInventoryLocation
         pillSide = try c.decodeIfPresent(PillSide.self, forKey: .pillSide) ?? d.pillSide
         showOnlyWithClicky = try c.decodeIfPresent(Bool.self, forKey: .showOnlyWithClicky) ?? d.showOnlyWithClicky
     }

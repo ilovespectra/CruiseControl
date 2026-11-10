@@ -25,10 +25,12 @@ struct TasksSettingsView: View {
     @ObservedObject private var tasks = ClickyTaskStore.shared
     @State private var search = ""
     @State private var filter: TaskListFilter = .all
+    @State private var priorityFilter: TaskPriorityFilter = .all
     @State private var projectFilter = "all"
     @State private var collapsedGroups: Set<String> = []
     @State private var initializedGroupState = false
     @State private var refreshing = false
+    @State private var selectedTaskID: String?
 
     private let visibleSorts: [TaskSort] = [.priority, .updated, .newest, .name]
 
@@ -70,7 +72,7 @@ struct TasksSettingsView: View {
     }
 
     private func visibleTasks(in group: TaskCatalog.Group) -> [CatalogTask] {
-        let matches = group.tasks.filter(matchesFilter)
+        let matches = group.tasks.filter { matchesFilter($0) && priorityFilter.includes(priority(for: $0)) }
         guard selectedSort == .priority else { return matches }
         return matches.sorted { left, right in
             let leftPriority = priority(for: left).rank
@@ -134,9 +136,268 @@ struct TasksSettingsView: View {
         projectGroups.first(where: { $0.id == projectFilter })?.title ?? "All projects"
     }
 
-    var body: some View {
+    private var listedTaskIDs: [String] { visibleGroups.flatMap { visibleTasks(in: $0) }.map(\.id) }
+    private var selectedTask: CatalogTask? {
+        let listed = visibleGroups.flatMap { visibleTasks(in: $0) }
+        return listed.first(where: { $0.id == selectedTaskID }) ?? listed.first
+    }
+
+    private var redesignedBody: some View {
+        VStack(spacing: 0) {
+            taskHeader.padding(.bottom, 12)
+            taskOverview.padding(.bottom, 12)
+            taskControls.padding(.bottom, 8)
+            taskFilters.padding(.bottom, 10)
+            taskContentColumns
+                .background(Color.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.white.opacity(0.07)))
+            taskFooter.padding(.top, 8)
+        }
+        .padding(12)
+        .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 18))
+        .task { await monitor.refreshTaskCatalog() }
+        .onReceive(tasks.$tasks) { loaded in
+            if tasks.loadedAt != nil { monitor.updateTaskCatalog(loaded) }
+        }
+        .onReceive(tasks.$loadedAt) { loadedAt in
+            guard loadedAt != nil else { return }
+            monitor.updateTaskCatalog(tasks.tasks)
+            if selectedTaskID == nil { selectedTaskID = listedTaskIDs.first }
+            if projectFilter != "all" && !visibleGroups.contains(where: { $0.id == projectFilter }) { projectFilter = "all" }
+        }
+        .onChange(of: listedTaskIDs) { _, ids in
+            if !ids.contains(selectedTaskID ?? "") { selectedTaskID = ids.first }
+        }
+    }
+
+    private var taskHeader: some View {
+        HStack(alignment: .center, spacing: 12) {
+            RoundedRectangle(cornerRadius: 12).fill(Brand.primaryFill)
+                .overlay(Image(systemName: "checklist").foregroundStyle(Brand.navy).font(.title3))
+                .frame(width: 42, height: 42)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("HeyClicky Tasks").font(BrandFont.inter(20, .semibold))
+                Text("One place for project context, priorities, completion goals, and the latest report.")
+                    .font(BrandFont.inter(11)).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button {
+                Task { refreshing = true; await monitor.refreshTaskCatalog(); await tasks.refresh(); refreshing = false }
+            } label: {
+                Label(refreshing ? "Refreshing…" : "Refresh", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.bordered)
+            .disabled(refreshing || tasks.loading)
+            .accessibilityIdentifier("refresh-agent-tasks")
+        }
+    }
+
+    private var taskOverview: some View {
+        HStack(spacing: 8) {
+            overviewMetric("CURRENT TASKS", "\(monitor.taskCatalog.currentTaskCount)", "checklist", Brand.periwinkle)
+            overviewMetric("NEED ATTENTION", "\(tasks.tasks.filter { TaskAudit.requiresUser($0.lastMessage) || $0.isStopped }.count)", "exclamationmark.circle", Brand.youBadge)
+            overviewMetric("PROJECTS", "\(projectGroups.count)", "folder", Brand.accent(for: .cruise))
+        }
+    }
+
+    private var taskControls: some View {
+        HStack(spacing: 10) {
+            TextField("Search tasks, projects, workspaces…", text: $search)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("agent-task-search")
+            Picker("Group by", selection: Binding(
+                get: { groupedByWorkspace ? TaskGrouping.directory : groupedByProject ? TaskGrouping.project : TaskGrouping.none },
+                set: { store.config.taskGrouping = $0; projectFilter = "all" }
+            )) {
+                Text("Projects").tag(TaskGrouping.project)
+                Text("Workspaces").tag(TaskGrouping.directory)
+                Text("All tasks").tag(TaskGrouping.none)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 280)
+            .accessibilityIdentifier("agent-task-layout")
+            Picker("Priority", selection: $priorityFilter) {
+                ForEach(TaskPriorityFilter.allCases) { option in Text(option.title).tag(option) }
+            }
+            .pickerStyle(.menu)
+            .frame(width: 130)
+            .accessibilityIdentifier("agent-task-priority-filter")
+            Picker("Sort", selection: Binding(get: { selectedSort }, set: { store.config.taskSort = $0 })) {
+                ForEach(visibleSorts) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.menu)
+            .frame(width: 150)
+            .accessibilityIdentifier("agent-task-sort")
+        }
+    }
+
+    private var taskFilters: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(TaskListFilter.allCases) { option in
+                    Button { filter = option } label: {
+                        Text(option.title).font(BrandFont.inter(10, .semibold))
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .background(filter == option ? Brand.navy : Brand.card, in: Capsule())
+                            .overlay(Capsule().strokeBorder(filter == option ? Brand.periwinkle.opacity(0.7) : Color.white.opacity(0.08)))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("task-filter-\(option.id)")
+                }
+                if projectFilter != "all" {
+                    Button("Clear project filter") { projectFilter = "all" }
+                        .font(BrandFont.inter(10, .semibold)).foregroundStyle(Brand.periwinkle)
+                }
+            }
+        }
+    }
+
+    private var taskContentColumns: some View {
+        HStack(spacing: 0) {
+            taskListColumn.frame(width: 310)
+            Rectangle().fill(Color.white.opacity(0.08)).frame(width: 1)
+            taskDetailColumn.frame(maxWidth: .infinity)
+        }
+    }
+
+    private var taskListColumn: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text(groupedByWorkspace ? "WORKSPACES" : groupedByProject ? "PROJECTS" : "TASKS")
+                        .font(BrandFont.inter(9, .bold)).tracking(0.8).foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(visibleTaskCount)").font(BrandFont.mono(9)).foregroundStyle(.tertiary)
+                }
+                ForEach(visibleGroups) { group in taskGroupRow(group) }
+                if visibleGroups.isEmpty {
+                    Text(tasks.loading ? "Reading local HeyClicky tasks…" : "Nothing matches these filters.")
+                        .font(BrandFont.inter(11)).foregroundStyle(.secondary).padding(12)
+                }
+            }
+            .padding(10)
+        }
+    }
+
+    private func taskGroupRow(_ group: TaskCatalog.Group) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                if groupedByProject { projectFilter = projectFilter == group.id ? "all" : group.id }
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: groupedByWorkspace ? "externaldrive" : "folder.fill")
+                        .foregroundStyle(Brand.periwinkle)
+                    Text(group.title).font(BrandFont.inter(10, .semibold)).lineLimit(1)
+                    Text("\(visibleTasks(in: group).count)").font(BrandFont.mono(8)).foregroundStyle(.tertiary)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 7).padding(.vertical, 5)
+                .background(Brand.card.opacity(0.8), in: RoundedRectangle(cornerRadius: 7))
+            }
+            .buttonStyle(.plain)
+            ForEach(visibleTasks(in: group)) { item in taskListButton(item) }
+        }
+    }
+
+    private var taskDetailColumn: some View {
+        ScrollView { taskDetailContent }
+    }
+
+    @ViewBuilder
+    private var taskDetailContent: some View {
+        if let current = selectedTask {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "text.alignleft").foregroundStyle(Brand.periwinkle)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(current.name).font(BrandFont.inter(16, .semibold)).textSelection(.enabled)
+                        Text("\(current.project.title ?? "Unassigned project") · \(current.status.replacingOccurrences(of: "_", with: " ").capitalized)")
+                            .font(BrandFont.inter(10)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(12)
+                .background(Brand.card, in: RoundedRectangle(cornerRadius: 12))
+                TaskProjectRow(task: current, projects: projectGroups.map(\.project), store: store,
+                               tasks: tasks, monitor: monitor,
+                               assign: { monitor.assignProject($0, to: current.id) },
+                               reset: { monitor.resetProject(for: current.id) }, initiallyExpanded: true)
+                    .padding(12)
+                    .background(Brand.card, in: RoundedRectangle(cornerRadius: 12))
+            }
+            .padding(12)
+        } else {
+            VStack(spacing: 10) {
+                Image(systemName: "text.magnifyingglass").font(.largeTitle).foregroundStyle(Brand.periwinkle)
+                Text("Choose a task").font(BrandFont.inter(16, .semibold))
+                Text("Select a project task to review its latest response, saved goal, evidence, and next step.")
+                    .font(BrandFont.inter(11)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity).padding(32)
+        }
+    }
+
+    private var taskFooter: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "lock.shield")
+            Text("Local task data · read-only source reports · no private HeyClicky API assumed")
+            Spacer()
+            Text("Reports are evidence, not independent verification.")
+        }
+        .font(BrandFont.inter(9.5)).foregroundStyle(.tertiary)
+    }
+
+    private func overviewMetric(_ title: String, _ value: String, _ icon: String, _ color: Color) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon).foregroundStyle(color).font(.callout)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(BrandFont.inter(8, .bold)).tracking(0.5).foregroundStyle(.secondary)
+                Text(value).font(BrandFont.inter(15, .semibold))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Brand.card, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func taskListButton(_ item: CatalogTask) -> some View {
+        let selected = selectedTaskID == item.id
+        return Button { selectedTaskID = item.id } label: {
+            HStack(alignment: .top, spacing: 7) {
+                Circle().fill(taskAccent(item.status)).frame(width: 6, height: 6).padding(.top, 4)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(item.name).font(BrandFont.inter(10.5, .medium)).lineLimit(2).multilineTextAlignment(.leading)
+                    HStack(spacing: 5) {
+                        Text(item.status.replacingOccurrences(of: "_", with: " ").capitalized)
+                        Text("·")
+                        Text(priority(for: item).title)
+                    }
+                    .font(BrandFont.inter(8.5)).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(selected ? Brand.navy.opacity(0.75) : Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(selected ? Brand.periwinkle.opacity(0.5) : Color.clear))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("task-row-\(item.id)")
+    }
+
+    private func taskAccent(_ raw: String) -> Color {
+        let value = raw.lowercased()
+        if value.contains("fail") || value.contains("need") || value.contains("error") { return Brand.youBadge }
+        if value.contains("work") || value.contains("run") { return Brand.accent(for: .cruise) }
+        if value.contains("done") || value.contains("complete") { return Brand.periwinkle }
+        return Color.white.opacity(0.3)
+    }
+
+    var body: some View { redesignedBody }
+
+    private var legacyBody: some View {
         let groups = visibleGroups
-        VStack(alignment: .leading, spacing: 12) {
+        return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("HeyClicky tasks").font(.headline)
@@ -368,12 +629,16 @@ private struct TaskProjectRow: View {
     @ObservedObject var monitor: ClickyMonitor
     let assign: (TaskProject) -> Void
     let reset: () -> Void
+    var initiallyExpanded: Bool = false
     @State private var editingProject = false
     @State private var projectDraft = TaskProject()
     @State private var selectingWorkspace = false
     @State private var definingDone = false
     @State private var definitionDraft = ""
     @State private var showingDetails = false
+    @State private var draftingBump = false
+    @State private var bumpDraftMessage: String?
+    @State private var bumpDraftError: String?
 
     private var details: ClickyAgentTask? { tasks.task(task.id) }
     private var stateLabel: String {
@@ -394,9 +659,44 @@ private struct TaskProjectRow: View {
     private var autoBumpEnabled: Bool {
         store.config.taskPlans[task.id]?.autoBump == true
     }
-    private var canBumpNow: Bool {
-        guard let details else { return false }
-        return TaskPlanning.manualBumpAvailable(details, allTasks: tasks.tasks, config: store.config)
+    private var canDraftBump: Bool {
+        guard let details, definition != nil else { return false }
+        return details.hasReport && !details.isWorking && !details.isStopped && !details.dismissed
+            && !TaskAudit.requiresUser(details.lastMessage)
+            && !ClickyTaskLibrary.ambiguousNames(tasks.tasks).contains(Matcher.normalize(details.name))
+    }
+
+    private func createBumpDraft() async {
+        guard let details, let definition else { return }
+        draftingBump = true
+        bumpDraftMessage = nil
+        bumpDraftError = nil
+        defer { draftingBump = false }
+
+        let current: ClickyTaskAssessment
+        if let assessment {
+            current = assessment
+        } else {
+            current = await Ollama.assessClickyTask(details, definition: definition, config: store.config, localOnly: true)
+        }
+        guard current.meetsDefinition == false, !current.missing.isEmpty else {
+            bumpDraftError = current.meetsDefinition == true
+                ? "The latest report appears to meet the saved goal; no follow-up draft is needed."
+                : "No concrete gap is available yet; review the latest report before drafting."
+            return
+        }
+
+        do {
+            let draft = try await Ollama.draftTaskBump(task: details, definition: definition, project: task.project,
+                                                      priority: priority, missing: current.missing, config: store.config)
+            guard draft.unfinished else {
+                bumpDraftError = "The latest report has no actionable gap; no follow-up draft is needed."
+                return
+            }
+            bumpDraftMessage = draft.message
+        } catch {
+            bumpDraftError = error.localizedDescription
+        }
     }
 
     var body: some View {
@@ -462,13 +762,26 @@ private struct TaskProjectRow: View {
                     .controlSize(.small)
                     .disabled(definition == nil)
                     .help("Explicitly opt this task into automatic follow-ups when its latest report falls short of its saved definition.")
-                    Button(monitor.bumpingTaskIDs.contains(task.id) ? "Queued…" : "Bump now") {
-                        monitor.bumpTaskNow(task.id)
+                    Button(draftingBump ? "Drafting…" : "Draft follow-up") {
+                        Task { await createBumpDraft() }
                     }
-                    .disabled(!canBumpNow || monitor.bumpingTaskIDs.contains(task.id))
-                    .help("Compare the newest report with this task's saved goal. A single grounded follow-up is sent only for a clear, safe gap.")
+                    .disabled(!canDraftBump || draftingBump)
+                    .help("Drafts locally from the latest report and saved goal. Nothing is queued, typed, or sent.")
                     .accessibilityIdentifier("bump-task-\(task.id)")
                     Spacer()
+                }
+                if let bumpDraftMessage {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label("Draft only · not sent", systemImage: "doc.text")
+                            .font(.caption.weight(.semibold)).foregroundStyle(Brand.periwinkle)
+                        Text(bumpDraftMessage).font(.caption).textSelection(.enabled)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Brand.card.opacity(0.75), in: RoundedRectangle(cornerRadius: 8))
+                }
+                if let bumpDraftError {
+                    Text("Draft unavailable: \(bumpDraftError)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 }
                 if definition != nil {
                     Text("Auto-bump is off until you turn it on for this task. It waits for a fresh report, stops on repeated gaps or user decisions, and never approves or publishes.")
@@ -482,6 +795,8 @@ private struct TaskProjectRow: View {
             }
         }
         .padding(.vertical, 8)
+        .onAppear { showingDetails = initiallyExpanded }
+        .onChange(of: task.id) { _, _ in showingDetails = initiallyExpanded }
         .accessibilityIdentifier("task-row-\(task.id)")
         .sheet(isPresented: $editingProject) {
             VStack(alignment: .leading, spacing: 14) {
@@ -558,8 +873,12 @@ private struct TaskProjectRow: View {
                             .font(.caption2).foregroundStyle(.tertiary)
                     }
                 }
-                Text(String(details.lastMessage.prefix(520)) + (details.lastMessage.count > 520 ? "…" : ""))
-                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled).lineLimit(4)
+                Text(String(details.lastMessage.prefix(6_000)))
+                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                if details.lastMessage.count > 6_000 {
+                    Text("Report shortened after 6,000 characters; open the task thread in HeyClicky for the remainder.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
                 Text("Source report · not an independent verification of the work")
                     .font(.caption2).foregroundStyle(.tertiary)
             }
@@ -650,19 +969,32 @@ private struct TaskProjectRow: View {
                     Text("Local size: \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                if !details.threadReferences.isEmpty || !details.evidenceErrors.isEmpty {
-                    DisclosureGroup("Thread evidence · \(details.threadReferences.count) excerpts") {
-                        ForEach(details.threadIDs, id: \.self) { id in
-                            Text("Thread: \(id)").font(.caption).textSelection(.enabled)
+                VStack(alignment: .leading, spacing: 5) {
+                    Label("Evidence · \(details.threadReferences.count) excerpts", systemImage: "doc.text.magnifyingglass")
+                        .font(.caption.weight(.semibold))
+                    if details.threadReferences.isEmpty && details.evidenceErrors.isEmpty {
+                        Text("No linked thread excerpts or evidence errors were recorded.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    ForEach(details.threadIDs.prefix(4), id: \.self) { id in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Thread: \(id)").font(.caption2).textSelection(.enabled)
                             ForEach(Array(Set(details.threadReferences.filter { $0.threadID == id }.map(\.source))).sorted(), id: \.self) { source in
                                 Text(source).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
                             }
                         }
-                        ForEach(details.evidenceErrors, id: \.self) { error in
-                            Text(error).font(.caption).foregroundStyle(Brand.youBadge).textSelection(.enabled)
-                        }
+                    }
+                    if details.threadIDs.count > 4 {
+                        Text("And \(details.threadIDs.count - 4) more linked threads.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    ForEach(Array(details.evidenceErrors.prefix(3)), id: \.self) { error in
+                        Text(error).font(.caption2).foregroundStyle(Brand.youBadge).textSelection(.enabled)
                     }
                 }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Brand.card.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
                 if let assessment {
                     Text("Assessment: \(assessment.state.title) · \(assessment.source)").font(.caption)
                     Text(assessment.reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)

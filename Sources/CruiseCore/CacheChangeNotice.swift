@@ -58,6 +58,22 @@ public struct VerifiedCacheChange: Codable, Equatable, Sendable {
     /// A notice is warranted only when the operation record says an item actually changed.
     public var containsActualChange: Bool { items.contains { $0.result == .applied } }
 
+    /// A notice-safe copy for the outbox: paths and free-form evidence are redacted before Codable storage.
+    /// The authoritative operation record remains the caller's responsibility and is not modified.
+    public func redactedForNotice() -> VerifiedCacheChange {
+        VerifiedCacheChange(
+            eventID: eventID, taskID: taskID, taskName: CacheChangeRedactor.redact(taskName),
+            operation: operation, result: result,
+            items: items.map { item in
+                Item(result: item.result, oldPath: item.oldPath.map { CacheChangeRedactor.redact($0) },
+                     newPath: item.newPath.map { CacheChangeRedactor.redact($0) }, bytesBefore: item.bytesBefore,
+                     bytesAfter: item.bytesAfter)
+            },
+            verification: verification, verificationNote: CacheChangeRedactor.redact(verificationNote),
+            preservedContext: preservedContext.map { CacheChangeRedactor.redact($0) },
+            recoverySteps: recoverySteps.map { CacheChangeRedactor.redact($0) }, occurredAt: occurredAt)
+    }
+
     public func validationError(currentTaskIDs: [String]) -> ValidationError? {
         guard !eventID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, eventID.count <= 160,
               !taskID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, taskID.count <= 300,
@@ -95,27 +111,27 @@ public struct VerifiedCacheChange: Codable, Equatable, Sendable {
 
     /// Deterministic filesystem facts; the Ollama summary is kept separate and cannot replace these fields.
     public var factualMessage: String {
-        let itemLines = items.enumerated().map { index, item in
+        let itemLines = items.map { item in
             let paths: String
             switch (item.oldPath, item.newPath) {
-            case let (old?, new?): paths = "\(old) → \(new)"
-            case let (old?, nil): paths = "\(old) → removed"
-            case let (nil, new?): paths = "created at \(new)"
+            case let (old?, new?): paths = "\(CacheChangeRedactor.redact(old)) → \(CacheChangeRedactor.redact(new))"
+            case let (old?, nil): paths = "\(CacheChangeRedactor.redact(old)) → removed"
+            case let (nil, new?): paths = "created at \(CacheChangeRedactor.redact(new))"
             case (nil, nil): paths = "path not recorded"
             }
             let sizes = [item.bytesBefore.map { "\($0) bytes before" }, item.bytesAfter.map { "\($0) bytes after" }]
                 .compactMap { $0 }.joined(separator: ", ")
             return "- [\(item.result.rawValue)] \(paths)\(sizes.isEmpty ? "" : " (\(sizes))")"
         }.joined(separator: "\n")
-        let context = preservedContext.isEmpty ? "- None recorded" : preservedContext.map { "- \($0)" }.joined(separator: "\n")
-        let recovery = recoverySteps.isEmpty ? "- None recorded" : recoverySteps.map { "- \($0)" }.joined(separator: "\n")
+        let context = preservedContext.isEmpty ? "- None recorded" : preservedContext.map { "- \(CacheChangeRedactor.redact($0))" }.joined(separator: "\n")
+        let recovery = recoverySteps.isEmpty ? "- None recorded" : recoverySteps.map { "- \(CacheChangeRedactor.redact($0))" }.joined(separator: "\n")
         return """
-        Cache context update for HeyClicky task \(taskName) (stable task ID: \(taskID))
-        Event: \(eventID)
+        Cache context update for HeyClicky task \(CacheChangeRedactor.redact(taskName)) (stable task ID: \(CacheChangeRedactor.redact(taskID)))
+        Event: \(CacheChangeRedactor.redact(eventID))
         Operation: \(operation.rawValue) · recorded result: \(result.rawValue)
         Changed paths (filesystem operation record):
         \(itemLines)
-        Verification: \(verification.rawValue)\(verificationNote.isEmpty ? "" : " — \(verificationNote)")
+        Verification: \(verification.rawValue)\(verificationNote.isEmpty ? "" : " — \(CacheChangeRedactor.redact(verificationNote))")
         Preserved context:
         \(context)
         Recovery / rebuild steps:
@@ -126,6 +142,28 @@ public struct VerifiedCacheChange: Codable, Equatable, Sendable {
 }
 
 /// Minimal, bounded Ollama output. It is explicitly interpretive; deterministic operation facts remain separate.
+public enum CacheChangeRedactor {
+    /// Redacts home-directory identity and common credential formats before metadata reaches Ollama or a notice.
+    public static func redact(_ input: String, homeDirectory: String = NSHomeDirectory()) -> String {
+        var value = input.replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\0", with: "")
+        if !homeDirectory.isEmpty {
+            value = value.replacingOccurrences(of: homeDirectory, with: "~")
+        }
+        let patterns: [(String, String)] = [
+            (#"(?i)\bBearer\s+[A-Za-z0-9._~+/-]+=*"#, "Bearer [REDACTED]"),
+            (#"(?i)\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret|credential|authorization)(\s*[:=]\s*)[^\s,;]+"#, "$1[REDACTED]"),
+            (#"(?i)([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret)=)[^&#\s]+"#, "$1[REDACTED]"),
+            (#"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})\b"#, "[REDACTED]"),
+        ]
+        for (pattern, replacement) in patterns {
+            value = value.replacingOccurrences(of: pattern, with: replacement, options: .regularExpression)
+        }
+        return String(value.prefix(4_096))
+    }
+}
+
 public enum CacheChangeAnalysis {
     public static func parse(_ raw: String) -> String? {
         guard let data = raw.data(using: .utf8),
@@ -133,13 +171,13 @@ public enum CacheChangeAnalysis {
         let summary = value.summary.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !summary.isEmpty, summary.count <= 600,
               !summary.contains("\n"), !summary.contains("\r"), !summary.contains("\0") else { return nil }
-        return summary
+        return CacheChangeRedactor.redact(summary)
     }
 
     private struct Response: Decodable { let summary: String }
 }
 
-/// A durable, deduplicating outbox. State advances only when a caller reports the corresponding result.
+/// A Codable, deduplicating outbox model; callers own persistence and delivery. It never sends messages itself.
 public struct CacheChangeNoticeOutbox: Codable, Equatable, Sendable {
     public enum State: String, Codable, Sendable { case pending, ready, sent, failed }
     public struct Entry: Codable, Equatable, Sendable {
@@ -168,7 +206,7 @@ public struct CacheChangeNoticeOutbox: Codable, Equatable, Sendable {
         if let error = change.validationError(currentTaskIDs: currentTaskIDs) { throw error }
         guard change.containsActualChange else { return .noChange }
         guard entries[change.eventID] == nil else { return .duplicate }
-        entries[change.eventID] = Entry(change: change, now: now)
+        entries[change.eventID] = Entry(change: change.redactedForNotice(), now: now)
         return .queued
     }
 
@@ -176,7 +214,7 @@ public struct CacheChangeNoticeOutbox: Codable, Equatable, Sendable {
         guard var entry = entries[eventID], entry.state == .pending || entry.state == .failed else {
             throw StateError.invalidTransition(eventID)
         }
-        let summary = analysis.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = CacheChangeRedactor.redact(analysis.trimmingCharacters(in: .whitespacesAndNewlines))
         guard !summary.isEmpty, summary.count <= 600, !summary.contains("\0") else { throw StateError.invalidAnalysis }
         entry.analysis = summary
         entry.message = entry.change.factualMessage + "\n\nOllama context analysis (interpretive; the record above is authoritative):\n" + summary

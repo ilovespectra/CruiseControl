@@ -111,6 +111,16 @@ struct TaskPlanningTests {
         #expect(catalog.groups(by: .none, sort: .sourceOrder)[0].tasks.map(\.name) == ["Z", "A", "B"])
     }
 
+    @Test func priorityFilterMatchesOnlyItsOwnPriority() {
+        #expect(TaskPriorityFilter.all.includes(.high))
+        #expect(TaskPriorityFilter.all.includes(.normal))
+        #expect(TaskPriorityFilter.all.includes(.low))
+        #expect(TaskPriorityFilter.high.includes(.high))
+        #expect(!TaskPriorityFilter.high.includes(.normal))
+        #expect(!TaskPriorityFilter.low.includes(.high))
+        #expect(TaskPriorityFilter.low.includes(.low))
+    }
+
     @Test func taskBumpContextUsesHeyClickyLabelsDefinitionAndCurrentReport() {
         var task = ClickyTasksTests.task("The app bundle has not been rebuilt or verified.", name: "Cruise Docs Scribe")
         task.prompt = "Update the Cruise Control docs and app links."

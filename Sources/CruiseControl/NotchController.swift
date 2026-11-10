@@ -147,9 +147,9 @@ final class NotchController {
         let frame = screen.frame
         menuBarHeight = max(screen.safeAreaInsets.top, NSStatusBar.system.thickness, frame.maxY - screen.visibleFrame.maxY)
         let side = store.config.pillSide
-        // Scale a comfortable separation from the dropdown's measured design width instead of using screen pixels.
-        // The same point-based gap is applied on both sides of the hardware notch and clamped to the active display.
-        let clearance = max(20, min(48, expandedWidth * 0.12))
+        // Keep Cruise's dropdown visibly separated from HeyClicky's notch menu on either side.
+        // Both placements use the same outward gap; the final frame is clamped to the active display below.
+        let clearance: CGFloat = 72
 
         // Reassigning rootView re-renders synchronously, so fittingSize below is accurate.
         host.rootView = NotchRootView(
