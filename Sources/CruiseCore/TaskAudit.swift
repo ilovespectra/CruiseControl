@@ -28,7 +28,7 @@ public enum TaskAudit {
 
         let userRequestPhrases = (implicitYes ? [] : ["can you", "could you"]) + [
             "signed into", "sign in", "log in", "user confirmation", "your approval",
-            "permission prompt", "access prompt", "grant permission", "grant", "approve", "requesting access now",
+            "permission prompt", "access prompt", "grant permission", "requesting access now",
             "requested access now", "requesting system audio recording only access now",
             "system audio recording only access now",
         ]
@@ -37,7 +37,9 @@ public enum TaskAudit {
         let isActiveRequest = { (sentence: String) -> Bool in
             let line = Matcher.normalize(sentence)
             guard !line.isEmpty else { return false }
-            if line.contains("no ") || line.contains("not ") || line.contains("never ") {
+            let negationScope = line.replacingOccurrences(of: "cannot continue", with: "blocked")
+                .replacingOccurrences(of: "can't continue", with: "blocked")
+            if negationScope.contains("no ") || negationScope.contains("not ") || negationScope.contains("never ") {
                 return false
             }
 
@@ -47,10 +49,12 @@ public enum TaskAudit {
                 .contains { line.contains($0) }
             let permissionRequest = (line.contains("grant") || line.contains("approve") || line.contains("allow"))
                 && (line.contains("permission") || line.contains("access") || line.contains("prompt"))
-            let userCue = ["sign in", "log in", "approve", "approval", "grant", "grant permission", "permission",
-                           "access", "upload", "publish", "delete", "payment", "password", "credentials",
-                           "user confirmation", "your approval", "prompt"]
+            // Whole words only: "approved"/"published"/"granted" describe history, not a request.
+            let words = Set(line.split(whereSeparator: { !$0.isLetter }).map(String.init))
+            let userCue = ["sign in", "log in", "grant permission", "user confirmation", "your approval"]
                 .contains { line.contains($0) }
+                || !words.isDisjoint(with: ["approve", "approval", "grant", "permission", "access", "upload", "publish",
+                                            "delete", "payment", "password", "credentials", "prompt"])
             guard userCue || permissionRequest else { return false }
             return actionCue || line.contains("until") || line.contains("before") || line.contains("now")
         }

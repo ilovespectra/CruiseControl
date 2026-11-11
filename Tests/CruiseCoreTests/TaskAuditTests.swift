@@ -60,6 +60,7 @@ import Testing
         #expect(!TaskAudit.requiresUser("If permission is needed, pause then. Implementation remains unverified."))
         #expect(!TaskAudit.requiresUser("The permission is needed for macOS process-audio capture; the design does not require a virtual driver. No install or permission change has been made."))
         #expect(TaskAudit.requiresUser("Permission is needed now; cannot continue until you approve the prompt."))
+        #expect(!TaskAudit.requiresUser("The approved landing-page changes are **pushed to `main`** as `24ca211`. Live verification is still pending."))
     }
 
     @Test func auditStateSurvivesRestartAndDoesNotDuplicateUnchangedReports() throws {
@@ -118,4 +119,22 @@ import Testing
         #expect(turn?.contains("Old item") == false)
         #expect(TaskAudit.latestTurn([long, "Then: tests not run yet."], report: long)?.contains("not run") == true)
     }
+}
+
+import Testing
+@testable import CruiseCore
+
+@Test func agentStatusQuestionsAreRoutedToHeyClicky() {
+    #expect(DefinitionOfDone.isAgentStatusQuestion("Was the volume knob implemented and does it match the clicky style?"))
+    #expect(!DefinitionOfDone.isAgentStatusQuestion("Which background image should be used?"))
+    #expect(!DefinitionOfDone.isAgentStatusQuestion("Do you want the dark theme or the light one?"))
+}
+
+@Test func ollamaNeedsYouWithoutAUserAskIsRedirectedToHeyClicky() {
+    let a = ClickyTaskAssessment(state: .needsYou, reason: "USER CRITERION requires user sign-in", meetsDefinition: false,
+                                 missing: [], definition: "screenshots of each landing page", fingerprint: "f", source: "ollama (x)", assessedAt: Date())
+    #expect(DefinitionOfDone.needsAgentFollowUp(a, report: "Counters are live and match GitHub totals."))
+    let r = DefinitionOfDone.redirectedToAgent(a, definition: "screenshots of each landing page")
+    #expect(r.state == .unfinished && !r.missing.isEmpty && r.clarificationQuestion == nil)
+    #expect(!DefinitionOfDone.needsAgentFollowUp(a, report: "Please sign in to GitHub so I can continue."))
 }

@@ -608,7 +608,7 @@ final class ClickyMonitor: ObservableObject {
             return "Finish cancelled during task verification. Nothing was clicked."
         }
         var stopped = taskRecovery
-        stopped.observe(task: task.name, status: "stopped by you", latestTurnStatus: nil)
+        stopped.stopByUser(task: task.name)
         do {
             try JSONEncoder().encode(stopped).write(to: taskRecoveryURL, options: .atomic)
         } catch {
@@ -1376,7 +1376,19 @@ final class ClickyMonitor: ObservableObject {
             return nil
         }
         let element = row.element
-        guard await Worker.run({ AX.press(element) }) else {
+        var pressed = await Worker.run({ AX.press(element) })
+        if !pressed {
+            // Sidebar rows can be mid-animation; retry once against a fresh scan before giving up.
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            let retry = await Worker.run { ClickyScanner(config: config).scan() }
+            if let again = retry.chatButtons.first(where: {
+                Matcher.normalize($0.label) == Matcher.normalize(task) || Matcher.isTaskRow($0.label, title: task)
+            }) {
+                let el = again.element
+                pressed = await Worker.run({ AX.press(el) })
+            }
+        }
+        guard pressed else {
             record("couldn't select HeyClicky task “\(task)”")
             return nil
         }
@@ -1595,7 +1607,9 @@ final class ClickyMonitor: ObservableObject {
                   DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id]) == definition,
                   TaskPlanning.definitionDeliveryAllowed(config: store.config, oneShot: false),
                   !taskRecovery.isStopped(task: latest.name),
-                  let notice = TaskCompletionNotice(task: latest, definition: definition, assessment: assessment) else { continue }
+                  var notice = TaskCompletionNotice(task: latest, definition: definition, assessment: assessment) else { continue }
+            notice.autoBump = TaskPlanning.autoBumpEnabled(latest, config: store.config)
+            if notice.meetsDefinition != true, notice.autoBump == true { lastDefinitionCheckAt = .distantPast }
             if source.recordCompletion(notice) {
                 record("“\(task.name)” changed state; Cruise reviewed it (\(notice.meetsDefinition == true ? "appears to meet" : "short of") your Done definition) and queued a review notice")
             } else {
@@ -1659,14 +1673,19 @@ final class ClickyMonitor: ObservableObject {
                DefinitionOfDone.normalized(progress.definition) == definition { continue }
             if let reply = tasks.record(task.id).backgroundReply,
                reply.fingerprint == task.fingerprint, reply.definition == definition { continue }
-            let assessment: ClickyTaskAssessment
-            if let current = tasks.currentAssessment(for: task, definition: definition), current.source.hasPrefix("ollama") {
+            var assessment: ClickyTaskAssessment
+            if let current = tasks.currentAssessment(for: task, definition: definition), current.source.hasPrefix("ollama"),
+               !DefinitionOfDone.needsAgentFollowUp(current, report: task.lastMessage) {
                 assessment = current
             } else {
                 guard !tasks.assessing.contains(task.id) else { continue }
                 assessment = await tasks.assess(task, config: config, localOnly: true)
                 record("define done: “\(task.name)” reads as \(assessment.state.title.lowercased())"
                     + (assessment.meetsDefinition == true ? " — meets your definition" : ""))
+            }
+            if DefinitionOfDone.needsAgentFollowUp(assessment, report: task.lastMessage) {
+                assessment = DefinitionOfDone.redirectedToAgent(assessment, definition: definition)
+                record("define done: “\(task.name)” review asked something HeyClicky can answer — treating it as a gap")
             }
             guard assessment.source.hasPrefix("ollama") else {
                 record("define done: no automatic bump for “\(task.name)” because local Ollama review was unavailable")
@@ -1740,9 +1759,22 @@ final class ClickyMonitor: ObservableObject {
                 record("define done: “\(task.name)” is \(row.status) — follow-up waits")
                 continue
             }
-            guard let chat = await selectTask(task.name, from: scan, config: config, unique: true), let composer = chat.composer,
+            var chatTarget = task.name
+            var selected = await selectTask(task.name, from: scan, config: config, unique: true)
+            if selected == nil {
+                // The task's own chat couldn't be opened; deliver in the main HeyClicky chat, naming the task.
+                let mainScan = await Worker.run { ClickyScanner(config: config).scan() }
+                if let main = await selectTask(MainChatTapOut.chatName, from: mainScan, config: config), main.mainChat {
+                    selected = main
+                    chatTarget = MainChatTapOut.chatName
+                    record("define done: “\(task.name)” chat couldn't be opened — using the main HeyClicky chat and naming the task")
+                } else {
+                    record("define done: neither “\(task.name)” nor the main HeyClicky chat could be opened — will retry")
+                }
+            }
+            guard let chat = selected, let composer = chat.composer,
                   recoveryAllowed(chat) else {
-                autoBumpDeliveryHolds[task.id] = "Could not verify this task's HeyClicky chat and composer. Delivery will retry while idle."
+                autoBumpDeliveryHolds[task.id] = "Could not verify this task's HeyClicky chat or the main chat. Delivery will retry while idle."
                 continue
             }
             if let status = chat.selectedStatus, StallTracker.isBusy(status) { continue }
@@ -1761,14 +1793,20 @@ final class ClickyMonitor: ObservableObject {
                 ?? store.config.projectPriorities[project.priorityKey] ?? .normal
             let draft: ChatBump.Draft
             do {
-                draft = try await Ollama.draftTaskBump(task: task, definition: item.definition, project: project,
-                                                      priority: priority, missing: item.assessment.missing, config: config)
+                let drafted = try await Ollama.draftTaskBump(task: task, definition: item.definition, project: project,
+                                                             priority: priority, missing: item.assessment.missing, config: config)
+                // The review already found unmet saved criteria; a declining drafter must not silently drop them.
+                draft = drafted.unfinished ? drafted
+                    : ChatBump.Draft(unfinished: true, message: DefinitionOfDone.criteriaFollowUp(task: task.name, missing: item.assessment.missing))
+            } catch Ollama.OllamaError.invalidFollowUp, Ollama.OllamaError.ungroundedFollowUp,
+                    Ollama.OllamaError.invalidCoverage, Ollama.OllamaError.incompleteCriteria {
+                draft = ChatBump.Draft(unfinished: true, message: DefinitionOfDone.criteriaFollowUp(task: task.name, missing: item.assessment.missing))
             } catch {
                 autoBumpDeliveryHolds[task.id] = error.localizedDescription
                 record("define done: Ollama couldn't draft a safe bump for “\(task.name)”: \(error.localizedDescription)")
                 continue
             }
-            guard draft.unfinished else {
+            guard draft.unfinished, TaskAudit.definitionFollowUpIsActionable(draft.message) else {
                 autoBumpDeliveryHolds[task.id] = "Local Ollama did not produce an actionable follow-up; review the saved criteria and report."
                 record("define done: Ollama found no explicit actionable gap for “\(task.name)” — nothing sent")
                 continue
@@ -1788,7 +1826,8 @@ final class ClickyMonitor: ObservableObject {
                 continue
             }
             let round = tasks.rounds(for: task, definition: item.definition) + 1
-            let message = draft.message
+            let message = chatTarget == task.name ? draft.message
+                : "About your HeyClicky task “\(task.name)” (please continue it there):\n\n" + draft.message
             // Reserve the round on disk before typing, so a saved-for-retry message still counts after a restart.
             let previous = tasks.record(task.id).progress
             guard tasks.recordFollowUp(task, definition: item.definition, missing: item.assessment.missing) else {
@@ -1804,7 +1843,7 @@ final class ClickyMonitor: ObservableObject {
             let oneShot = manualRequests.contains(task.id) && !TaskPlanning.autoBumpEnabled(task, config: store.config)
             let target = PendingMessage.CompletionTarget(taskID: task.id, definition: item.definition,
                                                          reportFingerprint: task.fingerprint, oneShot: oneShot)
-            if await send(message, via: composer, task: task.name, completionTarget: target) {
+            if await send(message, via: composer, task: chatTarget, completionTarget: target) {
                 stats.continued += 1
                 sent = true
                 record("define done: “\(task.name)” falls short (round \(round) of \(maxRounds)) — asked for: "

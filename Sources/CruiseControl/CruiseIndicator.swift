@@ -80,6 +80,7 @@ private struct CruiseDrivingView: View {
         .accessibilityLabel("Cruise is driving HeyClicky to finish \(task). Escape or any input stops before the X is clicked.")
         .allowsHitTesting(false)
     }
+
 }
 
 @MainActor
@@ -87,7 +88,7 @@ final class CruiseIndicatorController {
     private let store: ConfigStore
     private var panels: [NSPanel] = []
     private var cancellables: Set<AnyCancellable> = []
-    private let size = CGSize(width: 224, height: 96)
+    private let size = CGSize(width: 96, height: 96)
 
     init(store: ConfigStore) {
         self.store = store
@@ -144,37 +145,46 @@ private struct CruiseIndicatorView: View {
     private var mode: DriveMode { store.config.mode }
     private var accent: Color { Brand.accent(for: mode) }
 
+    @State private var breathe = false
+
     var body: some View {
-        HStack(spacing: 8) {
-            Group {
-                if mode == .rest {
-                    Image(systemName: Brand.symbol(for: .rest))
-                        .font(.system(size: 38, weight: .semibold))
-                } else {
-                    ZStack {
-                        let stroke = StrokeStyle(lineWidth: 4, lineCap: .round)
-                        CruiseGauge(part: .travelled).stroke(accent, style: stroke)
-                        CruiseGauge(part: .remaining).stroke(accent.opacity(0.35), style: stroke)
-                        CruiseGauge(part: .needle).fill(accent)
-                    }
-                }
-            }
-            .frame(width: 68, height: 68)
-            Text(mode.shortTitle)
-                .font(BrandFont.inter(20, .bold))
-                .tracking(1.6)
+        ZStack {
+            // Soft ambient bloom behind the mark, like light on glass rather than a sticker.
+            Circle()
+                .fill(RadialGradient(colors: [accent.opacity(0.32), accent.opacity(0.08), .clear],
+                                     center: .center, startRadius: 2, endRadius: 46))
+                .scaleEffect(breathe ? 1.06 : 0.94)
+                .opacity(breathe ? 1 : 0.7)
+            mark
+                .frame(width: 52, height: 52)
+                .foregroundStyle(LinearGradient(colors: [.white.opacity(0.95), accent],
+                                                startPoint: .topLeading, endPoint: .bottomTrailing))
+                .shadow(color: accent.opacity(0.9), radius: 2)
+                .shadow(color: accent.opacity(0.55), radius: 8)
+                .shadow(color: accent.opacity(breathe ? 0.4 : 0.2), radius: 18)
         }
-        .foregroundStyle(accent)
-        .shadow(color: accent.opacity(0.65), radius: 8)
-        .padding(.horizontal, 18)
-        .background {
-            Capsule()
-                .fill(Color.black.opacity(0.88))
-                .overlay { Capsule().strokeBorder(accent.opacity(0.45), lineWidth: 2) }
+        .frame(width: 96, height: 96)
+        .onAppear {
+            withAnimation(.easeInOut(duration: mode == .rest ? 3.2 : 2.2).repeatForever(autoreverses: true)) { breathe = true }
         }
-        .padding(10)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(mode == .rest ? "Cruise Control rest area is active" : "Cruise Control is active")
         .allowsHitTesting(false)
+    }
+
+    @ViewBuilder private var mark: some View {
+        if mode == .rest {
+            Image(systemName: Brand.symbol(for: .rest))
+                .resizable().scaledToFit()
+                .fontWeight(.medium)
+                .padding(6)
+        } else {
+            ZStack {
+                let stroke = StrokeStyle(lineWidth: 3, lineCap: .round)
+                CruiseGauge(part: .remaining).stroke(accent.opacity(0.25), style: stroke)
+                CruiseGauge(part: .travelled).stroke(style: stroke)
+                CruiseGauge(part: .needle)
+            }
+        }
     }
 }

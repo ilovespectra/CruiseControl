@@ -154,7 +154,8 @@ final class NotchController {
         let side = store.config.pillSide
         // Keep Cruise's dropdown visibly separated from HeyClicky's notch menu on either side.
         // Both placements use the same outward gap; the final frame is clamped to the active display below.
-        let clearance: CGFloat = 72
+        // HeyClicky's expanded dropdown is centered on the notch and about 2.75× its width; the pill nests flush against its edge.
+        let heyClickyWidthRatio: CGFloat = 2.75
 
         // Reassigning rootView re-renders synchronously, so fittingSize below is accurate.
         host.rootView = NotchRootView(
@@ -174,7 +175,9 @@ final class NotchController {
         if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
             let notchMinX = frame.minX + left.width
             let notchMaxX = frame.maxX - right.width
-            pillX = side == .right ? notchMaxX + 4 + clearance : notchMinX - 4 - clearance - pillWidth
+            let halfDropdown = (notchMaxX - notchMinX) * heyClickyWidthRatio / 2
+            let notchMidX = (notchMinX + notchMaxX) / 2
+            pillX = side == .right ? notchMidX + halfDropdown : notchMidX - halfDropdown - pillWidth
         } else {
             pillX = frame.midX - pillWidth / 2
         }

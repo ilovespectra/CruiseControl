@@ -245,6 +245,11 @@ if let index = CommandLine.arguments.firstIndex(of: "--preview-task-bump") {
                     throw VSCodeModels.ModelError.action(source.loadError ?? "current task or saved Done criteria unavailable")
                 }
                 print("Concurrent fresh report reads completed for job \(id). No saved task state changed.")
+                print("Continuation allowed: \(TaskPlanning.continuationAllowed(task, config: config, manual: false))")
+                for sentence in task.lastMessage.components(separatedBy: CharacterSet(charactersIn: ".!?\n"))
+                    where TaskAudit.requiresUser(sentence) {
+                    print("User-blocker sentence: \(sentence.trimmingCharacters(in: .whitespaces))")
+                }
                 let assessment = await Ollama.assessClickyTask(task, definition: definition, config: config, localOnly: true)
                 print("Review: \(assessment.state.title) · \(assessment.reason)")
                 if let question = assessment.clarificationQuestion { print("Clarification: \(question)") }
@@ -255,7 +260,9 @@ if let index = CommandLine.arguments.firstIndex(of: "--preview-task-bump") {
                 }
                 let draft = try await Ollama.draftTaskBump(task: task, definition: definition, project: TaskProject(),
                                                           priority: .normal, missing: assessment.missing, config: config)
-                print(draft.unfinished ? "Coverage-checked Ollama draft (NOT SENT):\n\(draft.message)" : "Ollama declined to draft. Nothing sent.")
+                print(draft.unfinished ? "Coverage-checked Ollama draft (NOT SENT):\n\(draft.message)"
+                      : "Ollama declined; Auto-bump would send the saved-criteria follow-up (NOT SENT):\n"
+                        + DefinitionOfDone.criteriaFollowUp(task: task.name, missing: assessment.missing))
                 exit(0)
             } catch {
                 if case Ollama.OllamaError.incompleteCriteria(_, let message) = error {

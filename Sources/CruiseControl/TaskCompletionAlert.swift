@@ -6,10 +6,12 @@ import SwiftUI
 @MainActor
 final class TaskCompletionAlertController {
     private let tasks = ClickyTaskStore.shared
+    private let store: ConfigStore
     private let panel: NSPanel
     private var cancellables: Set<AnyCancellable> = []
 
-    init() {
+    init(store: ConfigStore) {
+        self.store = store
         panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                         backing: .buffered, defer: false)
         panel.level = .floating
@@ -22,9 +24,17 @@ final class TaskCompletionAlertController {
                 let notices = records.values.compactMap(\.completionNotice)
                     .filter { $0.acknowledgedAt == nil }
                     .sorted { $0.completedAt < $1.completedAt }
-                self?.update(notices.first)
+                guard let self else { return }
+                // Short reports on Auto-bump tasks are Auto-bump's job, not a review prompt for the user.
+                self.update(notices.first { $0.meetsDefinition == true || !self.autoBumpOn($0.taskID) })
             }
             .store(in: &cancellables)
+    }
+
+    private func autoBumpOn(_ taskID: String) -> Bool {
+        let config = store.config
+        return config.continueUntilDefinedDone && config.taskPlans[taskID]?.autoBump == true
+            && DefinitionOfDone.normalized(config.clickyDefinitionsOfDone[taskID]) != nil
     }
 
     private func update(_ notice: TaskCompletionNotice?) {
@@ -33,8 +43,13 @@ final class TaskCompletionAlertController {
             return
         }
         let visible = screen.visibleFrame
-        panel.setFrame(NSRect(x: visible.maxX - 418, y: visible.minY + 28, width: 400, height: 164), display: true)
-        panel.contentView = NSHostingView(rootView: TaskCompletionAlertView(notice: notice) { [weak self] open in
+        // The Cruise light (16pt inset, 96pt tall, drawn above this panel) tucks into the notice's bottom-right corner when shown.
+        let lightShown = store.config.mode != .manual
+        let tuck: CGFloat = lightShown ? 36 : 0
+        let height: CGFloat = 164 + tuck
+        let y = lightShown ? visible.minY + 16 + 96 - tuck : visible.minY + 16
+        panel.setFrame(NSRect(x: visible.maxX - 416, y: y, width: 400, height: height), display: true)
+        panel.contentView = NSHostingView(rootView: TaskCompletionAlertView(notice: notice, bottomInset: tuck) { [weak self] open in
             guard let self else { return }
             guard self.tasks.acknowledgeCompletion(notice) else {
                 NSLog("Cruise completion acknowledgement failed: %@", self.tasks.loadError ?? "saved notice changed")
@@ -51,6 +66,7 @@ final class TaskCompletionAlertController {
 
 private struct TaskCompletionAlertView: View {
     let notice: TaskCompletionNotice
+    var bottomInset: CGFloat = 0
     let action: (Bool) -> Void
 
     var body: some View {
@@ -60,7 +76,9 @@ private struct TaskCompletionAlertView: View {
             Text(notice.taskName).font(.headline).lineLimit(1)
             Text(notice.meetsDefinition == true
                  ? "Cruise reviewed the new report and it appears to meet your Done definition. Only you can mark it finished."
-                 : "Cruise reviewed the new report: it is still short of your Done definition. \(notice.reviewSummary ?? "")")
+                 : notice.autoBump == true
+                    ? "Still short of your Done definition — Auto-bump is drafting the gap and sending it to HeyClicky. \(notice.reviewSummary ?? "")"
+                    : "Still short of your Done definition. Open the task, choose Generate response, then Send to HeyClicky. \(notice.reviewSummary ?? "")")
                 .font(.caption).foregroundStyle(.secondary).lineLimit(3)
             HStack {
                 Button("Review task") { action(true) }
@@ -69,7 +87,8 @@ private struct TaskCompletionAlertView: View {
             }
         }
         .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.bottom, bottomInset)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
         .preferredColorScheme(.dark)
     }

@@ -941,12 +941,18 @@ private struct TaskProjectRow: View {
         defer { draftingBump = false }
 
         do {
-            let draft = try await Ollama.draftTaskBump(task: details, definition: expectedDefinition, project: task.project,
+            let fallback = ChatBump.Draft(unfinished: true,
+                                          message: DefinitionOfDone.criteriaFollowUp(task: details.name, missing: reviewed.missing))
+            var draft: ChatBump.Draft
+            do {
+                draft = try await Ollama.draftTaskBump(task: details, definition: expectedDefinition, project: task.project,
                                                       priority: priority, missing: reviewed.missing, config: store.config)
-            guard draft.unfinished else {
-                bumpDraftError = "The reviewed report has no actionable gap; no follow-up draft is needed."
-                return
+            } catch Ollama.OllamaError.invalidFollowUp, Ollama.OllamaError.ungroundedFollowUp,
+                    Ollama.OllamaError.invalidCoverage, Ollama.OllamaError.incompleteCriteria {
+                draft = fallback
             }
+            // The review found unmet criteria, so a declining drafter falls back to the saved criteria verbatim.
+            if !draft.unfinished { draft = fallback }
             guard let latest = tasks.task(task.id), latest.fingerprint == expectedFingerprint,
                   DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id]) == expectedDefinition,
                   tasks.currentAssessment(for: latest, definition: expectedDefinition) == reviewed,

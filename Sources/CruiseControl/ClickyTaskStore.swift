@@ -170,6 +170,11 @@ final class ClickyTaskStore: ObservableObject {
             guard $0.isCurrent(for: task, definition: definition) else { return nil }
             if definition != nil, $0.source.hasPrefix("ollama"),
                !$0.evaluatesUserCriteria(definition) { return nil }
+            // Ollama's guess that a criterion "needs the user" doesn't hold unless HeyClicky's report actually asks.
+            if let definition = DefinitionOfDone.normalized(definition), $0.source.hasPrefix("ollama"),
+               DefinitionOfDone.needsAgentFollowUp($0, report: task.lastMessage) {
+                return DefinitionOfDone.redirectedToAgent($0, definition: definition)
+            }
             return $0
         }
     }

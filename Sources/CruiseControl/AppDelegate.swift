@@ -35,7 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store = ConfigStore()
         BrandFont.register()
         monitor = ClickyMonitor(store: store)
-        taskCompletionAlerts = TaskCompletionAlertController()
+        taskCompletionAlerts = TaskCompletionAlertController(store: store)
         vscodeRequestAlerts = VSCodeRequestAlertController(store: store, monitor: monitor)
         ollama = OllamaSetupController(store: store)
         notch = NotchController(store: store, monitor: monitor, ollama: ollama)

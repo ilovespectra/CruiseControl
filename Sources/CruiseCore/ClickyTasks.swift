@@ -427,6 +427,7 @@ public struct TaskCompletionNotice: Codable, Equatable, Sendable, Identifiable {
     public var reportedStatus: String?
     public var meetsDefinition: Bool?
     public var reviewSummary: String?
+    public var autoBump: Bool?
     public var id: String { taskID }
 
     public init?(task: ClickyAgentTask, definition: String, assessment: ClickyTaskAssessment) {
@@ -452,6 +453,11 @@ public enum DefinitionOfDone {
     public static let reviewVersion = 5
     public static let maxRounds = 8
     public static let maxDefinitionLength = 1200
+
+    public static func criteriaFollowUp(task: String, missing: [String]) -> String {
+        TaskBumpCoverage.appendingCriteria(missing,
+            to: "Cruise Control follow-up: \(task): Cruise compared your latest report with the saved Done definition and it is not met yet. Please complete and verify the remaining work, then report the evidence.")
+    }
 
     public static func normalized(_ definition: String?) -> String? {
         guard let text = definition?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
@@ -690,6 +696,38 @@ public enum DefinitionOfDone {
         let oldGaps = Set(previous.map { Matcher.normalize($0) })
         let newGaps = Set(assessment.missing.map { Matcher.normalize($0) })
         return !oldGaps.isEmpty && oldGaps == newGaps
+    }
+
+    /// A "needs you" review or clarification that is really a status question about the agent's own work
+    /// (e.g. "Was the volume knob implemented?") belongs to HeyClicky, not the user.
+    public static func needsAgentFollowUp(_ assessment: ClickyTaskAssessment, report: String) -> Bool {
+        guard assessment.meetsDefinition != true, !TaskAudit.requiresUser(report) else { return false }
+        if let question = assessment.clarificationQuestion {
+            return isAgentStatusQuestion(question)
+        }
+        return assessment.state == .needsYou
+    }
+
+    public static func isAgentStatusQuestion(_ question: String) -> Bool {
+        let q = Matcher.normalize(question)
+        let starts = ["was ", "were ", "did ", "has ", "have ", "is ", "are ", "does ", "do ", "can you confirm", "please confirm"]
+        guard starts.contains(where: { q.hasPrefix($0) }) else { return false }
+        // Anything asking for the user's choice or material stays a genuine clarification.
+        let userInput = ["which", "prefer", "should i", "should we", "would you", "do you want", "your choice",
+                         "provide", "send me", "share", "upload", "image to use", "which image", "you want"]
+        return !userInput.contains(where: { q.contains($0) })
+    }
+
+    public static func redirectedToAgent(_ assessment: ClickyTaskAssessment, definition: String) -> ClickyTaskAssessment {
+        var redirected = assessment
+        var missing = assessment.missing
+        if let question = assessment.clarificationQuestion { missing.append("Answer and verify: \(question)") }
+        if missing.isEmpty { missing = [definition] }
+        redirected.missing = missing
+        redirected.clarificationQuestion = nil
+        redirected.meetsDefinition = false
+        redirected.state = .unfinished
+        return redirected
     }
 
     public static func shouldContinue(_ task: ClickyAgentTask, definition: String?, assessment: ClickyTaskAssessment?,
