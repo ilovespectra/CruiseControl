@@ -155,8 +155,9 @@ class DraftSafetyTests(unittest.TestCase):
             output = Path(tmp) / "release-notes.md"
             with (
                 mock.patch.object(draft, "installed_ollama_model", return_value="qwen2.5:3b"),
-                mock.patch.object(draft.subprocess, "run", return_value=SimpleNamespace(
-                    returncode=0, stdout="[1,0]", stderr="")),
+                mock.patch.object(draft.urllib.request, "urlopen", return_value=mock.MagicMock(
+                    __enter__=lambda self: SimpleNamespace(read=lambda: b'{"response": "```json\\n[1,0]\\n```"}'),
+                    __exit__=lambda *a: False)),
             ):
                 notes = draft.generate_release_notes(
                     "1.1.0", "abc123", "v1.0.11", ["Verified change one", "Verified change two"],

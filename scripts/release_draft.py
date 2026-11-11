@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import urllib.request
 
 REPO = "ilovespectra/CruiseControl"
 
@@ -63,14 +64,23 @@ def generate_release_notes(version, commit, previous_tag, subjects, diffstat, ou
     ])
 
     def query_model(text):
+        # The local HTTP API stays responsive when the CLI is slow to attach (e.g. without a TTY or under load).
+        base = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+        if not base.startswith("http"):
+            base = "http://" + base
+        request = urllib.request.Request(
+            base.rstrip("/") + "/api/generate",
+            data=json.dumps({"model": model, "prompt": text, "stream": False}).encode(),
+            headers={"Content-Type": "application/json"})
         try:
-            result = subprocess.run(["ollama", "run", model], input=text, capture_output=True,
-                                    text=True, timeout=180, check=False)
-        except (OSError, subprocess.TimeoutExpired) as error:
+            with urllib.request.urlopen(request, timeout=600) as response:
+                body = json.loads(response.read().decode())
+        except (OSError, ValueError) as error:
             raise RuntimeError(f"Local Ollama release-note generation failed: {error}") from error
-        if result.returncode != 0:
-            raise RuntimeError(f"Local Ollama release-note generation failed: {(result.stderr or '').strip()[:1000]}")
-        return (result.stdout or "").strip()
+        raw = str(body.get("response") or "").strip()
+        if raw.startswith("```"):
+            raw = raw.strip("`").removeprefix("json").strip()
+        return raw
 
     raw = query_model(prompt)
     try:
