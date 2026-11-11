@@ -12,7 +12,7 @@ In **Cruise** mode the notch dropdown stays visible even when HeyClicky is close
 
 The bottom-right screen indicator shows a green gauge and **CRUISE** in Cruise mode, or the dropdown's yellow coffee cup and **REST** in Rest mode. It appears on every display and across Spaces, independently of HeyClicky's visibility; Manual mode hides it. The indicator does not intercept clicks.
 
-[Website](https://cruise.kolektivkrog.si) · [Documentation & safety](https://cruise.kolektivkrog.si/docs.html) · [Maintainer console](DEVELOPER_CONSOLE.md)
+[Website](https://cruise.kolektivkrog.si) · [Documentation & safety](https://cruise.kolektivkrog.si/docs.html) · [X · @_cruise_ctrl_](https://x.com/_cruise_ctrl_) · [Maintainer console](DEVELOPER_CONSOLE.md)
 
 **Launch the maintainer console:** From the repository root on macOS 14 or newer, run `swift run --product CruiseControlPublisher`. This builds and launches the Publisher utility; it is separate from `Cruise Control.app`. See [`DEVELOPER_CONSOLE.md`](DEVELOPER_CONSOLE.md) for build-preview and publishing safeguards.
 

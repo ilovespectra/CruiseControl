@@ -336,6 +336,7 @@ struct SettingsContent: View {
                     HStack {
                         Link("Documentation & warnings", destination: URL(string: "https://cruise.kolektivkrog.si/docs.html")!)
                         Link("GitHub source", destination: URL(string: "https://github.com/ilovespectra/CruiseControl")!)
+                        Link("X · @_cruise_ctrl_", destination: URL(string: "https://x.com/_cruise_ctrl_")!)
                     }
                 }
                 settingsSection("Permissions", detail: "Accessibility is required to read controls and press buttons. Screen recording is an optional HeyClicky OCR fallback.") {
