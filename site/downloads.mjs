@@ -29,12 +29,39 @@ export async function fetchBinaryDownloads(fetcher = fetch) {
   }
 }
 
+const DOWNLOAD_CACHE_KEY = 'cruise-control.release-binary-downloads.v1';
+const DOWNLOAD_CACHE_TTL_MS = 5 * 60 * 1000;
+
+function readCachedDownloads() {
+  try {
+    const cached = JSON.parse(globalThis.localStorage?.getItem(DOWNLOAD_CACHE_KEY) || 'null');
+    if (cached && Number.isSafeInteger(cached.total) && cached.total >= 0
+        && Number.isFinite(cached.savedAt) && cached.savedAt > 0 && cached.savedAt <= Date.now()) return cached;
+  } catch {}
+  return null;
+}
+
+function cacheAge(savedAt) {
+  const minutes = Math.max(0, Math.floor((Date.now() - savedAt) / 60000));
+  return minutes < 1 ? 'under a minute' : `${minutes} min`;
+}
+
 export async function showBinaryDownloads(element, fetcher = fetch) {
+  const cached = readCachedDownloads();
+  if (cached && Date.now() - cached.savedAt < DOWNLOAD_CACHE_TTL_MS) {
+    element.textContent = `${cached.total.toLocaleString()} binary downloads on GitHub`;
+    return;
+  }
+  if (cached) element.textContent = `${cached.total.toLocaleString()} binary downloads on GitHub · refreshing`;
+
   try {
     const total = await fetchBinaryDownloads(fetcher);
+    try { globalThis.localStorage?.setItem(DOWNLOAD_CACHE_KEY, JSON.stringify({ total, savedAt: Date.now() })); } catch {}
     element.textContent = `${total.toLocaleString()} binary downloads on GitHub`;
   } catch (error) {
-    element.textContent = 'binary download count unavailable — GitHub may be rate-limited or the repository may still be private.';
+    element.textContent = cached
+      ? `${cached.total.toLocaleString()} binary downloads on GitHub · last checked ${cacheAge(cached.savedAt)} ago`
+      : 'binary download count unavailable — GitHub may be rate-limited or the repository may still be private.';
     console.error('Could not load Cruise Control binary download count:', error);
   }
 }

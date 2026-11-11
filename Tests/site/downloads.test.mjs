@@ -44,3 +44,45 @@ test('renders a real zero rather than a placeholder', async () => {
   await showBinaryDownloads(element, async () => ({ ok: true, json: async () => [] }));
   assert.equal(element.textContent, '0 binary downloads on GitHub');
 });
+
+test('uses a five-minute cache and retains the last verified total on API errors', async () => {
+  const values = new Map();
+  const localStorage = {
+    getItem: (key) => values.get(key) || null,
+    setItem: (key, value) => values.set(key, String(value)),
+  };
+  const priorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: localStorage });
+
+  try {
+    let requests = 0;
+    const first = { textContent: '' };
+    await showBinaryDownloads(first, async () => {
+      requests += 1;
+      return { ok: true, json: async () => [{ assets: [{ name: 'CruiseControl.pkg', download_count: 14 }] }] };
+    });
+    assert.equal(first.textContent, '14 binary downloads on GitHub');
+
+    const fresh = { textContent: '' };
+    await showBinaryDownloads(fresh, async () => {
+      requests += 1;
+      return { ok: false, status: 403 };
+    });
+    assert.equal(fresh.textContent, '14 binary downloads on GitHub');
+    assert.equal(requests, 1);
+
+    const cache = JSON.parse(values.get('cruise-control.release-binary-downloads.v1'));
+    cache.savedAt = Date.now() - 10 * 60 * 1000;
+    values.set('cruise-control.release-binary-downloads.v1', JSON.stringify(cache));
+    const stale = { textContent: '' };
+    await showBinaryDownloads(stale, async () => {
+      requests += 1;
+      return { ok: false, status: 403 };
+    });
+    assert.match(stale.textContent, /14 binary downloads on GitHub · last checked \d+ min ago/);
+    assert.equal(requests, 2);
+  } finally {
+    if (priorDescriptor) Object.defineProperty(globalThis, 'localStorage', priorDescriptor);
+    else delete globalThis.localStorage;
+  }
+});
