@@ -10,10 +10,13 @@ let package = Package(
     ],
     targets: [
         .target(name: "CruiseCore", path: "Sources/CruiseCore"),
+        .target(name: "CruiseAudioAtomics",
+                path: "Sources/CruiseAudioAtomics",
+                publicHeadersPath: "include"),
         .executableTarget(name: "CruiseControlPublisher", path: "Sources/CruiseControlPublisher"),
         .executableTarget(
             name: "CruiseControl",
-            dependencies: ["CruiseCore"],
+            dependencies: ["CruiseCore", "CruiseAudioAtomics"],
             path: "Sources/CruiseControl"
         ),
         .testTarget(
@@ -21,5 +24,6 @@ let package = Package(
             dependencies: ["CruiseCore"],
             path: "Tests/CruiseCoreTests"
         ),
-    ]
+    ],
+    cLanguageStandard: .c11
 )

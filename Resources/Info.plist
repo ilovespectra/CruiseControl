@@ -28,5 +28,7 @@
 	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Cruise Control applies separate volume levels to HeyClicky and VS Code audio by processing their app-only streams live. Audio is never saved or sent.</string>
 </dict>
 </plist>
