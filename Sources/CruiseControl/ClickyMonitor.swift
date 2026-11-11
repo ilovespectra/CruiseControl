@@ -20,11 +20,19 @@ final class ClickyMonitor: ObservableObject {
     @Published private(set) var log: [LogLine] = []
     @Published private(set) var lastActionAt: Date?
     @Published private(set) var vscodeStatus = "Waiting for a VS Code request."
+    @Published private(set) var vscodeFollowUpStatus = "Not yet checked."
+    @Published private(set) var vscodeModelStatus = "Not yet checked."
+    @Published private(set) var pendingVSCodeAlerts: [VSCodePendingRequestNotice] = []
+    @Published private(set) var drivingTaskName: String? {
+        didSet { vscodeApprovalPermission.set(store.config.vscodeApprovalsActive && drivingTaskName == nil) }
+    }
+    @Published private(set) var preparingFinish = false
     @Published private(set) var taskCatalog = TaskCatalog()
     @Published private(set) var taskCatalogError: String?
     @Published private(set) var projectInferenceStatus = "Projects are inferred locally from conversation evidence."
     @Published private(set) var backgroundTaskStatus = TaskPlanning.deliveryHold
     @Published private(set) var bumpingTaskIDs: Set<String> = []
+    @Published private(set) var autoBumpDeliveryHolds: [String: String] = [:]
     private var queuedManualBumpIDs: Set<String> = []
     private var inferringProjects = false
     private var backgroundReviewBusy = false
@@ -40,6 +48,7 @@ final class ClickyMonitor: ObservableObject {
     private let store: ConfigStore
     private var timer: Timer?
     private var busy = false
+    private let vscodeApprovalPermission = InputSynth.ActionPermission()
     private var cancellables: Set<AnyCancellable> = []
 
     private var consentAttempts = 0
@@ -84,9 +93,13 @@ final class ClickyMonitor: ObservableObject {
     private var lastNotchInspectionAt = Date.distantPast
     private var lastInterruptedBump: [String: Date] = [:]
 
-    // VS Code tool confirmations
+    // VS Code tool confirmations and read-only pending-request notices
     private var vscodeBusy = false
     private var lastVSCodeCheckAt = Date.distantPast
+    private var pendingVSCodeAlertScanBusy = false
+    private var lastPendingVSCodeAlertScanAt = Date.distantPast
+    private var pendingVSCodeAlertFirstSeen: [String: Date] = [:]
+    private var pendingVSCodeAlertLastSeen: [String: Date] = [:]
     private struct Review { let verdict: ApprovalReview.Verdict?; let at: Date }
     private var reviews: [String: Review] = [:]
     private var modelBusy = false
@@ -106,6 +119,9 @@ final class ClickyMonitor: ObservableObject {
     private var lastUsageScanAt = Date.distantPast
     private var lastTaskAuditAt = Date.distantPast
     private var lastDefinitionCheckAt = Date.distantPast
+    private var definitionReviewBusy = false
+    private var lastDefinitionReviewAt = Date.distantPast
+    private var definitionReviewFailures: [String: Date] = [:]
     private var taskAuditStates: [String: ChatBump.State] = [:]
     private let taskAuditURL = ConfigStore.directory.appendingPathComponent("clicky-task-audits.json")
     private var taskRecovery = TaskRecovery()
@@ -189,6 +205,13 @@ final class ClickyMonitor: ObservableObject {
                 }
             }
         }
+
+        store.$config
+            .sink { [weak self] config in
+                guard let self else { return }
+                self.vscodeApprovalPermission.set(config.vscodeApprovalsActive && self.drivingTaskName == nil)
+            }
+            .store(in: &cancellables)
 
         store.$config
             .map(\.pollInterval)
@@ -413,15 +436,38 @@ final class ClickyMonitor: ObservableObject {
         return true
     }
 
+    private func waitForCurrentTaskAction(_ interaction: InputSynth.UserInteractionWatch, action: String) async -> String? {
+        let deadline = Date().addingTimeInterval(20)
+        while busy, Date() < deadline, !interaction.interrupted, !Task.isCancelled, store.config.mode != .rest {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        if interaction.interrupted || Task.isCancelled {
+            return "\(action) cancelled by user input or cancellation. No new task action was started."
+        }
+        if store.config.mode == .rest { return "\(action) paused: Cruise entered Rest mode. No new task action was started." }
+        if busy { return "\(action) paused: the previous Cruise action is still running. Retry when it finishes." }
+        return nil
+    }
+
     /// Sends the exact visible, user-approved draft to its unique task after refreshing and rechecking evidence.
     /// Returns nil only after HeyClicky's transcript confirms delivery; otherwise returns a truthful blocked/pending status.
     func sendReviewedTaskDraft(taskID: String, text: String, definition: String,
                                reportFingerprint: String, missing: [String]) async -> String? {
-        let config = store.config
         let source = ClickyTaskStore.shared
-        guard config.mode == .cruise, config.autoContinueReports, config.continueUntilDefinedDone,
-              config.ollamaEnabled, Ollama.isLocalServer(config), !config.usageCutoffReached else {
-            return "Send blocked: Cruise follow-up, local Ollama, or the global completion-review guard is off."
+        guard drivingTaskName == nil else { return "Send paused: another explicit task action is already running." }
+        let interaction = InputSynth.UserInteractionWatch()
+        drivingTaskName = "Waiting to send to \(source.task(taskID)?.name ?? "selected task")"
+        defer {
+            drivingTaskName = nil
+            interaction.stop()
+        }
+        if let problem = await waitForCurrentTaskAction(interaction, action: "Send") { return problem }
+        let config = store.config
+        busy = true
+        defer { busy = false }
+        drivingTaskName = "Sending to \(source.task(taskID)?.name ?? "selected task")"
+        guard TaskPlanning.definitionDeliveryAllowed(config: config, oneShot: true) else {
+            return "Send blocked: leave Rest mode and enable local Ollama; check the usage cutoff."
         }
         guard messageHistoryReadable, pendingMessage == nil, source.canPersist else {
             return "Send blocked: a saved delivery is pending or task history cannot be safely updated."
@@ -510,56 +556,278 @@ final class ClickyMonitor: ObservableObject {
         return "Send not confirmed. The draft was not reported as sent; review the HeyClicky task before retrying."
     }
 
-    /// Sends the exact finish/close notice shown in the Tasks confirmation dialog to its uniquely matched task.
-    /// This is a user-initiated UI delivery; it asks HeyClicky to close but never claims to change remote task state.
-    func sendTaskLifecycleNotice(taskID: String, text: String) async -> String? {
+    func closeHeyClickyTask(taskID: String) async -> String? {
+        let started = ProcessInfo.processInfo.systemUptime
+        record("Finish requested for HeyClicky job [\(taskID)]")
+        let result = await performCloseHeyClickyTask(taskID: taskID)
+        let seconds = String(format: "%.2f", ProcessInfo.processInfo.systemUptime - started)
+        record(result.map { "Finish [\(taskID)] after \(seconds)s: \($0)" }
+               ?? "Finish [\(taskID)] completed in \(seconds)s; history and files preserved")
+        return result
+    }
+
+    private func performCloseHeyClickyTask(taskID: String) async -> String? {
         let config = store.config
         let source = ClickyTaskStore.shared
-        guard config.mode == .cruise, config.autoContinueReports, !config.usageCutoffReached else {
-            return "Notice not sent: switch Cruise to Cruise mode and enable automatic continuation first."
+        guard axTrusted else { return "Finish blocked: grant Cruise Control Accessibility access before retrying." }
+        guard config.mode != .rest else { return "Finish paused: leave Rest mode before retrying." }
+        guard drivingTaskName == nil else { return "Finish paused: another task's finish action is already running." }
+        preparingFinish = true
+        let interaction = InputSynth.UserInteractionWatch()
+        var returnInteraction: InputSynth.UserInteractionWatch?
+        let previousApp = NSWorkspace.shared.frontmostApplication
+        drivingTaskName = "Waiting to finish \(source.task(taskID)?.name ?? "selected task")"
+        defer {
+            drivingTaskName = nil
+            preparingFinish = false
+            interaction.stop()
+            returnInteraction?.stop()
         }
-        guard messageHistoryReadable, pendingMessage == nil, source.canPersist else {
-            return "Notice not sent: another message is pending or task history cannot be safely updated."
+        let waitStarted = ProcessInfo.processInfo.systemUptime
+        if let problem = await waitForCurrentTaskAction(interaction, action: "Finish") { return problem }
+        record("Finish [\(taskID)] action slot ready after \(String(format: "%.2f", ProcessInfo.processInfo.systemUptime - waitStarted))s")
+        guard pendingMessage?.completionTarget?.taskID != taskID else {
+            return "Close blocked: resolve this task's saved delivery before dismissing it."
         }
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= 2_000 else {
-            return "Notice not sent: the message is empty or too long."
+        busy = true
+        defer { busy = false }
+        let currentTasks: [ClickyAgentTask]
+        do {
+            currentTasks = try await Task.detached(priority: .userInitiated) {
+                try ClickyTaskLibrary.tasks(
+                    jobs: ClickyTaskLibrary.decodeJobs(ClickyTaskStore.readJobsData()), activity: [:])
+            }.value
+        } catch {
+            return "Close blocked: couldn't read the current HeyClicky jobs: \(error.localizedDescription). Nothing was clicked."
         }
-
-        let requestedAt = Date()
-        await source.refresh(measure: false)
-        guard let loadedAt = source.loadedAt, loadedAt >= requestedAt, source.loadError == nil,
-              let task = source.task(taskID), !task.dismissed, !task.isStopped,
-              !TaskAudit.requiresUser(task.lastMessage),
-              !ClickyTaskLibrary.ambiguousNames(source.tasks).contains(Matcher.normalize(task.name)) else {
-            return "Notice not sent: this task is stale, stopped, awaiting your decision, dismissed, or has an ambiguous name."
+        if let blocker = TaskPlanning.finishBlocker(taskID: taskID, tasks: currentTasks) { return blocker }
+        guard let task = currentTasks.first(where: { $0.id == taskID }) else {
+            return "Close blocked: this HeyClicky job is unavailable."
         }
-        let fingerprint = task.fingerprint
-        guard let chat = await revealChat(config: config),
-              let selected = await selectTask(task.name, from: chat, config: config, unique: true),
-              Matcher.normalize(Self.chatName(selected, draft: false) ?? "") == Matcher.normalize(task.name),
-              let composer = selected.composer, recoveryAllowed(selected) else {
-            return "Notice not sent: Cruise couldn't verify this exact HeyClicky task."
+        guard !interaction.interrupted, !Task.isCancelled, store.config.mode != .rest else {
+            return "Finish cancelled during task verification. Nothing was clicked."
         }
-
-        let finalRead = Date()
-        await source.refresh(measure: false)
-        guard let finalLoadedAt = source.loadedAt, finalLoadedAt >= finalRead, source.loadError == nil,
-              let latest = source.task(taskID), latest.fingerprint == fingerprint,
-              !latest.dismissed, !latest.isStopped, !TaskAudit.requiresUser(latest.lastMessage),
-              !ClickyTaskLibrary.ambiguousNames(source.tasks).contains(Matcher.normalize(latest.name)),
-              Matcher.normalize(latest.name) == Matcher.normalize(task.name),
-              await Worker.run({ AX.stringValue(composer.input) == "" }) else {
-            return "Notice not sent: the task changed or its composer was not empty. Nothing was overwritten."
+        var stopped = taskRecovery
+        stopped.observe(task: task.name, status: "stopped by you", latestTurnStatus: nil)
+        do {
+            try JSONEncoder().encode(stopped).write(to: taskRecoveryURL, options: .atomic)
+        } catch {
+            record("Finish paused: couldn't save the user's stop for ‘\(task.name)’: \(error.localizedDescription)")
+            return "Finish paused: couldn't persist the stop before closing. Nothing was clicked."
         }
-
-        if await send(text, via: composer, task: task.name) {
-            record("user-confirmed lifecycle notice confirmed in ‘\(task.name)’")
+        taskRecovery = stopped
+        queuedManualBumpIDs.remove(taskID)
+        bumpingTaskIDs.remove(taskID)
+        store.config.taskPlans[taskID, default: TaskPlan()].autoBump = false
+        drivingTaskName = task.name
+        var dismissalVerified = task.dismissed
+        defer {
+            if dismissalVerified {
+                let active = NSWorkspace.shared.frontmostApplication
+                let stillInWorkflow = active?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+                    || active?.bundleIdentifier.map(config.clickyBundleIDs.contains) == true
+                if !(returnInteraction ?? interaction).interrupted, stillInWorkflow {
+                    record("Finish [\(taskID)] returning to the existing Cruise Tasks view")
+                    NotificationCenter.default.post(name: SettingsController.openTasksNotification, object: nil)
+                } else {
+                    record("Finish [\(taskID)] return to Cruise skipped: user input or another app took over")
+                }
+            } else if !interaction.interrupted {
+                previousApp?.activate()
+            }
+        }
+        if task.dismissed {
+            let scan = await Worker.run { ClickyScanner(config: config).scan() }
+            guard await dismissTaskNotices(task.name, from: scan, config: config, interaction: interaction) else {
+                return "Task already dismissed; its notification could not be safely closed. Nothing was retried."
+            }
             return nil
         }
-        if let pendingMessage, pendingMessage.task == task.name, pendingMessage.text == text {
-            return pendingMessage.holdReason ?? "Notice saved, but HeyClicky's receipt is not confirmed; no Cruise lifecycle state changed."
+        drivingTaskName = "Opening HeyClicky to finish \(task.name)"
+        preparingFinish = false
+        record("Finish [\(taskID)] preflight passed; opening HeyClicky chat")
+        guard let runningApp = config.clickyBundleIDs.lazy.compactMap({
+            NSRunningApplication.runningApplications(withBundleIdentifier: $0).first { !$0.isTerminated }
+        }).first, runningApp.activate() else {
+            return "Finish paused: HeyClicky is not running or could not be activated. Open HeyClicky and retry."
         }
-        return "Notice not confirmed; no Cruise lifecycle state changed. Check the task before retrying."
+        guard var chat = await revealChat(config: config, requireSidebar: true), !interaction.interrupted,
+              let app = NSRunningApplication(processIdentifier: chat.pid), app.activate() else {
+            return "Finish paused: HeyClicky's expanded chat could not be opened, or input interrupted the drive."
+        }
+        if let window = chat.chatWindow {
+            let minimized: Bool = await Worker.run { AX.attr(window, kAXMinimizedAttribute) ?? false }
+            if minimized {
+                let restored = await Worker.run {
+                    AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse) == .success
+                }
+                guard restored else { return "Finish paused: HeyClicky's chat window could not be restored." }
+            }
+            _ = await Worker.run { AXUIElementPerformAction(window, kAXRaiseAction as CFString) }
+        }
+        if let sidebar = chat.showSidebar {
+            guard await Worker.run({ AX.press(sidebar) }) else { return "Finish paused: HeyClicky's task sidebar could not be expanded." }
+        }
+        if chat.showSidebar != nil {
+            for _ in 0..<8 {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                guard !interaction.interrupted, !Task.isCancelled else {
+                    return "Finish cancelled while expanding the sidebar. No X was clicked."
+                }
+                chat = await Worker.run { ClickyScanner(config: config).scan() }
+                if chat.showSidebar == nil { break }
+            }
+            guard chat.showSidebar == nil else {
+                return "Finish paused: HeyClicky's sidebar did not expand. No scrolling or X click was attempted."
+            }
+        }
+        guard await dismissTaskNotices(task.name, from: chat, config: config, interaction: interaction) else {
+            return "Finish paused: the task's notification could not be safely closed. Nothing was retried."
+        }
+        if !chat.taskNotices.isEmpty {
+            chat = await Worker.run { ClickyScanner(config: config).scan() }
+        }
+        let initialRows = chat.chatButtons.filter { Matcher.isTaskRow($0.label, title: task.name) }
+        guard initialRows.count == 1, let initialRow = initialRows.first,
+              let sidebar = await Worker.run({ AX.scrollArea(containing: initialRow.element) }),
+              !interaction.interrupted else {
+            return "Close blocked: Cruise couldn't verify the exact HeyClicky sidebar task or user input interrupted it."
+        }
+        drivingTaskName = "Revealing \(task.name) in the sidebar"
+        var visible = await Worker.run { ClickyScanner(config: config).scanSidebar(sidebar) }
+        guard visible.isTaskSidebar else {
+            return "Finish blocked: the row's scroll area is not a composer-free task sidebar. No scrolling or X click was attempted."
+        }
+        var revealed = false
+        for _ in 0..<30 {
+            guard !interaction.interrupted, !Task.isCancelled, store.config.mode != .rest else {
+                return "Finish cancelled while revealing the sidebar task. No X was clicked."
+            }
+            let candidates = visible.chatButtons.filter { Matcher.isTaskRow($0.label, title: task.name) }
+            guard candidates.count == 1, let candidate = candidates.first else { break }
+            let result = await Worker.run {
+                AX.revealInScrollArea(candidate.element, in: sidebar, shouldContinue: { !interaction.interrupted })
+            }
+            if result == .visible {
+                revealed = true
+                break
+            }
+            if result == .unavailable { break }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            visible = await Worker.run { ClickyScanner(config: config).scanSidebar(sidebar) }
+            guard visible.isTaskSidebar else { break }
+        }
+        guard revealed else { return "Finish paused: the exact sidebar task could not be scrolled into view. No X was clicked." }
+        record("Finish [\(taskID)] sidebar target visible")
+        drivingTaskName = task.name
+        let rows = visible.chatButtons.filter {
+            Matcher.normalize($0.label) == Matcher.normalize(task.name) || Matcher.isTaskRow($0.label, title: task.name)
+        }
+        guard rows.count == 1, let row = rows.first,
+              let frame = await Worker.run({ AX.frame(row.element) }), frame.width > 0, frame.height > 0 else {
+            return "Close blocked: the exact sidebar card is not uniquely visible. Bring it into view and retry."
+        }
+        var pressed = false
+        await withOverlayHidden {
+            pressed = await Worker.run {
+                let original = CGEvent(source: nil)?.location
+                defer { if let original, !interaction.interrupted { InputSynth.move(to: original) } }
+                let hoverPoint = CGPoint(x: frame.midX, y: frame.midY)
+                guard NSWorkspace.shared.frontmostApplication?.processIdentifier == chat.pid,
+                      AX.isUnderPointer(row.element, at: hoverPoint), !interaction.interrupted else { return false }
+                InputSynth.move(to: hoverPoint)
+                usleep(400_000)
+                guard let cursor = CGEvent(source: nil)?.location,
+                      abs(cursor.x - hoverPoint.x) < 2, abs(cursor.y - hoverPoint.y) < 2 else { return false }
+                let fresh = ClickyScanner(config: config).scanSidebar(sidebar)
+                guard fresh.isTaskSidebar else { return false }
+                let freshRows = fresh.chatButtons.filter { Matcher.isTaskRow($0.label, title: task.name) }
+                guard freshRows.count == 1, let freshRow = freshRows.first,
+                      AX.frame(freshRow.element) == frame else { return false }
+                let controls = fresh.dismissButtons.compactMap { element -> (AXUIElement, CGRect)? in
+                    guard AX.isEnabled(element), let rect = AX.frame(element), frame.contains(rect),
+                          rect.width < frame.width / 2 else { return nil }
+                    return (element, rect)
+                }
+                guard controls.count == 1, let control = controls.first, !interaction.interrupted else { return false }
+                let point = CGPoint(x: control.1.midX, y: control.1.midY)
+                guard AX.isUnderPointer(control.0, at: point), !interaction.interrupted else { return false }
+                return InputSynth.click(at: point, restoreCursor: false, shouldContinue: {
+                    !interaction.interrupted && AX.isUnderPointer(control.0, at: point)
+                })
+            }
+        }
+        guard pressed else { return "Close blocked: HeyClicky did not expose this task's own X. No notice was sent and no local-only state was changed." }
+        returnInteraction = InputSynth.UserInteractionWatch(includeMouseMovement: false)
+        record("Finish [\(taskID)] exact sidebar X clicked; verifying dismissal")
+        queuedManualBumpIDs.remove(taskID)
+        bumpingTaskIDs.remove(taskID)
+        store.config.taskPlans[taskID, default: TaskPlan()].autoBump = false
+        for _ in 0..<10 {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            let readAt = Date()
+            await source.refresh()
+            let scan = await Worker.run { ClickyScanner(config: config).scan() }
+            if source.loadedAt.map({ $0 >= readAt }) == true, source.loadError == nil,
+               source.task(taskID)?.dismissed == true,
+               !scan.chatButtons.contains(where: { Matcher.normalize($0.label) == Matcher.normalize(task.name) || Matcher.isTaskRow($0.label, title: task.name) }) {
+                dismissalVerified = true
+                guard await dismissTaskNotices(task.name, from: scan, config: config, interaction: interaction) else {
+                    return "Task dismissed and Auto-bump stopped, but its notification could not be closed. Nothing was retried."
+                }
+                record("user-confirmed X dismissal verified for ‘\(task.name)’ [\(taskID)]; history and all storage preserved")
+                return nil
+            }
+        }
+        return "X was activated, but dismissal is not confirmed. Auto-bump is off; inspect HeyClicky before retrying."
+    }
+
+    private func dismissTaskNotices(_ task: String, from scan: ScanResult, config: Config,
+                                    interaction: InputSynth.UserInteractionWatch) async -> Bool {
+        let matches = scan.taskNotices.filter { Matcher.normalize($0.task) == Matcher.normalize(task) }
+        guard matches.count == scan.taskNoticeNames.filter({ Matcher.normalize($0) == Matcher.normalize(task) }).count else {
+            return false
+        }
+        if matches.isEmpty { return true }
+        for notice in matches {
+            guard !interaction.interrupted, !Task.isCancelled,
+                  await Worker.run({ AX.press(notice.close) }) else { return false }
+        }
+        guard !interaction.interrupted, !Task.isCancelled else { return false }
+        for _ in 0..<5 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            guard !interaction.interrupted, !Task.isCancelled else { return false }
+            let fresh = await Worker.run { ClickyScanner(config: config).scan() }
+            if !fresh.taskNoticeNames.contains(where: { Matcher.normalize($0) == Matcher.normalize(task) }) { return true }
+        }
+        return false
+    }
+
+    func autoBumpHoldReason(taskID: String) -> String? {
+        let source = ClickyTaskStore.shared
+        guard let task = source.task(taskID) else { return "Task information is unavailable; refresh first." }
+        if taskRecovery.isStopped(task: task.name) || task.isStopped {
+            return "Stopped by you. Resume this task in HeyClicky before automatic follow-ups can send."
+        }
+        if store.config.mode == .rest { return "Rest mode pauses task follow-ups." }
+        if !store.config.continueUntilDefinedDone { return "Allow per-task auto-bumps is disabled in Settings." }
+        if !store.config.ollamaEnabled { return "Enable local Ollama to review and send task follow-ups." }
+        if !Ollama.isLocalServer(store.config) { return "Task follow-ups require a local Ollama endpoint." }
+        if store.config.usageCutoffReached { return "The global usage cutoff has paused automation." }
+        if pendingMessage != nil { return "A saved HeyClicky delivery is pending; review it in Activity." }
+        if task.dismissed { return "This HeyClicky task is dismissed." }
+        if task.isWorking { return "HeyClicky is working; the next report will be reviewed before sending." }
+        if let definition = DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[taskID]),
+           let assessment = source.currentAssessment(for: task, definition: definition) {
+            if let question = assessment.clarificationQuestion { return "Clarify Done: \(question)" }
+            if assessment.state == .needsYou { return assessment.reason }
+            if assessment.meetsDefinition == true { return "Saved Done criteria are met according to the current report review." }
+            if source.rounds(for: task, definition: definition) >= store.config.maxDefinitionRounds {
+                return "Follow-up round limit reached. Review this task before continuing."
+            }
+        }
+        if let reason = autoBumpDeliveryHolds[taskID] { return reason }
+        return nil
     }
 
     /// Queues a one-shot report check. Sending waits for Cruise's normal quiet-time and task-safety gates.
@@ -646,9 +914,13 @@ final class ClickyMonitor: ObservableObject {
     }
 
     private func tick() {
-        axTrusted = AXIsProcessTrusted()
-        screenTrusted = CGPreflightScreenCaptureAccess()
+        let accessibility = AXIsProcessTrusted()
+        let recording = CGPreflightScreenCaptureAccess()
+        if axTrusted != accessibility { axTrusted = accessibility }
+        if screenTrusted != recording { screenTrusted = recording }
+        guard drivingTaskName == nil else { return }
         refreshClickyRunning()
+        tickPendingVSCodeAlerts()
         if !taskCatalogRefreshing, Date().timeIntervalSince(lastTaskCatalogRefreshAt) >= 60 {
             Task { await refreshTaskCatalog() }
         }
@@ -661,6 +933,15 @@ final class ClickyMonitor: ObservableObject {
             }
         }
         guard !enforceUsageGuard() else { return }
+        if !definitionReviewBusy, Date().timeIntervalSince(lastDefinitionReviewAt) >= 10,
+           store.config.taskPlans.values.contains(where: \.autoBump) {
+            definitionReviewBusy = true
+            lastDefinitionReviewAt = Date()
+            Task {
+                await reviewAutoBumpDefinitions()
+                definitionReviewBusy = false
+            }
+        }
         if store.config.backgroundTaskReview, !backgroundReviewBusy,
            Date().timeIntervalSince(lastBackgroundReviewAt) >= 60 {
             Task { await reviewBackgroundTasks() }
@@ -685,7 +966,7 @@ final class ClickyMonitor: ObservableObject {
 
     private func refreshUsageGuard() async {
         let config = store.config
-        if let percentage = await Worker.run({ VSCodeScanner(config: config).usageNotificationPercentage() }) {
+        if let percentage = await Worker.scanVSCode({ VSCodeScanner(config: config).usageNotificationPercentage() }) {
             // Keep the highest warning until the user resets it after credits renew.
             store.config.vscodeObservedUsage = max(store.config.vscodeObservedUsage ?? 0, percentage)
         }
@@ -732,12 +1013,14 @@ final class ClickyMonitor: ObservableObject {
     }
 
     private func cycle() async {
+        guard drivingTaskName == nil else { return }
         let config = store.config
         if pendingMessage?.chatOnly == true {
             await retryPendingMessage(config: config)
             return
         }
         if await deliverBackgroundReply(config: config) { return }
+        guard drivingTaskName == nil else { return }
         if config.autoContinueReports && !autoContinueReportsEnabled {
             lastInterruptedProbeAt = .distantPast
             lastNotchInspectionAt = .distantPast
@@ -748,6 +1031,7 @@ final class ClickyMonitor: ObservableObject {
         autoContinueReportsEnabled = config.autoContinueReports
         if await handleSystemDialog(config: config) { return }
         var result = await Worker.run { ClickyScanner(config: config).scan() }
+        guard drivingTaskName == nil else { return }
         guard result.clickyRunning else {
             gate.coolDown()
             consentAttempts = 0
@@ -775,6 +1059,7 @@ final class ClickyMonitor: ObservableObject {
                 record("notch inspection found no readable task cards — will check again")
             }
         }
+        guard drivingTaskName == nil else { return }
         let rows = result.chatButtons.map(\.label).filter { TaskRow.parse($0) != nil }
         if !rows.isEmpty { lastTaskLabels = rows }
         _ = recoveryAllowed(result)
@@ -783,24 +1068,29 @@ final class ClickyMonitor: ObservableObject {
         }
 
         if await handleConsent(result, config: config) { return }
+        guard drivingTaskName == nil else { return }
         if pendingMessage != nil {
             await retryPendingMessage(config: config)
             return
         }
         if await resumeAfterRelaunch(result, config: config) { return }
+        guard drivingTaskName == nil else { return }
         if await handleUpdate(result, config: config) { return }
-        if await handleInterruptedCards(result, config: config) { return }
-        guard pendingMessage == nil else { return }
-        if await handleNeedsYou(result, config: config) { return }
-        if await handleMainChatTapOut(result, config: config) { return }
-        guard pendingMessage == nil else { return }
-        if await auditOtherClickyTasks(config: config) { return }
-        guard pendingMessage == nil else { return }
+        guard drivingTaskName == nil else { return }
         if await continueToDefinitionOfDone(config: config) { return }
-        guard pendingMessage == nil else { return }
+        guard drivingTaskName == nil, pendingMessage == nil else { return }
+        if await handleInterruptedCards(result, config: config) { return }
+        guard drivingTaskName == nil, pendingMessage == nil else { return }
+        if await handleNeedsYou(result, config: config) { return }
+        guard drivingTaskName == nil else { return }
+        if await handleMainChatTapOut(result, config: config) { return }
+        guard drivingTaskName == nil, pendingMessage == nil else { return }
+        if await auditOtherClickyTasks(config: config) { return }
+        guard drivingTaskName == nil, pendingMessage == nil else { return }
         await handleReports(result, config: config)
-        guard pendingMessage == nil else { return }
+        guard drivingTaskName == nil, pendingMessage == nil else { return }
         if await handleInterrupt(result, config: config) { return }
+        guard drivingTaskName == nil else { return }
         _ = await handleStall(result, config: config)
     }
 
@@ -809,13 +1099,14 @@ final class ClickyMonitor: ObservableObject {
     /// Approves (cruise) or dismisses (rest) a system permission alert that HeyClicky triggered. Returns true when
     /// one was on screen, so the rest of the cycle waits for it to clear.
     private func handleSystemDialog(config: Config) async -> Bool {
-        guard config.autoAnswerSystemDialogs, config.mode != .manual else { return false }
+        guard config.heyClickyDriveEnabled, config.autoAnswerSystemDialogs, config.mode != .manual else { return false }
         guard let dialog = await Worker.run({ SystemDialogScanner(config: config).scan() }) else { return false }
         let allow = config.mode == .cruise
         guard let target = allow ? dialog.allow : dialog.deny else {
             // e.g. rest mode on an OK-only alert: nothing safe to press.
             return dialog.allow != nil || dialog.deny != nil
         }
+        guard store.config.mode == config.mode, store.config.heyClickyDriveEnabled else { return true }
         guard Date().timeIntervalSince(lastSystemDialogAt) > 2 else { return true }
         lastSystemDialogAt = Date()
 
@@ -837,7 +1128,8 @@ final class ClickyMonitor: ObservableObject {
     /// Returns true when a consent prompt is on screen (so report handling waits).
     private func handleConsent(_ result: ScanResult, config: Config) async -> Bool {
         if let consent = result.consent {
-            guard config.mode != .manual else { return true }
+            guard config.heyClickyDriveEnabled, store.config.heyClickyDriveEnabled,
+                  config.mode != .manual, store.config.mode == config.mode else { return true }
             let allow = config.mode == .cruise
             let target = allow ? consent.allow : consent.deny
             let label = allow ? consent.allowLabel : consent.denyLabel
@@ -879,10 +1171,11 @@ final class ClickyMonitor: ObservableObject {
             record("saw “\(result.orphanConsentLabels.joined(separator: "”, “"))” without its partner button — ignoring")
         }
 
-        guard config.mode != .manual, config.ocrFallback, screenTrusted,
+        guard config.heyClickyDriveEnabled, config.mode != .manual, config.ocrFallback, screenTrusted,
               Date().timeIntervalSince(lastOCRAt) > config.ocrInterval else { return false }
         lastOCRAt = Date()
         guard let hit = await ScreenOCR.findConsent(config: config) else { return false }
+        guard store.config.heyClickyDriveEnabled, store.config.mode == config.mode else { return true }
 
         let allow = config.mode == .cruise
         guard Date().timeIntervalSince(lastConsentActionAt) > 2 else { return true }
@@ -923,6 +1216,9 @@ final class ClickyMonitor: ObservableObject {
     }
 
     private func continueTask(_ report: ReportButton, config: Config) async {
+        guard !ClickyTaskStore.shared.tasks.contains(where: {
+            hasSavedDefinition(task: $0.name) && Matcher.isTaskRow(report.header, title: $0.name)
+        }) else { return }
         gate.recordContinue(at: Date())
         saveBudget()
         lastActionAt = Date()
@@ -991,7 +1287,8 @@ final class ClickyMonitor: ObservableObject {
     private func handleNeedsYou(_ result: ScanResult, config: Config) async -> Bool {
         guard let card = result.needsYou else { return false }
         let task = card.task.isEmpty ? "task" : card.task
-        guard config.mode != .manual, config.autoContinueReports else { return false }
+        guard config.mode != .manual, config.autoContinueReports,
+              !taskRecovery.isStopped(task: task), !hasSavedDefinition(task: task) else { return false }
 
         let now = Date()
         let limits = ReportGate.Limits(config: config)
@@ -1044,19 +1341,20 @@ final class ClickyMonitor: ObservableObject {
     }
 
     /// Makes sure HeyClicky's chat window (with its composer) is on screen and returns a fresh scan.
-    private func revealChat(config: Config) async -> ScanResult? {
-        var scan = await Worker.run { ClickyScanner(config: config).scan() }
-        if scan.composer != nil { return scan }
+    private func revealChat(config: Config, requireSidebar: Bool = false) async -> ScanResult? {
+        let scan = await Worker.run { ClickyScanner(config: config).scan() }
+        if scan.composer != nil,
+           !requireSidebar || scan.showSidebar != nil || scan.chatButtons.contains(where: { TaskRow.parse($0.label) != nil }) { return scan }
 
         // HeyClicky 1.1.3+: the notch panel's "Open in a window" button opens the full chat.
         if let open = scan.openChat, await Worker.run({ AX.press(open) }) {
-            if let ready = await waitForComposer(config: config) { return ready }
+            if let ready = await waitForComposer(config: config, requireSidebar: requireSidebar) { return ready }
         } else {
             var pressed = false
             _ = await hoverNotch(config: config, until: { $0.openChat != nil }) { found in
                 if let open = found.openChat { pressed = AX.press(open) }
             }
-            if pressed, let ready = await waitForComposer(config: config) { return ready }
+            if pressed, let ready = await waitForComposer(config: config, requireSidebar: requireSidebar) { return ready }
         }
 
         if let app = config.clickyBundleIDs.lazy.compactMap({ NSRunningApplication.runningApplications(withBundleIdentifier: $0).first }).first,
@@ -1065,7 +1363,7 @@ final class ClickyMonitor: ObservableObject {
             configuration.activates = true
             _ = try? await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
         }
-        return await waitForComposer(config: config)
+        return await waitForComposer(config: config, requireSidebar: requireSidebar)
     }
 
     private func selectTask(_ task: String, from chat: ScanResult, config: Config, unique: Bool = false) async -> ScanResult? {
@@ -1259,15 +1557,60 @@ final class ClickyMonitor: ObservableObject {
         return sent
     }
 
-    /// Tasks with a user-written definition of done keep going until HeyClicky's latest report meets it. Each report is
-    /// read once (Ollama, or rules as a fallback) and earns at most one follow-up, up to `maxDefinitionRounds`.
+    private func reviewAutoBumpDefinitions() async {
+        let source = ClickyTaskStore.shared
+        let config = store.config
+        guard TaskPlanning.definitionDeliveryAllowed(config: config, oneShot: false), source.canPersist else { return }
+        let requestedAt = Date()
+        await source.refresh(measure: false)
+        guard source.loadedAt.map({ $0 >= requestedAt }) == true, source.loadError == nil else {
+            record("Auto-bump review paused: \(source.loadError ?? "waiting for a fresh HeyClicky report")")
+            return
+        }
+        for task in TaskPlanning.prioritized(source.tasks, catalog: taskCatalog, config: store.config) {
+            guard drivingTaskName == nil,
+                  TaskPlanning.definitionDeliveryAllowed(config: store.config, oneShot: false) else { return }
+            guard !task.dismissed, task.hasReport, !task.isWorking,
+                  let definition = DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id]) else { continue }
+            var assessment = source.currentAssessment(for: task, definition: definition)
+            if assessment?.source.hasPrefix("ollama") != true {
+                guard Date().timeIntervalSince(definitionReviewFailures[task.id] ?? .distantPast) >= 60,
+                      !source.assessing.contains(task.id) else { continue }
+                assessment = await source.assess(task, config: store.config, localOnly: true)
+                guard assessment?.source.hasPrefix("ollama") == true else {
+                    definitionReviewFailures[task.id] = Date()
+                    record("Auto-bump review unavailable for “\(task.name)”: \(assessment?.reason ?? "no local review")")
+                    continue
+                }
+                definitionReviewFailures[task.id] = nil
+                lastDefinitionCheckAt = .distantPast
+            }
+            guard let assessment,
+                  let candidate = TaskCompletionNotice(task: task, definition: definition, assessment: assessment),
+                  !candidate.isSameReport(as: source.record(task.id).completionNotice) else { continue }
+            let checkedAt = Date()
+            await source.refresh(measure: false)
+            guard source.loadedAt.map({ $0 >= checkedAt }) == true, source.loadError == nil,
+                  let latest = source.task(task.id), latest.fingerprint == task.fingerprint,
+                  DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id]) == definition,
+                  TaskPlanning.definitionDeliveryAllowed(config: store.config, oneShot: false),
+                  !taskRecovery.isStopped(task: latest.name),
+                  let notice = TaskCompletionNotice(task: latest, definition: definition, assessment: assessment) else { continue }
+            if source.recordCompletion(notice) {
+                record("“\(task.name)” changed state; Cruise reviewed it (\(notice.meetsDefinition == true ? "appears to meet" : "short of") your Done definition) and queued a review notice")
+            } else {
+                record("Couldn't save review notification for “\(task.name)”: \(source.loadError ?? "task-state persistence failed")")
+            }
+        }
+    }
+
+    /// Each changed report is compared with the current saved criteria before any follow-up is sent.
     private func continueToDefinitionOfDone(config: Config) async -> Bool {
         let now = Date()
-        guard config.continueUntilDefinedDone, !config.clickyDefinitionsOfDone.isEmpty,
-              config.mode == .cruise, config.autoContinueReports, config.ollamaEnabled,
-              Ollama.isLocalServer(config), !config.usageCutoffReached,
+        guard !config.clickyDefinitionsOfDone.isEmpty,
+              TaskPlanning.definitionDeliveryAllowed(config: config, oneShot: !queuedManualBumpIDs.isEmpty),
               Self.idleSeconds() >= config.awayIdleSeconds,
-              now.timeIntervalSince(lastDefinitionCheckAt) >= config.clickyTaskAuditMinutes * 60
+              now.timeIntervalSince(lastDefinitionCheckAt) >= 10
         else { return false }
         lastDefinitionCheckAt = now
         let tasks = ClickyTaskStore.shared
@@ -1285,13 +1628,32 @@ final class ClickyMonitor: ObservableObject {
         let manualRequests = queuedManualBumpIDs
         var due: [(task: ClickyAgentTask, definition: String, assessment: ClickyTaskAssessment)] = []
         let ambiguous = ClickyTaskLibrary.ambiguousNames(tasks.tasks)
-        for task in ClickyTaskLibrary.sorted(tasks.tasks, by: .recentlyUpdated) {
-            guard TaskPlanning.autoBumpEnabled(task, config: store.config) || manualRequests.contains(task.id),
+        for task in TaskPlanning.prioritized(tasks.tasks, catalog: taskCatalog, config: store.config) {
+            let optedIn = TaskPlanning.autoBumpEnabled(task, config: store.config) || manualRequests.contains(task.id)
+            if optedIn, DefinitionOfDone.normalized(config.clickyDefinitionsOfDone[task.id]) != nil,
+               !task.dismissed, !task.isStopped, taskRecovery.isStopped(task: task.name) {
+                // An explicit Auto-bump/Generate request after an old stop, with a current non-stopped status, supersedes it.
+                var released = taskRecovery
+                released.release(task: task.name)
+                do {
+                    try JSONEncoder().encode(released).write(to: taskRecoveryURL, options: .atomic)
+                    taskRecovery = released
+                    record("define done: “\(task.name)” released an old remembered stop because Auto-bump is on and its status is no longer stopped")
+                } catch {
+                    record("define done: “\(task.name)” is held by a remembered stop that couldn't be released: \(error.localizedDescription)")
+                }
+            }
+            guard optedIn,
                   let definition = DefinitionOfDone.normalized(config.clickyDefinitionsOfDone[task.id]),
                   task.hasReport, !task.dismissed, !task.isWorking, !task.isStopped,
                   !taskRecovery.isStopped(task: task.name),
                   tasks.rounds(for: task, definition: definition) < maxRounds else { continue }
+            guard TaskPlanning.continuationAllowed(task, config: store.config, manual: manualRequests.contains(task.id)) else {
+                record("define done: “\(task.name)” is held by its saved stop-reason settings or a user blocker")
+                continue
+            }
             let progress = tasks.record(task.id).progress
+            autoBumpDeliveryHolds[task.id] = nil
             // Already followed up on this exact report; wait for Clicky's next one.
             if progress.lastFingerprint == task.fingerprint,
                DefinitionOfDone.normalized(progress.definition) == definition { continue }
@@ -1301,6 +1663,7 @@ final class ClickyMonitor: ObservableObject {
             if let current = tasks.currentAssessment(for: task, definition: definition), current.source.hasPrefix("ollama") {
                 assessment = current
             } else {
+                guard !tasks.assessing.contains(task.id) else { continue }
                 assessment = await tasks.assess(task, config: config, localOnly: true)
                 record("define done: “\(task.name)” reads as \(assessment.state.title.lowercased())"
                     + (assessment.meetsDefinition == true ? " — meets your definition" : ""))
@@ -1309,7 +1672,7 @@ final class ClickyMonitor: ObservableObject {
                 record("define done: no automatic bump for “\(task.name)” because local Ollama review was unavailable")
                 continue
             }
-            if DefinitionOfDone.hasNoProgress(assessment, progress: progress) {
+            if DefinitionOfDone.hasNoProgress(assessment, progress: progress, task: task) {
                 record("define done: “\(task.name)” repeated the same completion gaps — automatic bump stopped for review")
                 continue
             }
@@ -1328,7 +1691,8 @@ final class ClickyMonitor: ObservableObject {
         let consumedRequests = manualRequests.subtracting(waitingForReport)
         queuedManualBumpIDs.subtract(consumedRequests)
         bumpingTaskIDs.subtract(consumedRequests)
-        guard !due.isEmpty, store.config.mode == .cruise, store.config.continueUntilDefinedDone,
+        guard !due.isEmpty, drivingTaskName == nil,
+              TaskPlanning.definitionDeliveryAllowed(config: store.config, oneShot: !manualRequests.isEmpty),
               Self.idleSeconds() >= config.awayIdleSeconds else {
             if !consumedRequests.isEmpty {
                 backgroundTaskStatus = "No safe completion gap was found, or a decision/error stopped the one-time bump. Nothing was sent."
@@ -1359,21 +1723,32 @@ final class ClickyMonitor: ObservableObject {
                 continue
             }
             let limits = ReportGate.Limits(config: config)
-            guard store.config.mode == .cruise, store.config.continueUntilDefinedDone,
-                  Self.idleSeconds() >= config.awayIdleSeconds,
-                  gate.canContinue(now: Date(), limits: limits) else { break }
-            guard nudgeLimiter.allow(task: task.name, now: Date(), maxPerHour: config.maxNudgesPerTaskPerHour) else { continue }
+            guard drivingTaskName == nil,
+                  TaskPlanning.definitionDeliveryAllowed(config: store.config, oneShot: manualRequests.contains(task.id)),
+                  Self.idleSeconds() >= config.awayIdleSeconds else { break }
+            guard gate.canContinue(now: Date(), limits: limits) else {
+                autoBumpDeliveryHolds[task.id] = "Waiting for the shared follow-up cooldown or hourly budget."
+                break
+            }
+            guard nudgeLimiter.allow(task: task.name, now: Date(), maxPerHour: config.maxNudgesPerTaskPerHour) else {
+                autoBumpDeliveryHolds[task.id] = "Waiting for this task's hourly follow-up budget."
+                continue
+            }
             let scan = await Worker.run { ClickyScanner(config: config).scan() }
             if let row = scan.chatButtons.compactMap({ TaskRow.parse($0.label) })
                 .first(where: { Matcher.normalize($0.name) == Matcher.normalize(task.name) }), StallTracker.isBusy(row.status) {
                 record("define done: “\(task.name)” is \(row.status) — follow-up waits")
                 continue
             }
-            guard let chat = await selectTask(task.name, from: scan, config: config), let composer = chat.composer,
-                  recoveryAllowed(chat) else { continue }
+            guard let chat = await selectTask(task.name, from: scan, config: config, unique: true), let composer = chat.composer,
+                  recoveryAllowed(chat) else {
+                autoBumpDeliveryHolds[task.id] = "Could not verify this task's HeyClicky chat and composer. Delivery will retry while idle."
+                continue
+            }
             if let status = chat.selectedStatus, StallTracker.isBusy(status) { continue }
             let input = composer.input
-            guard await Worker.run({ (AX.stringValue(input) ?? "").isEmpty }) else {
+            guard await Worker.run({ AX.stringValue(input) == "" }) else {
+                autoBumpDeliveryHolds[task.id] = "HeyClicky's composer has an existing or unreadable draft; it will not be overwritten."
                 record("“\(task.name)” has a draft — define-done follow-up will not overwrite it")
                 continue
             }
@@ -1389,10 +1764,12 @@ final class ClickyMonitor: ObservableObject {
                 draft = try await Ollama.draftTaskBump(task: task, definition: item.definition, project: project,
                                                       priority: priority, missing: item.assessment.missing, config: config)
             } catch {
+                autoBumpDeliveryHolds[task.id] = error.localizedDescription
                 record("define done: Ollama couldn't draft a safe bump for “\(task.name)”: \(error.localizedDescription)")
                 continue
             }
             guard draft.unfinished else {
+                autoBumpDeliveryHolds[task.id] = "Local Ollama did not produce an actionable follow-up; review the saved criteria and report."
                 record("define done: Ollama found no explicit actionable gap for “\(task.name)” — nothing sent")
                 continue
             }
@@ -1400,9 +1777,11 @@ final class ClickyMonitor: ObservableObject {
             await tasks.refresh(measure: false)
             guard let refreshedAt = tasks.loadedAt, refreshedAt >= afterDraft, tasks.loadError == nil,
                   let refreshedTask = tasks.task(task.id), refreshedTask.fingerprint == task.fingerprint,
-                  TaskPlanning.autoBumpEnabled(refreshedTask, config: store.config),
                   DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id]) == item.definition,
                   (TaskPlanning.autoBumpEnabled(refreshedTask, config: store.config) || manualRequests.contains(task.id)),
+                  TaskPlanning.continuationAllowed(refreshedTask, config: store.config, manual: manualRequests.contains(task.id)),
+                  !ClickyTaskLibrary.ambiguousNames(tasks.tasks).contains(Matcher.normalize(refreshedTask.name)),
+                  tasks.currentAssessment(for: refreshedTask, definition: item.definition) == item.assessment,
                   !refreshedTask.isWorking, !refreshedTask.isStopped, !refreshedTask.dismissed,
                   !TaskAudit.requiresUser(refreshedTask.lastMessage) else {
                 record("define done: task, report, or opt-in changed during Ollama drafting — no bump sent")
@@ -1465,11 +1844,12 @@ final class ClickyMonitor: ObservableObject {
             return false
         }
     }
-    private func waitForComposer(config: Config) async -> ScanResult? {
+    private func waitForComposer(config: Config, requireSidebar: Bool = false) async -> ScanResult? {
         for _ in 0..<8 {
             try? await Task.sleep(nanoseconds: 500_000_000)
             let scan = await Worker.run { ClickyScanner(config: config).scan() }
-            if scan.composer != nil { return scan }
+            if scan.composer != nil,
+               !requireSidebar || scan.showSidebar != nil || scan.chatButtons.contains(where: { TaskRow.parse($0.label) != nil }) { return scan }
         }
         return nil
     }
@@ -1576,11 +1956,17 @@ final class ClickyMonitor: ObservableObject {
         }
         guard let card = cards.first(where: {
             !taskRecovery.isStopped(task: $0.task)
+                && !hasSavedDefinition(task: $0.task)
                 && now.timeIntervalSince(lastInterruptedBump[$0.task] ?? .distantPast) >= 5
         }) else {
             return false
         }
         let task = card.task
+        let source = ClickyTaskStore.shared
+        await source.refresh(measure: false)
+        let liveTasks = source.tasks.filter { Matcher.normalize($0.name) == Matcher.normalize(task) }
+        guard source.loadError == nil, liveTasks.count == 1, liveTasks.first?.dismissed == false,
+              !taskRecovery.isStopped(task: task) else { return false }
         let limits = ReportGate.Limits(config: config)
         guard nudgeLimiter.allow(task: task, now: now, maxPerHour: config.maxNudgesPerTaskPerHour),
               gate.canContinue(now: now, limits: limits) else { return false }
@@ -1636,11 +2022,73 @@ final class ClickyMonitor: ObservableObject {
         return recovered || retried
     }
 
+    // MARK: VS Code pending-request alerts
+
+    private func tickPendingVSCodeAlerts() {
+        guard drivingTaskName == nil else { return }
+        let config = store.config
+        guard config.vscodeRequestAlertsEnabled else {
+            pendingVSCodeAlerts = []
+            pendingVSCodeAlertFirstSeen.removeAll()
+            pendingVSCodeAlertLastSeen.removeAll()
+            return
+        }
+        guard axTrusted else {
+            pendingVSCodeAlerts = []
+            pendingVSCodeAlertFirstSeen.removeAll()
+            pendingVSCodeAlertLastSeen.removeAll()
+            return
+        }
+        guard !pendingVSCodeAlertScanBusy,
+              Date().timeIntervalSince(lastPendingVSCodeAlertScanAt) >= max(1, config.vscodeCheckSeconds) else { return }
+        lastPendingVSCodeAlertScanAt = Date()
+        pendingVSCodeAlertScanBusy = true
+        Task {
+            let found = await Worker.scanVSCode { VSCodeScanner(config: config).pendingRequestNotices() }
+            let now = Date()
+            guard store.config.vscodeRequestAlertsEnabled, axTrusted else {
+                pendingVSCodeAlerts = []
+                pendingVSCodeAlertFirstSeen.removeAll()
+                pendingVSCodeAlertLastSeen.removeAll()
+                pendingVSCodeAlertScanBusy = false
+                return
+            }
+            let foundByID = Dictionary(found.map { ($0.id, $0) }, uniquingKeysWith: { _, newest in newest })
+            for notice in found {
+                if pendingVSCodeAlertFirstSeen[notice.id] == nil { pendingVSCodeAlertFirstSeen[notice.id] = now }
+                pendingVSCodeAlertLastSeen[notice.id] = now
+            }
+            // Give AX a brief recovery window if VS Code rebuilds its accessibility tree during a chat update.
+            var retained = foundByID
+            for old in pendingVSCodeAlerts where retained[old.id] == nil {
+                if now.timeIntervalSince(pendingVSCodeAlertLastSeen[old.id] ?? .distantPast) < 4 {
+                    retained[old.id] = old
+                }
+            }
+            let liveIDs = Set(retained.keys)
+            pendingVSCodeAlertFirstSeen = pendingVSCodeAlertFirstSeen.filter { liveIDs.contains($0.key) }
+            pendingVSCodeAlertLastSeen = pendingVSCodeAlertLastSeen.filter { liveIDs.contains($0.key) }
+            pendingVSCodeAlerts = retained.values.filter { notice in
+                guard notice.automaticallyReviewable, let key = notice.requestKey else { return true }
+                let firstSeen = pendingVSCodeAlertFirstSeen[notice.id] ?? now
+                if let review = reviews[key] {
+                    if review.verdict?.safe == false { return true }
+                    let delay = review.verdict?.safe == true ? 8.0 : 5.0
+                    return now.timeIntervalSince(review.at) >= delay
+                }
+                // Eligible requests get time for the existing auto-review path to decide. Failed or stalled reviews
+                // become visible after the grace period; alerts never press an approval control.
+                return !vscodeBusy && now.timeIntervalSince(firstSeen) >= 6
+            }.sorted { $0.workspace == $1.workspace ? $0.title < $1.title : $0.workspace < $1.workspace }
+            pendingVSCodeAlertScanBusy = false
+        }
+    }
+
     // MARK: VS Code chat tool confirmations → Ollama safety check → Allow Once
 
     private func tickVSCode() {
         let config = store.config
-        guard config.vscodeAutoApprove, axTrusted, !vscodeBusy, !modelBusy,
+        guard config.vscodeApprovalsActive, axTrusted, !vscodeBusy, !modelBusy,
               Date().timeIntervalSince(lastVSCodeCheckAt) >= config.vscodeCheckSeconds else { return }
         lastVSCodeCheckAt = Date()
         vscodeBusy = true
@@ -1653,8 +2101,8 @@ final class ClickyMonitor: ObservableObject {
     }
 
     func approveVSCodeSidebar(key: String) async -> Bool {
-        guard store.config.vscodeAutoApprove, axTrusted else {
-            record("vscode: sidebar check requires enabled automation and Accessibility permission")
+        guard store.config.vscodeApprovalsActive, axTrusted else {
+            record("vscode: sidebar check requires Cruise mode, explicit VS Code opt-in and Accessibility permission")
             return false
         }
         let count = stats.vscodeApproved
@@ -1663,8 +2111,9 @@ final class ClickyMonitor: ObservableObject {
     }
 
     private func handleVSCode(config: Config, onlyKey: String? = nil, permitAction: () -> Bool = { true }) async -> Bool {
+        guard store.config.vscodeApprovalsActive, drivingTaskName == nil else { return false }
         let now = Date()
-        let pendingRequests = await Worker.run { VSCodeScanner(config: config).scanAll() }
+        let pendingRequests = await Worker.scanVSCode { VSCodeScanner(config: config).scanAll() }
             .sorted { (approvalAttempts[$0.key] ?? .distantPast) < (approvalAttempts[$1.key] ?? .distantPast) }
         for pending in pendingRequests where pending.writeMetadataOnly && !config.vscodeAllowWriteMetadata {
             if now.timeIntervalSince(writePolicyHolds[pending.key] ?? .distantPast) >= 60 {
@@ -1733,13 +2182,14 @@ final class ClickyMonitor: ObservableObject {
 
         // Only press if the very same request is still waiting (the review can take a few seconds).
         await refreshUsageGuard()
-        guard let still = await Worker.run({ VSCodeScanner(config: config).scanAll().first { $0.key == key } }),
-              still.request == pending.request, store.config.vscodeAutoApprove,
+        guard drivingTaskName == nil,
+              let still = await Worker.scanVSCode({ VSCodeScanner(config: config).scanAll().first { $0.key == key } }),
+              still.request == pending.request, store.config.vscodeApprovalsActive,
               !still.writeMetadataOnly || store.config.vscodeAllowWriteMetadata,
               !still.toolPermission || store.config.vscodeAllowToolPermissions,
               !still.urlFetch || store.config.vscodeURLFetchPolicy != .hold,
               !still.urlFetch || config.vscodeURLFetchPolicy != .allowAll || store.config.vscodeURLFetchPolicy == .allowAll,
-              permitAction() else { return true }
+              drivingTaskName == nil, permitAction() else { return true }
         approvalAttempts[key] = Date()
         let pressed = await pressVSCodeConfirmation(still, config: config, permitAction: permitAction)
         if pressed {
@@ -1764,9 +2214,11 @@ final class ClickyMonitor: ObservableObject {
 
     private func pressVSCodeConfirmation(_ pending: VSCodeConfirmation, config: Config,
                                         permitAction: () -> Bool) async -> Bool {
-        if await Worker.run({ AX.press(pending.allow) }) { return true }
+        guard drivingTaskName == nil, store.config.vscodeApprovalsActive, permitAction() else { return false }
+        let permission = vscodeApprovalPermission
+        if await Worker.run({ permission.allowed && AX.press(pending.allow) }) { return true }
         // Inline sidebar approvals stay background-only. A dialog fallback must not fight active input.
-        guard pending.sidebarThread == nil, !busy,
+        guard permission.allowed, pending.sidebarThread == nil, !busy,
               Self.idleSeconds() >= config.awayIdleSeconds else { return false }
         var pid: pid_t = 0
         guard AXUIElementGetPid(pending.window, &pid) == .success else { return false }
@@ -1779,24 +2231,27 @@ final class ClickyMonitor: ObservableObject {
         NSRunningApplication(processIdentifier: pid)?.activate()
         guard AXUIElementPerformAction(pending.window, kAXRaiseAction as CFString) == .success else { return false }
         try? await Task.sleep(nanoseconds: 250_000_000)
-        guard !interaction.interrupted, permitAction(), store.config.vscodeAutoApprove,
+        guard !interaction.interrupted, permitAction(), store.config.vscodeApprovalsActive,
               !store.config.usageCutoffReached,
               NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return false }
         var clicked = false
         await withOverlayHidden {
-            guard !interaction.interrupted, permitAction(), store.config.vscodeAutoApprove,
+            guard !interaction.interrupted, permitAction(), store.config.vscodeApprovalsActive,
                   !pending.writeMetadataOnly || store.config.vscodeAllowWriteMetadata,
                   !pending.toolPermission || store.config.vscodeAllowToolPermissions else { return }
             clicked = await Worker.run {
-                guard let fresh = VSCodeScanner(config: config).scanAll().first(where: { $0.key == pending.key }),
+                guard permission.allowed,
+                      let fresh = VSCodeScanner(config: config).scanAll().first(where: { $0.key == pending.key }),
                       fresh.request == pending.request, AX.isEnabled(fresh.allow),
                       let frame = AX.frame(fresh.allow), let bounds = AX.frame(fresh.window),
                       bounds.contains(frame) else { return false }
                 let point = CGPoint(x: frame.midX, y: frame.midY)
-                guard Self.idleSeconds() >= config.awayIdleSeconds,
+                guard permission.allowed, !interaction.interrupted,
+                      Self.idleSeconds() >= config.awayIdleSeconds,
                       AX.isUnderPointer(fresh.allow, at: point) else { return false }
-                InputSynth.click(at: point)
-                return true
+                return InputSynth.click(at: point, restoreCursor: true, shouldContinue: {
+                    permission.allowed && !interaction.interrupted
+                })
             }
         }
         return clicked
@@ -1806,7 +2261,7 @@ final class ClickyMonitor: ObservableObject {
         guard config.mode == .cruise, store.config.vscodeAutoApprove,
               Date().timeIntervalSince(lastVSCodeThreadProbeAt) >= 5 else { return }
         lastVSCodeThreadProbeAt = Date()
-        let threads = await Worker.run { VSCodeScanner(config: config).attentionThreads() }
+        let threads = await Worker.scanVSCode { VSCodeScanner(config: config).attentionThreads() }
         for thread in threads.prefix(3) {
             guard store.config.mode == .cruise, store.config.vscodeAutoApprove else { return }
             let previousApp = NSWorkspace.shared.frontmostApplication
@@ -1861,6 +2316,13 @@ final class ClickyMonitor: ObservableObject {
     }
 
     private func tickModelRouting() {
+        if !store.config.vscodeTaskBumps { vscodeFollowUpStatus = "Off · no follow-ups will be sent." }
+        if !store.config.autoSelectVSCodeModel { vscodeModelStatus = "Off · no model changes will be made." }
+        guard store.config.mode == .cruise, !store.config.usageCutoffReached else {
+            vscodeFollowUpStatus = "Paused · requires Cruise mode and available usage."
+            vscodeModelStatus = "Paused · requires Cruise mode and available usage."
+            return
+        }
         guard store.config.autoSelectVSCodeModel || store.config.vscodeTaskBumps,
               axTrusted, !modelBusy, !vscodeBusy, !busy,
               Date().timeIntervalSince(lastModelCheckAt) >= 15 else { return }
@@ -1876,38 +2338,58 @@ final class ClickyMonitor: ObservableObject {
 
     private func bumpChat(config: Config) async {
         guard config.mode == .cruise,
-              let chat = await Worker.run({ VSCodeModels.scan(config: config) }) else { return }
+              let chat = await Worker.run({ VSCodeModels.scan(config: config) }) else {
+            vscodeFollowUpStatus = "Unavailable · bring one readable VS Code chat forward; split or unsupported chats are not driven."
+            return
+        }
         let now = Date()
         var state = bumpStates[chat.key] ?? ChatBump.State()
         let changed = state.transcript != chat.transcript
         state.observe(chat.transcript, now: now)
         bumpStates[chat.key] = state
-        if changed { saveBumpStates() }
+        if changed, !saveBumpStates() { return }
+        vscodeFollowUpStatus = chat.running ? "Waiting · the detected chat is running or needs approval."
+            : !chat.draft.isEmpty ? "Waiting · your composer draft is preserved."
+            : "Watching a verified chat · waiting for quiet time, idle input and cooldown."
         guard !chat.running, chat.draft.isEmpty, Self.idleSeconds() >= config.awayIdleSeconds,
               state.eligible(now: now, quietMinutes: config.vscodeBumpQuietMinutes,
                              cooldownMinutes: config.vscodeBumpCooldownMinutes) else { return }
         state.lastAttempt = now
         bumpStates[chat.key] = state
-        saveBumpStates()
+        guard saveBumpStates() else {
+            vscodeFollowUpStatus = "Paused · follow-up history could not be saved."
+            return
+        }
         do {
             let draft = try await Ollama.draftChatBump(chat.transcript, config: config)
             guard draft.unfinished else {
                 state.answeredTranscript = chat.transcript
                 bumpStates[chat.key] = state
                 guard saveBumpStates() else { return }
+                vscodeFollowUpStatus = "Reviewed · no unfinished work found; nothing sent."
                 record("vscode follow-up: no unfinished task identified — leaving the chat alone")
                 return
             }
-            guard store.config.vscodeTaskBumps, store.config.mode == .cruise,
+            guard store.config.vscodeTaskBumps, store.config.mode == .cruise, !store.config.usageCutoffReached,
                   Self.idleSeconds() >= config.awayIdleSeconds else { return }
             // Persist before touching the composer: uncertain submissions must not be sent twice after a restart.
             state.answeredTranscript = chat.transcript
             bumpStates[chat.key] = state
-            saveBumpStates()
-            try await VSCodeModels.sendFollowUp(draft.message, chat: chat, config: config)
+            guard saveBumpStates() else {
+                vscodeFollowUpStatus = "Paused · delivery reservation could not be saved."
+                return
+            }
+            let interaction = InputSynth.UserInteractionWatch()
+            defer { interaction.stop() }
+            try await VSCodeModels.sendFollowUp(draft.message, chat: chat, config: config, shouldContinue: {
+                self.store.config.vscodeTaskBumps && self.store.config.mode == .cruise
+                    && !self.store.config.usageCutoffReached && self.drivingTaskName == nil && !interaction.interrupted
+            })
             stats.vscodeContinued += 1
+            vscodeFollowUpStatus = "Sent · exact follow-up confirmed in the same chat."
             record("vscode follow-up sent: \(draft.message.prefix(120))")
         } catch {
+            vscodeFollowUpStatus = "Not confirmed · \(error.localizedDescription)"
             record("vscode follow-up unavailable: \(error.localizedDescription)")
         }
     }
@@ -1924,7 +2406,13 @@ final class ClickyMonitor: ObservableObject {
     }
 
     private func routeModel(config: Config) async {
-        guard let chat = await Worker.run({ VSCodeModels.scan(config: config) }) else { return }
+        guard let chat = await Worker.run({ VSCodeModels.scan(config: config) }) else {
+            vscodeModelStatus = "Unavailable · bring one readable VS Code chat forward; split or unsupported chats are not driven."
+            return
+        }
+        vscodeModelStatus = chat.running ? "Waiting · \(chat.model) is running or needs approval."
+            : !chat.draft.isEmpty ? "Waiting · your composer draft is preserved."
+            : "Watching \(chat.model) · idle-only switching; escalation requires confirmation."
         let now = Date()
         var state = modelStates[chat.key] ?? ModelRouting.State()
         let cheap = ModelRouting.normalize(chat.model) == ModelRouting.normalize(config.economyModel)
@@ -1940,7 +2428,8 @@ final class ClickyMonitor: ObservableObject {
         let changed = modelStates[chat.key] != state
         modelStates[chat.key] = state
         if changed { saveModelStates() }
-        guard !chat.running, chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard !chat.running, chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              Self.idleSeconds() >= config.awayIdleSeconds else { return }
 
         var assessment: ModelRouting.Assessment?
         if cheap && !state.escalated && !state.progress.isEmpty,
@@ -1983,11 +2472,18 @@ final class ClickyMonitor: ObservableObject {
                 record("model escalation not approved — keeping \(chat.model)")
                 return
             }
-            guard store.config.autoSelectVSCodeModel else { return }
+            guard store.config.autoSelectVSCodeModel, store.config.mode == .cruise,
+                  !store.config.usageCutoffReached else { return }
         }
         do {
-            try await VSCodeModels.select(target, chat: chat, config: config)
+            let interaction = InputSynth.UserInteractionWatch()
+            defer { interaction.stop() }
+            try await VSCodeModels.select(target, chat: chat, config: config, shouldContinue: {
+                self.store.config.autoSelectVSCodeModel && self.store.config.mode == .cruise
+                    && !self.store.config.usageCutoffReached && self.drivingTaskName == nil && !interaction.interrupted
+            })
             stats.vscodeModelSwitches += 1
+            vscodeModelStatus = "Verified · \(chat.model) → \(target) in the same chat."
             state.lastSwitch = Date()
             if ModelRouting.normalize(target) == ModelRouting.normalize(config.economyModel) {
                 state.cheapSince = Date()
@@ -2000,6 +2496,7 @@ final class ClickyMonitor: ObservableObject {
             saveModelStates()
             record("model: \(chat.model) → \(target); same conversation preserved, next turn uses the selected model")
         } catch {
+            vscodeModelStatus = "Not confirmed · \(error.localizedDescription)"
             record("model handoff failed — leaving the chat intact: \(error.localizedDescription)")
             // Avoid reopening an unavailable picker every polling cycle.
             state.lastSwitch = Date()
@@ -2183,7 +2680,7 @@ final class ClickyMonitor: ObservableObject {
         guard let target else { return true }
         let plan = store.config.taskPlans[target.taskID]
         guard target.matches(definition: store.config.clickyDefinitionsOfDone[target.taskID],
-                             enabled: chatOnly ? store.config.backgroundTaskReview : store.config.continueUntilDefinedDone),
+                             enabled: chatOnly ? store.config.backgroundTaskReview : target.oneShot == true || store.config.continueUntilDefinedDone),
               (chatOnly ? plan?.enabled == true : (target.oneShot == true || plan?.autoBump == true)),
               ClickyTaskStore.shared.canPersist else { return false }
         let source = ClickyTaskStore.shared
@@ -2194,8 +2691,11 @@ final class ClickyMonitor: ObservableObject {
             guard store.config.backgroundTaskDelivery == .chatOnly,
                   TaskPlanning.eligible(task, config: store.config) else { return false }
         } else {
-            guard store.config.mode == .cruise, store.config.autoContinueReports,
-                  store.config.ollamaEnabled, Ollama.isLocalServer(store.config) else { return false }
+            guard TaskDraftGate.evaluate(task: task, definition: target.definition,
+                                         assessment: source.currentAssessment(for: task, definition: target.definition),
+                                         finished: false, ambiguous: false) == .ready else { return false }
+            guard TaskPlanning.definitionDeliveryAllowed(config: store.config, oneShot: target.oneShot == true),
+                  TaskPlanning.continuationAllowed(task, config: store.config, manual: target.oneShot == true) else { return false }
         }
         let progress = ClickyTaskStore.shared.record(target.taskID).progress
         return DefinitionOfDone.normalized(progress.definition) == DefinitionOfDone.normalized(target.definition)
@@ -2203,9 +2703,20 @@ final class ClickyMonitor: ObservableObject {
             && (!chatOnly || progress.lastFingerprint == target.reportFingerprint)
     }
 
+    private func hasSavedDefinition(task: String) -> Bool {
+        ClickyTaskStore.shared.tasks.contains(where: {
+            Matcher.normalize($0.name) == Matcher.normalize(task)
+                && DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[$0.id]) != nil
+        })
+    }
+
     private func send(_ text: String, via composer: Composer, task: String,
                       completionTarget: PendingMessage.CompletionTarget? = nil, chatOnly: Bool = false) async -> Bool {
         let config = store.config
+        if completionTarget == nil, hasSavedDefinition(task: task) {
+            record("generic follow-up blocked for “\(task)”: this task must use its saved Done review and Auto-bump/manual Send workflow")
+            return false
+        }
         let policy = PendingMessage(task: task, text: text, transcript: [], completionTarget: completionTarget, chatOnly: chatOnly)
         guard messageHistoryReadable, pendingMessage == nil,
               policy.automationAllowed(config: config), !chatOnly || Self.idleSeconds() >= config.awayIdleSeconds else {
@@ -2284,7 +2795,7 @@ final class ClickyMonitor: ObservableObject {
         guard message.automationAllowed(config: store.config), !interaction.interrupted else { return }
         guard let chat = await revealChat(config: config),
               !interaction.interrupted,
-              await selectTask(message.task, from: chat, config: config, unique: message.chatOnly == true) != nil,
+              await selectTask(message.task, from: chat, config: config, unique: message.chatOnly == true || message.completionTarget != nil) != nil,
               !interaction.interrupted else { return }
         if await deliverPendingMessage(config: config) {
             stats.continued += 1
@@ -2311,6 +2822,11 @@ final class ClickyMonitor: ObservableObject {
                     record("couldn't persist chat-only receipt: \(ClickyTaskStore.shared.loadError ?? "unreadable saved task state")")
                     return false
                 }
+                if message.chatOnly != true, !ClickyTaskStore.shared.recordDefinitionDelivery(message) {
+                    record("couldn't persist task delivery receipt: \(ClickyTaskStore.shared.loadError ?? "unreadable saved task state")")
+                    return false
+                }
+                record("delivery confirmed in ‘\(message.task)’ [\(message.completionTarget?.taskID ?? "legacy")]")
                 return clearPendingMessage()
             case .superseded:
                 holdPendingMessage("Conversation has moved on. Review the saved message; it will not be sent into a changed conversation.")

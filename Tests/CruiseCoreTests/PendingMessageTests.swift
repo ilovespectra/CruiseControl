@@ -74,7 +74,14 @@ import Testing
         config.clickyDefinitionsOfDone["job"] = "Tests pass"
         #expect(message.automationAllowed(config: config))
         config.continueUntilDefinedDone = false
+        #expect(message.automationAllowed(config: config), "An explicit manual Send is independent of automatic gates.")
+        config.mode = .manual
+        config.autoContinueReports = false
+        #expect(message.automationAllowed(config: config))
+        config.mode = .rest
         #expect(!message.automationAllowed(config: config))
+        config.mode = .cruise
+        config.autoContinueReports = true
         config.continueUntilDefinedDone = true
         config.taskPlans["job"]?.autoBump = true
         let automatic = PendingMessage(task: "Task", text: message.text, transcript: message.transcript,

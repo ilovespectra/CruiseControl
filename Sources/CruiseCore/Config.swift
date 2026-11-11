@@ -59,6 +59,7 @@ public enum PillSide: String, Codable, Sendable {
 
 public struct Config: Codable, Equatable, Sendable {
     public var mode: DriveMode = .manual
+    public var heyClickyDriveEnabled = true
     public var autoContinueReports = true
     public var continuePrompt = "Please continue the users request to implement this particular feature based on your findings"
 
@@ -134,6 +135,11 @@ public struct Config: Codable, Equatable, Sendable {
     /// Off by default — see the README for the risks. Anything the review flags, or anything that can't be reviewed
     /// (Ollama down), is left on screen for you.
     public var vscodeAutoApprove = false
+    public var vscodeApprovalsActive: Bool { mode == .cruise && vscodeAutoApprove && !usageCutoffReached }
+    /// Show an on-screen, read-only alert for VS Code sessions explicitly waiting on the user.
+    public var vscodeRequestAlertsEnabled = true
+    /// Play one gentle sound when a new waiting session becomes alert-worthy.
+    public var vscodeRequestAlertSound = false
     /// Opt in to reviewing write-file metadata when VS Code does not expose the full diff.
     public var vscodeAllowWriteMetadata = false
     /// Allow session-scoped tool/provider grants after review of the exposed tool identity.
@@ -177,9 +183,12 @@ public struct Config: Codable, Equatable, Sendable {
     public var clickyTaskAuditMinutes: Double = 5
     /// The user's definition of done per HeyClicky job (keyed by job ID, e.g. "09dc7e6201").
     public var clickyDefinitionsOfDone: [String: String] = [:]
-    /// Cruise mode: when a task's latest report falls short of its definition of done, send it another round.
+    /// Per-task continuation is independent of drive approvals; Rest pauses sending.
     public var continueUntilDefinedDone = true
     public var maxDefinitionRounds = DefinitionOfDone.maxRounds
+    public var persistTimeLimit = false
+    public var persistCreditLimit = false
+    public var persistMessageLimit = false
     public var taskGrouping: TaskGrouping = .project
     public var taskSort: TaskSort = .priority
     public var inferTaskProjects = true
@@ -204,6 +213,7 @@ public struct Config: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = Config()
         mode = try c.decodeIfPresent(DriveMode.self, forKey: .mode) ?? d.mode
+        heyClickyDriveEnabled = try c.decodeIfPresent(Bool.self, forKey: .heyClickyDriveEnabled) ?? d.heyClickyDriveEnabled
         autoContinueReports = try c.decodeIfPresent(Bool.self, forKey: .autoContinueReports) ?? d.autoContinueReports
         continuePrompt = try c.decodeIfPresent(String.self, forKey: .continuePrompt) ?? d.continuePrompt
         allowLabels = try c.decodeIfPresent([String].self, forKey: .allowLabels) ?? d.allowLabels
@@ -250,6 +260,8 @@ public struct Config: Codable, Equatable, Sendable {
         retryLabels = try c.decodeIfPresent([String].self, forKey: .retryLabels) ?? d.retryLabels
         interruptedCardNudge = try c.decodeIfPresent(String.self, forKey: .interruptedCardNudge) ?? d.interruptedCardNudge
         vscodeAutoApprove = try c.decodeIfPresent(Bool.self, forKey: .vscodeAutoApprove) ?? d.vscodeAutoApprove
+        vscodeRequestAlertsEnabled = try c.decodeIfPresent(Bool.self, forKey: .vscodeRequestAlertsEnabled) ?? d.vscodeRequestAlertsEnabled
+        vscodeRequestAlertSound = try c.decodeIfPresent(Bool.self, forKey: .vscodeRequestAlertSound) ?? d.vscodeRequestAlertSound
         vscodeAllowWriteMetadata = try c.decodeIfPresent(Bool.self, forKey: .vscodeAllowWriteMetadata) ?? d.vscodeAllowWriteMetadata
         vscodeAllowToolPermissions = try c.decodeIfPresent(Bool.self, forKey: .vscodeAllowToolPermissions) ?? d.vscodeAllowToolPermissions
         vscodeURLFetchPolicy = try c.decodeIfPresent(URLFetchPolicy.self, forKey: .vscodeURLFetchPolicy) ?? d.vscodeURLFetchPolicy
@@ -281,6 +293,9 @@ public struct Config: Codable, Equatable, Sendable {
             .compactMapValues(DefinitionOfDone.normalized)
         continueUntilDefinedDone = try c.decodeIfPresent(Bool.self, forKey: .continueUntilDefinedDone) ?? d.continueUntilDefinedDone
         maxDefinitionRounds = min(30, max(1, try c.decodeIfPresent(Int.self, forKey: .maxDefinitionRounds) ?? d.maxDefinitionRounds))
+        persistTimeLimit = try c.decodeIfPresent(Bool.self, forKey: .persistTimeLimit) ?? d.persistTimeLimit
+        persistCreditLimit = try c.decodeIfPresent(Bool.self, forKey: .persistCreditLimit) ?? d.persistCreditLimit
+        persistMessageLimit = try c.decodeIfPresent(Bool.self, forKey: .persistMessageLimit) ?? d.persistMessageLimit
         taskGrouping = try c.decodeIfPresent(TaskGrouping.self, forKey: .taskGrouping) ?? d.taskGrouping
         taskSort = try c.decodeIfPresent(TaskSort.self, forKey: .taskSort) ?? d.taskSort
         inferTaskProjects = try c.decodeIfPresent(Bool.self, forKey: .inferTaskProjects) ?? d.inferTaskProjects

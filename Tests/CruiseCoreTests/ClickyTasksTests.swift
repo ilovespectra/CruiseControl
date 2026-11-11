@@ -30,6 +30,15 @@ import Testing
 
     // MARK: Reading HeyClicky's job list
 
+    @Test func agentRootRequiresAnExplicitAbsoluteHeyClickySetting() {
+        #expect(ClickyTaskLibrary.configuredAgentRoot(nil) == nil)
+        #expect(ClickyTaskLibrary.configuredAgentRoot("") == nil)
+        #expect(ClickyTaskLibrary.configuredAgentRoot("relative/Agent") == nil)
+        #expect(ClickyTaskLibrary.configuredAgentRoot("  /Volumes/External/HeyClicky  ")?.path == "/Volumes/External/HeyClicky")
+        #expect(ClickyTaskLibrary.configuredAgentRoot("~/Agents")?.path
+                == FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Agents").path)
+    }
+
     @Test func buildsTasksFromJobsWithStableIDsAndNames() throws {
         let jobs = try ClickyTaskLibrary.decodeJobs(Data(Self.jobsJSON.utf8))
         let tasks = ClickyTaskLibrary.tasks(jobs: jobs, activity: [:])
@@ -154,16 +163,15 @@ import Testing
 
     // MARK: Definition of done
 
-    @Test func parsesAValidAnswerAndBoundsMissingItems() throws {
+    @Test func parsesAValidAnswerAndKeepsUserCriteriaInsteadOfModelMissingItems() throws {
         let task = Self.task("The README is pushed but the release is not built.")
         let missing = (1...9).map { "\"item \($0) \(String(repeating: "x", count: 200))\"" } + ["\"item 1 \(String(repeating: "x", count: 200))\""]
-        let raw = #"{"state":"unfinished","reason":"  Release not built.  ","meets_definition":false,"missing":[\#(missing.joined(separator: ","))]}"#
+        let raw = #"{"state":"unfinished","reason":"  Release not built.  ","meets_definition":false,"missing":[\#(missing.joined(separator: ","))],"criteria":[{"criterion":"Release built","status":"unmet","evidence":"the release is not built"}]}"#
         let assessment = try #require(DefinitionOfDone.parse(raw, task: task, definition: " Release built ", model: "m"))
         #expect(assessment.state == .unfinished)
         #expect(assessment.reason == "Release not built.")
         #expect(assessment.meetsDefinition == false)
-        #expect(assessment.missing.count == 6)
-        #expect(assessment.missing.allSatisfy { $0.count <= 160 })
+        #expect(assessment.missing == ["Release built"])
         #expect(assessment.definition == "Release built")
         #expect(assessment.source == "ollama (m)")
         #expect(assessment.isCurrent(for: task, definition: "Release built"))
@@ -181,7 +189,7 @@ import Testing
     }
 
     @Test func unmetDefinitionWithoutItemsListsTheDefinition() throws {
-        let raw = #"{"state":"done","reason":"Looks done.","meets_definition":false,"missing":[" "]}"#
+        let raw = #"{"state":"done","reason":"Looks done.","meets_definition":false,"missing":[" "],"criteria":[{"criterion":"Download link works","status":"unknown","evidence":""}]}"#
         let assessment = try #require(DefinitionOfDone.parse(raw, task: Self.task(), definition: "Download link works", model: "m"))
         #expect(assessment.missing == ["Download link works"])
     }
@@ -210,7 +218,7 @@ import Testing
     }
 
     @Test func liveHeyClickyStatusOutranksTheReport() throws {
-        let raw = #"{"state":"unfinished","reason":"Not built.","meets_definition":false,"missing":["build"]}"#
+        let raw = #"{"state":"unfinished","reason":"Not built.","meets_definition":false,"missing":["build"],"criteria":[{"criterion":"Built","status":"unmet","evidence":"Not built."}]}"#
         let working = try #require(DefinitionOfDone.parse(raw, task: Self.task("Not built.", outcome: "working"), definition: "Built", model: "m"))
         #expect(working.state == .working)
         let stopped = DefinitionOfDone.fallback(task: Self.task("Not built.", outcome: "stopped"), definition: "Built")
@@ -219,7 +227,7 @@ import Testing
 
     @Test func continuesOnlyForAFreshShortfall() throws {
         let task = Self.task("Docs pushed. The release is not built yet.")
-        let raw = #"{"state":"unfinished","reason":"Release not built.","meets_definition":false,"missing":["Release built"]}"#
+        let raw = #"{"state":"unfinished","reason":"Release not built.","meets_definition":false,"missing":["Release built"],"criteria":[{"criterion":"Released","status":"unmet","evidence":"The release is not built yet."}]}"#
         let short = try #require(DefinitionOfDone.parse(raw, task: task, definition: "Released", model: "m"))
         #expect(DefinitionOfDone.shouldContinue(task, definition: "Released", assessment: short, progress: nil))
         #expect(!DefinitionOfDone.shouldContinue(task, definition: nil, assessment: short, progress: nil))
@@ -240,7 +248,7 @@ import Testing
         #expect(DefinitionOfDone.shouldContinue(task, definition: "Released", assessment: short, progress: progress, maxRounds: 3),
                 "editing the definition starts the count over")
 
-        let met = try #require(DefinitionOfDone.parse(#"{"state":"done","reason":"Released.","meets_definition":true,"missing":[]}"#,
+        let met = try #require(DefinitionOfDone.parse(#"{"state":"done","reason":"Released.","meets_definition":true,"missing":[],"criteria":[{"criterion":"Released","status":"satisfied","evidence":"Docs pushed."}]}"#,
                                                       task: task, definition: "Released", model: "m"))
         #expect(!DefinitionOfDone.shouldContinue(task, definition: "Released", assessment: met, progress: nil))
         var needsYou = short
@@ -269,6 +277,18 @@ import Testing
         #expect(DefinitionOfDone.normalized(String(repeating: "a", count: 5000))?.count == DefinitionOfDone.maxDefinitionLength)
     }
 
+    @Test func confidentDoneWithoutEvidenceIsUnprovenAndFullReportIsReviewed() throws {
+        let report = String(repeating: "Context. ", count: 600) + "The installed version has not been verified."
+        let task = Self.task(report)
+        #expect(DefinitionOfDone.prompt(for: task, definition: "Installed version verified").contains(report))
+        let raw = #"{"state":"done","reason":"Everything is complete.","meets_definition":true,"missing":[],"criteria":[{"criterion":"Installed version verified","status":"satisfied","evidence":"Version verified successfully."}]}"#
+        let result = try #require(DefinitionOfDone.parse(raw, task: task, definition: "Installed version verified", model: "fixture"))
+        #expect(result.meetsDefinition == false)
+        #expect(result.criteria?.first?.status == .unknown)
+        #expect(result.criteria?.first?.evidence == "")
+        #expect(result.missing == ["Installed version verified"])
+    }
+
     @Test func configDecodesDefinitionsOfDone() throws {
         let decoded = try JSONDecoder().decode(Config.self, from: Data(
             #"{"clickyDefinitionsOfDone":{"aaa111":"  Shipped  ","bbb222":"   "},"maxDefinitionRounds":99,"continueUntilDefinedDone":false}"#.utf8))
@@ -281,5 +301,205 @@ import Testing
         #expect(defaults.maxDefinitionRounds == DefinitionOfDone.maxRounds)
         let restored = try JSONDecoder().decode(Config.self, from: JSONEncoder().encode(decoded))
         #expect(restored.clickyDefinitionsOfDone == decoded.clickyDefinitionsOfDone)
+    }
+
+    @Test func rejectsReportInventedCriteriaAndPartialDefinitionCoverage() {
+        let task = Self.task("Docs pushed. The controls are not verified.")
+        let wrong = #"{"state":"done","reason":"Done.","meets_definition":true,"missing":[],"criteria":[{"criterion":"Docs pushed","status":"satisfied","evidence":"Docs pushed."}]}"#
+        #expect(DefinitionOfDone.parse(wrong, task: task, definition: "Controls verified", model: "fixture") == nil)
+        let partial = #"{"state":"done","reason":"Done.","meets_definition":true,"missing":[],"criteria":[{"criterion":"Docs pushed","status":"satisfied","evidence":"Docs pushed."}]}"#
+        #expect(DefinitionOfDone.parse(partial, task: task, definition: "Docs pushed\nControls verified", model: "fixture") == nil)
+        #expect(DefinitionOfDone.userCriteria("  Volume 0–100% and independent knobs \n Styling matches Cruise  ")
+                == ["Volume 0–100% and independent knobs", "Styling matches Cruise"])
+        #expect(DefinitionOfDone.parse(#"{"state":"done","reason":"Done.","meets_definition":true,"criteria":[]}"#,
+                                      task: task, definition: "Controls verified", model: "fixture") == nil)
+    }
+
+    @Test func ambiguityRequestsUserClarificationAndStopsBothContinuationPaths() throws {
+        let task = Self.task("The controls are not verified.")
+        let definition = "The controls work appropriately"
+        let raw = #"{"state":"unfinished","reason":"Acceptance needs clarification.","meets_definition":false,"missing":[],"criteria":[{"criterion":"The controls work appropriately","status":"unknown","evidence":""}],"clarification_question":"Which controls and measurable volume range should be verified?"}"#
+        let assessment = try #require(DefinitionOfDone.parse(raw, task: task, definition: definition, model: "fixture"))
+        #expect(assessment.state == .needsYou)
+        #expect(assessment.clarificationQuestion == "Which controls and measurable volume range should be verified?")
+        #expect(!DefinitionOfDone.shouldContinue(task, definition: definition, assessment: assessment, progress: nil))
+        #expect(TaskDraftGate.evaluate(task: task, definition: definition, assessment: assessment,
+                                       finished: false, ambiguous: false) == .needsUser)
+        #expect(assessment.definition == definition)
+    }
+
+    @Test func editingAmbiguousDefinitionClearsOnlyTheStaleClarificationAndRequiresFreshReview() throws {
+        let task = Self.task("Implementation is ready; visual acceptance is not verified.")
+        let ambiguous = "The appearance should be appropriate."
+        let clarified = "Use a blue grid background."
+        func review(_ definition: String, question: String) throws -> ClickyTaskAssessment {
+            let json: [String: Any] = [
+                "state": "unfinished", "reason": "Visual acceptance is not verified.",
+                "meets_definition": false, "missing": [definition],
+                "criteria": [["criterion": definition, "status": "unknown", "evidence": ""]],
+                "clarification_question": question,
+            ]
+            return try #require(DefinitionOfDone.parse(
+                String(decoding: try JSONSerialization.data(withJSONObject: json), as: UTF8.self),
+                task: task, definition: definition, model: "fixture"))
+        }
+        let old = try review(ambiguous, question: "Which background should be used?")
+        #expect(TaskDraftGate.evaluate(task: task, definition: ambiguous, assessment: old,
+                                       finished: false, ambiguous: false) == .needsUser)
+        #expect(!old.isCurrent(for: task, definition: clarified))
+        #expect(TaskDraftGate.evaluate(task: task, definition: clarified, assessment: old,
+                                       finished: false, ambiguous: false) == .reviewLatestReport)
+        let fresh = try review(clarified, question: "")
+        #expect(fresh.clarificationQuestion == nil)
+        #expect(TaskDraftGate.evaluate(task: task, definition: clarified, assessment: fresh,
+                                       finished: false, ambiguous: false) == .ready)
+        #expect(DefinitionOfDone.shouldContinue(task, definition: clarified, assessment: fresh, progress: nil))
+    }
+
+    @Test func reviewAndDraftContextsContainOnlyTheSelectedTasksGoal() {
+        let task = Self.task("Previous requested work is complete.")
+        let first = "Provide a printable illustrated recipe card."
+        let second = "Create an interactive transit timetable."
+        for (goal, unrelated) in [(first, second), (second, first)] {
+            let review = DefinitionOfDone.prompt(for: task, definition: goal)
+            let draft = TaskAudit.definitionBumpContext(task: task, definition: goal,
+                                                       projectLabel: "Example", repository: "",
+                                                       priority: .normal, missing: [goal])
+            #expect(review.contains(goal))
+            #expect(draft.contains(goal))
+            #expect(!review.contains(unrelated))
+            #expect(!draft.contains(unrelated))
+            #expect(!DefinitionOfDone.system.contains(goal))
+            #expect(!TaskAudit.definitionBumpSystem.contains(goal))
+        }
+    }
+
+    @Test func completionRequiresCurrentLocalReviewWithEvidenceAndPreservesNotificationReceipt() throws {
+        let task = Self.task("The illustrated recipe card is ready and print-tested.")
+        let definition = "Provide an illustrated recipe card."
+        let raw: [String: Any] = [
+            "state": "done", "reason": "The requested card is ready.",
+            "meets_definition": true, "missing": [],
+            "criteria": [["criterion": definition, "status": "satisfied", "evidence": task.lastMessage]],
+            "clarification_question": "",
+        ]
+        let assessment = try #require(DefinitionOfDone.parse(
+            String(decoding: try JSONSerialization.data(withJSONObject: raw), as: UTF8.self),
+            task: task, definition: definition, model: "fixture"))
+        var notice = try #require(TaskCompletionNotice(task: task, definition: definition, assessment: assessment))
+        #expect(notice.taskID == task.id)
+        #expect(notice.definition == definition)
+        #expect(notice.acknowledgedAt == nil)
+        notice.acknowledgedAt = Date()
+        #expect(try JSONDecoder().decode(TaskCompletionNotice.self, from: JSONEncoder().encode(notice)) == notice)
+        #expect(TaskCompletionNotice(task: task, definition: "Another goal", assessment: assessment) == nil)
+        #expect(TaskCompletionNotice(task: Self.task("Still building it.", outcome: "working"),
+                                     definition: definition, assessment: assessment) == nil)
+        #expect(TaskCompletionNotice(task: Self.task(task.lastMessage, dismissed: true),
+                                     definition: definition, assessment: assessment) == nil)
+        var rules = assessment
+        rules.source = "rules"
+        #expect(TaskCompletionNotice(task: task, definition: definition, assessment: rules) == nil)
+        var unknown = assessment
+        unknown.meetsDefinition = false
+        #expect(TaskCompletionNotice(task: task, definition: definition, assessment: unknown)?.meetsDefinition == false)
+        #expect(notice.meetsDefinition == true)
+        var clarification = assessment
+        clarification.clarificationQuestion = "Which format?"
+        #expect(TaskCompletionNotice(task: task, definition: definition, assessment: clarification)?.meetsDefinition == false)
+        var old = assessment
+        old.reviewVersion = nil
+        #expect(TaskCompletionNotice(task: task, definition: definition, assessment: old) == nil)
+    }
+
+    @Test func liveStatusChangesInvalidateReviewsEvenWithoutANewReport() throws {
+        let definition = "Provide a printable card."
+        let task = Self.task("The printable card is ready.")
+        let raw = #"{"state":"done","reason":"Ready.","meets_definition":true,"missing":[],"criteria":[{"criterion":"Provide a printable card.","status":"satisfied","evidence":"The printable card is ready."}],"clarification_question":""}"#
+        let assessment = try #require(DefinitionOfDone.parse(raw, task: task, definition: definition, model: "fixture"))
+        for state in ["working", "needs you", "stopped by you", "failed"] {
+            let changed = Self.task(task.lastMessage, outcome: state)
+            #expect(changed.fingerprint != task.fingerprint)
+            #expect(!assessment.isCurrent(for: changed, definition: definition))
+            #expect(TaskCompletionNotice(task: changed, definition: definition, assessment: assessment) == nil)
+        }
+    }
+
+    @Test func changedGoalOutranksOldDoneReportWithoutOverridingRealStops() throws {
+        let task = Self.task("The original project is complete. All checks passed.")
+        let definition = "The original task is done; now provide a printable illustrated recipe card."
+        let fields: [String: Any] = [
+            "state": "done", "reason": "The original project is complete.",
+            "meets_definition": false, "missing": [definition],
+            "criteria": [["criterion": definition, "status": "unknown", "evidence": ""]],
+            "clarification_question": "",
+        ]
+        let raw = String(decoding: try JSONSerialization.data(withJSONObject: fields), as: UTF8.self)
+        let review = try #require(DefinitionOfDone.parse(raw, task: task, definition: definition, model: "fixture"))
+        #expect(review.state == .unfinished)
+        #expect(review.meetsDefinition == false)
+        #expect(review.definition == definition)
+        #expect(DefinitionOfDone.shouldContinue(task, definition: definition, assessment: review, progress: nil))
+        #expect(TaskDraftGate.evaluate(task: task, definition: definition, assessment: review,
+                                       finished: false, ambiguous: false) == .ready)
+        var oldReview = review
+        oldReview.reviewVersion = nil
+        #expect(!oldReview.isCurrent(for: task, definition: definition))
+        #expect(!DefinitionOfDone.shouldContinue(task, definition: definition, assessment: oldReview, progress: nil))
+        let stopped = Self.task(task.lastMessage, outcome: "stopped by you")
+        #expect(!DefinitionOfDone.shouldContinue(stopped, definition: definition, assessment: review, progress: nil))
+        let blocked = Self.task("Please sign in before I can continue.")
+        #expect(!DefinitionOfDone.shouldContinue(blocked, definition: definition, assessment: review, progress: nil))
+        var progress = DoneProgress()
+        progress.definition = "A different goal"
+        progress.lastMissing = review.missing
+        #expect(!DefinitionOfDone.hasNoProgress(review, progress: progress))
+        progress.definition = definition
+        #expect(DefinitionOfDone.hasNoProgress(review, progress: progress))
+    }
+
+    @Test func taskXLabelsAreRecognizedWithoutMatchingUnrelatedActions() {
+        for label in ["X Mark", "xmark", "X", "Close task", "Dismiss", "Close"] {
+            #expect(Matcher.isTaskDismissButton(label))
+        }
+        for label in ["Close window", "Delete files", "Retry", "Cancel", "Canon Printer Diag, oops"] {
+            #expect(!Matcher.isTaskDismissButton(label))
+        }
+    }
+
+    @Test func draftGateRequiresSavedCriteriaAndCurrentReview() throws {
+        let task = Self.task("Docs are pushed, but the application is not built yet.")
+        let definition = "Build and verify the application"
+        let raw = #"{"state":"unfinished","reason":"Build is not complete.","meets_definition":false,"missing":["Build and launch the application"],"criteria":[{"criterion":"Build and verify the application","status":"unmet","evidence":"the application is not built yet"}]}"#
+        let current = try #require(DefinitionOfDone.parse(raw, task: task, definition: definition, model: "fixture"))
+
+        #expect(TaskDraftGate.evaluate(task: task, definition: nil, assessment: current,
+                                       finished: false, ambiguous: false) == .defineCriteria)
+        #expect(TaskDraftGate.evaluate(task: task, definition: definition, assessment: nil,
+                                       finished: false, ambiguous: false) == .reviewLatestReport)
+
+        var newerReport = task
+        newerReport.lastMessage += " New report."
+        #expect(TaskDraftGate.evaluate(task: newerReport, definition: definition, assessment: current,
+                                       finished: false, ambiguous: false) == .reviewLatestReport,
+                "a report newer than the assessment invalidates Draft")
+        #expect(TaskDraftGate.evaluate(task: task, definition: "A different saved criterion", assessment: current,
+                                       finished: false, ambiguous: false) == .reviewLatestReport,
+                "changed saved criteria invalidate Draft")
+
+        #expect(TaskDraftGate.evaluate(task: task, definition: definition, assessment: current,
+                                       finished: false, ambiguous: false) == .ready)
+        var done = current
+        done.meetsDefinition = true
+        #expect(TaskDraftGate.evaluate(task: task, definition: definition, assessment: done,
+                                       finished: false, ambiguous: false) == .noActionableGaps)
+        var invented = current
+        invented.criteria?[0].criterion = "A work item invented from the report"
+        #expect(TaskDraftGate.evaluate(task: task, definition: definition, assessment: invented,
+                                       finished: false, ambiguous: false) == .reviewLatestReport)
+        #expect(TaskDraftGate.evaluate(task: task, definition: definition, assessment: current,
+                                       finished: true, ambiguous: false) == .taskFinished)
+        #expect(TaskDraftGate.evaluate(task: task, definition: definition, assessment: current,
+                                       finished: false, ambiguous: true) == .ambiguousTask)
     }
 }

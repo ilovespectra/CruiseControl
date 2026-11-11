@@ -101,6 +101,7 @@ struct ExpandedPanel: View {
                     .font(BrandFont.inter(13, .semibold))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .foregroundStyle(.white)
@@ -113,6 +114,7 @@ struct ExpandedPanel: View {
                         .font(BrandFont.inter(13, .semibold))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(10)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white)
@@ -230,6 +232,20 @@ struct SettingsContent: View {
             }
         } else if selectedTab == 1 {
             settingsPage(scrollTarget: $scrollTarget) {
+                settingsSection("Cruise Control apps", detail: "Select either app or both. Configure what Cruise does for each app below.") {
+                    Toggle("HeyClicky", isOn: $store.config.heyClickyDriveEnabled)
+                        .toggleStyle(.checkbox)
+                    Toggle("VS Code", isOn: Binding(
+                        get: { store.config.vscodeAutoApprove },
+                        set: { enabled in
+                            if !enabled { store.config.vscodeAutoApprove = false }
+                            else if VSCodeDisclaimer.confirm() { store.config.vscodeAutoApprove = true }
+                        }
+                    ))
+                    .toggleStyle(.checkbox)
+                    Text("New installations select HeyClicky only. VS Code approvals require an explicit opt-in and Cruise mode; Manual and Rest never approve VS Code requests. Task Auto-bump is independent of these approval checkboxes.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 settingsSection("HeyClicky", detail: "Controls for drive requests, unfinished tasks and app updates.") {
                     continueToggle
                     updateToggle
@@ -247,8 +263,19 @@ struct SettingsContent: View {
                         .font(.caption).foregroundStyle(.secondary)
                     Toggle("Answer HeyClicky system permission dialogs", isOn: $store.config.autoAnswerSystemDialogs)
                 }
-                settingsSection("VS Code", detail: "Independent opt-in controls. Higher-cost model switches always require confirmation.") {
-                    vscodeToggle
+                settingsSection("Task continuation limits", detail: "Shared stop-reason policy for all task Auto-bumps, separate from drive approvals.") {
+                    Toggle("Continue after a time limit", isOn: $store.config.persistTimeLimit)
+                    Toggle("Continue after a credit limit", isOn: $store.config.persistCreditLimit)
+                    Toggle("Continue after a message limit", isOn: $store.config.persistMessageLimit)
+                    Text("Off by default. These settings apply to every opted-in task, not individual task cards. They never override user stops, permission or decision blockers, Rest mode, the global usage cutoff or follow-up budgets. Previous task-specific choices do not enable these shared permissions.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                settingsSection("VS Code", detail: "Off by default. Opt in alongside HeyClicky or instead of it. Approvals run only in Cruise mode.") {
+                    Toggle("Alert when VS Code is waiting for me", isOn: $store.config.vscodeRequestAlertsEnabled)
+                    Toggle("Play a gentle sound for new requests", isOn: $store.config.vscodeRequestAlertSound)
+                        .disabled(!store.config.vscodeRequestAlertsEnabled)
+                    Text("Cruise highlights accessible Sessions marked Needs Input/Attention Needed and recognized approval requests. Click an alert to open that chat. Alerts never approve anything; unsupported extensions or hidden chat states may not be detected. Requires Accessibility permission.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Toggle("Allow file edits without a readable diff", isOn: $store.config.vscodeAllowWriteMetadata)
                         .disabled(!store.config.vscodeAutoApprove)
                     Text("Off by default. Applies to Write file and Create file dialogs. Ollama reviews only exposed file names and change counts. Full paths and contents may be unavailable, including for files outside the workspace.")
@@ -267,7 +294,9 @@ struct SettingsContent: View {
                         .font(.caption).foregroundStyle(.secondary)
                         .textSelection(.enabled)
                     modelToggle
+                    Text(monitor.vscodeModelStatus).font(.caption).foregroundStyle(.secondary)
                     chatBumpToggle
+                    Text(monitor.vscodeFollowUpStatus).font(.caption).foregroundStyle(.secondary)
                     Picker("Stop Cruise Control at Copilot usage", selection: $store.config.vscodeUsageCutoff) {
                         Text("Off").tag(Int?.none)
                         ForEach(CopilotUsage.cutoffs, id: \.self) { cutoff in
@@ -452,11 +481,13 @@ struct SettingsContent: View {
             }
         )) {
             VStack(alignment: .leading, spacing: 1) {
-                Text("always allow in vscode")
+                Text("approve VS Code requests in Cruise mode")
                     .font(BrandFont.inter(12, .semibold))
                     .foregroundStyle(store.config.vscodeAutoApprove ? Brand.accent(for: .cruise) : .white)
-                Text(store.config.vscodeAutoApprove
+                Text(store.config.vscodeApprovalsActive
                      ? "ollama screens each request, then “allow once” · \(monitor.stats.vscodeApproved) so far"
+                     : store.config.vscodeAutoApprove
+                        ? "Selected, but paused outside Cruise mode"
                      : "auto-approve copilot tool requests after a local ollama check")
                     .font(BrandFont.inter(10.5))
                     .foregroundStyle(.white.opacity(0.5))

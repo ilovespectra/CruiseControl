@@ -1,6 +1,46 @@
 import AppKit
 import CruiseCore
 
+if CommandLine.arguments.contains("--scan-clicky-storage") {
+    do {
+        let directory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/CruiseControl")
+        let configURL = directory.appendingPathComponent("config.json")
+        let config = FileManager.default.fileExists(atPath: configURL.path)
+            ? try JSONDecoder().decode(Config.self, from: Data(contentsOf: configURL)) : Config()
+        let agent = try HeyClickyStorageLocation.agentRoot(bundleIDs: config.clickyBundleIDs)
+        let tasks = try ClickyTaskLibrary.tasks(
+            jobs: ClickyTaskLibrary.decodeJobs(ClickyTaskStore.readJobsData()), activity: [:])
+        let catalogURL = directory.appendingPathComponent("task-catalog.json")
+        let catalog = FileManager.default.fileExists(atPath: catalogURL.path)
+            ? try JSONDecoder().decode(TaskCatalog.self, from: Data(contentsOf: catalogURL)) : TaskCatalog()
+        var sources = CacheInventory.sources(tasks: tasks, catalog: catalog,
+                                             cacheRoot: ClickyTaskLibrary.defaultRoot, workspaceRoot: agent)
+        sources.append(.init(kind: .workspace, path: agent.path, taskName: "HeyClicky Agent workspaces", includeMissing: true))
+        let projects = ClickyTaskLibrary.defaultRoot.appendingPathComponent("projects")
+        if FileManager.default.fileExists(atPath: projects.path) {
+            sources.append(.init(kind: .workspace, path: projects.path, taskName: "HeyClicky projects"))
+        }
+        let started = ProcessInfo.processInfo.systemUptime
+        let report = CacheInventory.scanReport(sources: sources, taskCount: tasks.count, storageRoots: [
+            .init(label: "Clicky support / cache", path: ClickyTaskLibrary.defaultRoot.path),
+            .init(label: "HeyClicky Agent folder", path: agent.path),
+        ], progress: { progress in
+            guard let report = progress.report else { return }
+            print("Progress \(String(format: "%.2f", ProcessInfo.processInfo.systemUptime - started))s: \(progress.entriesVisited) entries; \(report.clickyStorageApparentBytes ?? 0) bytes; \(report.measuredCachePathCount) cache paths; \(report.taskCacheBytes) cache bytes")
+            fflush(stdout)
+        })
+        for root in report.storageRoots {
+            print("Root \(root.path): apparent=\(root.apparentBytes.map(String.init) ?? "unknown") allocated=\(root.allocatedBytes.map(String.init) ?? "unknown") files=\(root.fileCount) error=\(root.error ?? "none")")
+        }
+        print("Completed in \(String(format: "%.2f", ProcessInfo.processInfo.systemUptime - started))s: cache=\(report.taskCacheBytes) workspace=\(report.workspaceBytes) other=\(report.otherSupportBytes ?? 0) total=\(report.clickyStorageApparentBytes ?? 0) partial=\(report.isPartial)")
+        exit(report.isPartial ? 2 : 0)
+    } catch {
+        fputs("Storage scan failed: \(error.localizedDescription)\n", stderr)
+        exit(1)
+    }
+}
+
 if let index = CommandLine.arguments.firstIndex(of: "--infer-task-project") {
     MainActor.assumeIsolated {
         Task { @MainActor in
@@ -185,6 +225,53 @@ if let index = CommandLine.arguments.firstIndex(of: "--inspect-clicky-task") {
     }
 }
 
+if let index = CommandLine.arguments.firstIndex(of: "--preview-task-bump") {
+    MainActor.assumeIsolated {
+        Task { @MainActor in
+            do {
+                guard CommandLine.arguments.indices.contains(index + 1) else {
+                    throw Ollama.OllamaError.missingDefinition
+                }
+                let id = CommandLine.arguments[index + 1]
+                let config = try JSONDecoder().decode(Config.self, from: Data(contentsOf: ConfigStore.directory.appendingPathComponent("config.json")))
+                let source = ClickyTaskStore.shared
+                let requestedAt = Date()
+                async let first: Void = source.refresh(measure: false)
+                async let second: Void = source.refresh(measure: false)
+                _ = await (first, second)
+                guard source.loadedAt.map({ $0 >= requestedAt }) == true, source.loadError == nil,
+                      let task = source.task(id),
+                      let definition = DefinitionOfDone.normalized(config.clickyDefinitionsOfDone[id]) else {
+                    throw VSCodeModels.ModelError.action(source.loadError ?? "current task or saved Done criteria unavailable")
+                }
+                print("Concurrent fresh report reads completed for job \(id). No saved task state changed.")
+                let assessment = await Ollama.assessClickyTask(task, definition: definition, config: config, localOnly: true)
+                print("Review: \(assessment.state.title) · \(assessment.reason)")
+                if let question = assessment.clarificationQuestion { print("Clarification: \(question)") }
+                guard TaskDraftGate.evaluate(task: task, definition: definition, assessment: assessment,
+                                              finished: false, ambiguous: ClickyTaskLibrary.ambiguousNames(source.tasks).contains(Matcher.normalize(task.name))) == .ready else {
+                    print("No eligible draft. Nothing sent.")
+                    exit(0)
+                }
+                let draft = try await Ollama.draftTaskBump(task: task, definition: definition, project: TaskProject(),
+                                                          priority: .normal, missing: assessment.missing, config: config)
+                print(draft.unfinished ? "Coverage-checked Ollama draft (NOT SENT):\n\(draft.message)" : "Ollama declined to draft. Nothing sent.")
+                exit(0)
+            } catch {
+                if case Ollama.OllamaError.incompleteCriteria(_, let message) = error {
+                    print("Rejected Ollama draft (NOT SENT):\n\(message)")
+                }
+                if case Ollama.OllamaError.invalidCoverage(let response) = error {
+                    print("Rejected local coverage response:\n\(response)")
+                }
+                fputs("Preview failed; nothing sent: \(error.localizedDescription)\n", stderr)
+                exit(1)
+            }
+        }
+        NSApplication.shared.run()
+    }
+}
+
 if let index = CommandLine.arguments.firstIndex(of: "--clicky-tasks") {
     // Diagnostic: print the Clicky agent task list. `--sort <newest|recentlyUpdated|oldest|longestThread|largestCache|name>`,
     // `--sizes` measures cache sizes, `--assess N` reads the first N tasks with Ollama. Never sends anything.
@@ -292,15 +379,17 @@ if let index = CommandLine.arguments.firstIndex(of: "--assess-model") {
     exit(0)
 }
 
-if CommandLine.arguments.contains("--model-menu") || CommandLine.arguments.contains("--select-model") {
+if CommandLine.arguments.contains("--inspect-model-chat") || CommandLine.arguments.contains("--model-menu") || CommandLine.arguments.contains("--select-model") {
     MainActor.assumeIsolated {
         Task { @MainActor in
             do {
                 let config = Config()
-                guard let chat = VSCodeModels.scan(config: config) else {
-                    throw VSCodeModels.ModelError.action("no unambiguous active VS Code chat found")
-                }
+                let chat = try VSCodeModels.inspect(config: config)
                 print("Current model: \(chat.model); running: \(chat.running)")
+                if CommandLine.arguments.contains("--inspect-model-chat") {
+                    print("Verified chat identity: \(chat.key); transcript characters: \(chat.transcript.count); composer empty: \(chat.draft.isEmpty); send control: \(chat.send != nil)")
+                    exit(0)
+                }
                 if let index = CommandLine.arguments.firstIndex(of: "--select-model") {
                     let model = CommandLine.arguments.dropFirst(index + 1).joined(separator: " ")
                     guard !model.isEmpty else { throw VSCodeModels.ModelError.action("provide a model name") }

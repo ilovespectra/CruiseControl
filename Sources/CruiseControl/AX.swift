@@ -54,6 +54,35 @@ enum AX {
         (attr(e, kAXEnabledAttribute) as Bool?) ?? true
     }
 
+    static func scrollArea(containing element: AXUIElement) -> AXUIElement? {
+        var ancestor: AXUIElement? = attr(element, kAXParentAttribute)
+        for _ in 0..<12 {
+            guard let current = ancestor else { return nil }
+            let role: String = attr(current, kAXRoleAttribute) ?? ""
+            if role == kAXScrollAreaRole { return current }
+            ancestor = attr(current, kAXParentAttribute)
+        }
+        return nil
+    }
+
+    enum RevealResult { case visible, scrolled, unavailable }
+
+    static func revealInScrollArea(_ element: AXUIElement, in area: AXUIElement,
+                                   shouldContinue: () -> Bool) -> RevealResult {
+        guard let rect = frame(element), let viewport = frame(area),
+              rect.minX >= viewport.minX, rect.maxX <= viewport.maxX else { return .unavailable }
+        if viewport.contains(rect) { return .visible }
+        let point = CGPoint(x: viewport.midX, y: viewport.midY)
+        guard shouldContinue(), isUnderPointer(area, at: point) else { return .unavailable }
+        InputSynth.move(to: point)
+        usleep(40_000)
+        guard shouldContinue(), isUnderPointer(area, at: point) else { return .unavailable }
+        let distance = viewport.midY - rect.midY
+        let pixels = Int32(max(-viewport.height * 8, min(viewport.height * 8, distance)))
+        InputSynth.scroll(at: point, pixels: pixels)
+        return .scrolled
+    }
+
     static func isUnderPointer(_ target: AXUIElement, at point: CGPoint) -> Bool {
         var hit: AXUIElement?
         guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &hit) == .success

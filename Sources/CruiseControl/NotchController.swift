@@ -110,6 +110,11 @@ final class NotchController {
         updateVisibility()
     }
 
+    func show() {
+        hiddenByUser = false
+        updateVisibility()
+    }
+
     private var shouldShow: Bool {
         !hiddenForClick && !hiddenByUser && store.config.shouldShowNotch(clickyRunning: monitor.clickyRunning)
     }

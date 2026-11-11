@@ -191,10 +191,21 @@ public enum VSCodeApprovalContext {
         return title.isEmpty ? nil : title
     }
 
+    public static func attentionStatus(_ label: String) -> String? {
+        guard let state = label.range(of: ", State: ", options: .backwards) else { return nil }
+        let raw = String(label[state.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let status = Matcher.normalize(raw)
+        let waitingStates: Set<String> = [
+            "attention needed", "needs input", "input needed", "needs attention",
+            "waiting for input", "waiting for your input", "waiting on user", "waiting for user",
+            "waiting for approval", "approval required", "needs approval", "needs user input",
+            "user input required", "waiting for confirmation", "confirmation required",
+        ]
+        return waitingStates.contains(status) ? raw : nil
+    }
+
     public static func needsAttention(_ label: String) -> Bool {
-        guard let state = label.range(of: ", State: ", options: .backwards) else { return false }
-        let status = Matcher.normalize(String(label[state.upperBound...]))
-        return ["attention needed", "needs input", "input needed", "needs attention"].contains(status)
+        attentionStatus(label) != nil
     }
 
     public static func needsInspection(_ label: String, hasInlineApproval: Bool) -> Bool {

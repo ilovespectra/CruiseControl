@@ -48,11 +48,14 @@ public struct PendingMessage: Codable, Equatable {
     public func automationAllowed(config: Config) -> Bool {
         guard !config.usageCutoffReached else { return false }
         if chatOnly != true {
-            guard config.mode != .manual, config.autoContinueReports else { return false }
-            guard let target = completionTarget else { return true }
+            guard let target = completionTarget else {
+                return config.mode == .cruise && config.autoContinueReports
+            }
+            let oneShot = target.oneShot == true
+            guard TaskPlanning.definitionDeliveryAllowed(config: config, oneShot: oneShot) else { return false }
             return target.matches(definition: config.clickyDefinitionsOfDone[target.taskID],
-                                  enabled: config.continueUntilDefinedDone)
-                && (target.oneShot == true || config.taskPlans[target.taskID]?.autoBump == true)
+                                  enabled: oneShot || config.continueUntilDefinedDone)
+                && (oneShot || config.taskPlans[target.taskID]?.autoBump == true)
         }
         guard let target = completionTarget, target.reportFingerprint != nil else { return false }
         return config.backgroundTaskReview && config.backgroundTaskDelivery == .chatOnly && config.ollamaEnabled

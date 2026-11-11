@@ -3,6 +3,51 @@ import Testing
 @testable import CruiseCore
 
 struct TaskPlanningTests {
+    @Test func driveApprovalsDefaultToHeyClickyOnlyAndVSCodeRequiresCruise() throws {
+        var config = try JSONDecoder().decode(Config.self, from: Data("{}".utf8))
+        #expect(config.heyClickyDriveEnabled)
+        #expect(!config.vscodeAutoApprove)
+        for mode in DriveMode.allCases {
+            config.mode = mode
+            #expect(!config.vscodeApprovalsActive)
+        }
+        config.vscodeAutoApprove = true
+        config.mode = .manual
+        #expect(!config.vscodeApprovalsActive)
+        config.mode = .rest
+        #expect(!config.vscodeApprovalsActive)
+        config.mode = .cruise
+        #expect(config.vscodeApprovalsActive)
+        config.heyClickyDriveEnabled = false
+        #expect(config.vscodeApprovalsActive, "VS Code instead must not require HeyClicky drive approval.")
+        let restored = try JSONDecoder().decode(Config.self, from: JSONEncoder().encode(config))
+        #expect(!restored.heyClickyDriveEnabled)
+        #expect(restored.vscodeApprovalsActive)
+        config.vscodeUsageCutoff = 80
+        config.vscodeObservedUsage = 80
+        #expect(!config.vscodeApprovalsActive)
+    }
+
+    @Test func taskAutoBumpDeliveryIsIndependentOfDriveModeAndOrdinaryContinuation() {
+        var config = Config()
+        config.autoContinueReports = false
+        config.heyClickyDriveEnabled = false
+        config.vscodeAutoApprove = false
+        for mode in [DriveMode.manual, .cruise] {
+            config.mode = mode
+            #expect(TaskPlanning.definitionDeliveryAllowed(config: config, oneShot: false))
+        }
+        config.mode = .rest
+        #expect(!TaskPlanning.definitionDeliveryAllowed(config: config, oneShot: false))
+        #expect(!TaskPlanning.definitionDeliveryAllowed(config: config, oneShot: true))
+        config.mode = .manual
+        config.continueUntilDefinedDone = false
+        #expect(!TaskPlanning.definitionDeliveryAllowed(config: config, oneShot: false))
+        #expect(TaskPlanning.definitionDeliveryAllowed(config: config, oneShot: true))
+        config.ollamaURL = "https://example.com"
+        #expect(!TaskPlanning.definitionDeliveryAllowed(config: config, oneShot: true))
+    }
+
     private func answer(_ name: String, repository: String = "", confidence: Double = 0.95,
                         quote: String) throws -> ProjectInference.Answer {
         let data = try JSONSerialization.data(withJSONObject: [
@@ -140,6 +185,8 @@ struct TaskPlanningTests {
         #expect(prompt.contains("Build succeeds and the new UI is verified."))
         #expect(prompt.contains("The app bundle has not been rebuilt or verified."))
         #expect(prompt.contains("The new UI is unverified"))
+        #expect(!prompt.contains(task.prompt))
+        #expect(!prompt.contains(task.latestAsk))
         #expect(TaskAudit.definitionBumpSystem.contains("Priority is only a local sorting label"))
     }
 
@@ -175,6 +222,10 @@ struct TaskPlanningTests {
         config.clickyDefinitionsOfDone[task.id] = "Tests pass"
         #expect(TaskPlanning.manualBumpAvailable(task, allTasks: [task], config: config))
         config.mode = .manual
+        config.continueUntilDefinedDone = false
+        config.autoContinueReports = false
+        #expect(TaskPlanning.manualBumpAvailable(task, allTasks: [task], config: config))
+        config.mode = .rest
         #expect(!TaskPlanning.manualBumpAvailable(task, allTasks: [task], config: config))
         config.mode = .cruise
         config.ollamaURL = "https://example.com"
@@ -210,6 +261,57 @@ struct TaskPlanningTests {
         #expect(old.enabled)
         #expect(old.priority == .high)
         #expect(!old.autoBump)
+        #expect(!old.persistTimeLimit && !old.persistCreditLimit && !old.persistMessageLimit)
+    }
+
+    @Test func stopReasonChoicesAreSharedAcrossTasksAndPersist() throws {
+        var config = Config()
+        let task = ClickyTasksTests.task("Stopped at the time limit. Tests remain unverified.")
+        config.taskPlans[task.id] = TaskPlan()
+        #expect(!TaskPlanning.continuationAllowed(task, config: config, manual: false))
+        config.persistTimeLimit = true
+        #expect(TaskPlanning.continuationAllowed(task, config: config, manual: false))
+        var otherTask = task
+        otherTask.id = "different-job"
+        #expect(TaskPlanning.continuationAllowed(otherTask, config: config, manual: false))
+        var credits = task
+        credits.lastMessage = "Stopped at the credit limit. Tests remain unverified."
+        #expect(!TaskPlanning.continuationAllowed(credits, config: config, manual: false))
+        var messages = task
+        messages.lastMessage = "Stopped at the message limit. Tests remain unverified."
+        #expect(!TaskPlanning.continuationAllowed(messages, config: config, manual: false))
+        let restored = try JSONDecoder().decode(Config.self, from: JSONEncoder().encode(config))
+        #expect(restored.persistTimeLimit)
+        #expect(!restored.persistCreditLimit)
+        #expect(!restored.persistMessageLimit)
+        #expect(TaskPlanning.continuationAllowed(messages, config: config, manual: true))
+        var userStop = task
+        userStop.outcome = "stopped by you"
+        #expect(!TaskPlanning.continuationAllowed(userStop, config: config, manual: true))
+    }
+
+    @Test func legacyTaskStopChoicesNeverExpandSharedPermissions() throws {
+        let config = try JSONDecoder().decode(Config.self, from: Data(
+            #"{"taskPlans":{"one":{"persistTimeLimit":true,"persistCreditLimit":true,"persistMessageLimit":true}}}"#.utf8))
+        #expect(!config.persistTimeLimit && !config.persistCreditLimit && !config.persistMessageLimit)
+        let task = ClickyTasksTests.task("Stopped at the time limit. Tests remain unverified.")
+        #expect(!TaskPlanning.continuationAllowed(task, config: config, manual: false))
+    }
+
+    @Test func finishPreflightExplainsDuplicateWorkingAndMissingTargets() {
+        let task = ClickyTasksTests.task()
+        #expect(TaskPlanning.finishBlocker(taskID: task.id, tasks: [task]) == nil)
+        var duplicate = task
+        duplicate.id = "another-job"
+        #expect(TaskPlanning.finishBlocker(taskID: task.id, tasks: [task, duplicate])?.contains("unique name") == true)
+        var working = task
+        working.outcome = "working"
+        #expect(TaskPlanning.finishBlocker(taskID: task.id, tasks: [working])?.contains("still working") == true)
+        #expect(TaskPlanning.finishBlocker(taskID: task.id, tasks: [])?.contains("no longer available") == true)
+        var dismissed = task
+        dismissed.dismissed = true
+        #expect(TaskPlanning.finishBlocker(taskID: task.id, tasks: [dismissed]) == nil,
+                "Already dismissed jobs may still need their own notification closed.")
     }
 
     @Test func backgroundReviewIsIndependentOfDriveAndApprovalFeaturesButRequiresExplicitTaskOptIn() {
@@ -275,6 +377,11 @@ struct TaskPlanningTests {
         }
         config.taskPlans["a"]?.priority = .low
         #expect(TaskPlanning.ranked(tasks, catalog: catalog, config: config).map(\.id) == ["b", "c", "a"])
+        #expect(TaskPlanning.prioritized(tasks.reversed(), catalog: catalog, config: config).map(\.id) == ["b", "c", "a"])
+        config.backgroundTaskReview = false
+        #expect(TaskPlanning.ranked(tasks, catalog: catalog, config: config).isEmpty)
+        #expect(TaskPlanning.prioritized(tasks, catalog: catalog, config: config).map(\.id) == ["b", "c", "a"],
+                "Local Auto-bump ordering does not require the separate background-review permission.")
         let restored = try JSONDecoder().decode(Config.self, from: JSONEncoder().encode(config))
         #expect(restored.taskPlans == config.taskPlans)
         #expect(restored.projectPriorities == config.projectPriorities)

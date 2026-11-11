@@ -11,6 +11,25 @@ final class ClickyTaskStore: ObservableObject {
         var assessment: ClickyTaskAssessment?
         var progress = DoneProgress()
         var backgroundReply: BackgroundReply?
+        var completionNotice: TaskCompletionNotice?
+    }
+
+    func recordDefinitionDelivery(_ message: PendingMessage) -> Bool {
+        guard let target = message.completionTarget else { return true }
+        let previous = records[target.taskID]
+        var record = record(target.taskID)
+        guard record.progress.lastFingerprint == target.reportFingerprint,
+              DefinitionOfDone.normalized(record.progress.definition) == DefinitionOfDone.normalized(target.definition) else {
+            loadError = "The delivery receipt no longer matches this task's saved follow-up."
+            return false
+        }
+        record.progress.deliveredAt = Date()
+        records[target.taskID] = record
+        guard save() else {
+            records[target.taskID] = previous
+            return false
+        }
+        return true
     }
 
     struct BackgroundReply: Codable, Equatable {
@@ -44,9 +63,11 @@ final class ClickyTaskStore: ObservableObject {
     @Published private(set) var persistenceError: String?
     /// Why a task's size couldn't be measured (unreadable cache, job folder missing or drive not mounted).
     @Published private(set) var measureErrors: [String: String] = [:]
+    @Published var requestedTaskID: String?
 
     private var sizes: [String: SizeRecord] = [:]
     private var assessQueueRunning = false
+    private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
     private let root: URL
     private let fileURL: URL
 
@@ -71,6 +92,36 @@ final class ClickyTaskStore: ObservableObject {
     func task(_ id: String) -> ClickyAgentTask? { tasks.first { $0.id == id } }
 
     func record(_ id: String) -> Record { records[id] ?? Record() }
+
+    @discardableResult
+    func recordCompletion(_ notice: TaskCompletionNotice) -> Bool {
+        let previous = records[notice.taskID]
+        var record = record(notice.taskID)
+        if notice.isSameReport(as: record.completionNotice) { return true }
+        // The first review after install/definition change is a silent baseline, not a state change.
+        var notice = notice
+        if record.completionNotice?.definition != notice.definition { notice.acknowledgedAt = Date() }
+        record.completionNotice = notice
+        records[notice.taskID] = record
+        guard save() else {
+            records[notice.taskID] = previous
+            return false
+        }
+        return true
+    }
+
+    func acknowledgeCompletion(_ notice: TaskCompletionNotice) -> Bool {
+        let previous = records[notice.taskID]
+        var record = record(notice.taskID)
+        guard record.completionNotice == notice else { return false }
+        record.completionNotice?.acknowledgedAt = Date()
+        records[notice.taskID] = record
+        guard save() else {
+            records[notice.taskID] = previous
+            return false
+        }
+        return true
+    }
 
     @discardableResult
     func saveBackgroundReply(_ text: String, for task: ClickyAgentTask, definition: String) -> Bool {
@@ -102,17 +153,45 @@ final class ClickyTaskStore: ObservableObject {
         return true
     }
 
+    private var userAttentionCache: [String: (report: String, requiresUser: Bool)] = [:]
+
+    func reportRequiresUser(_ task: ClickyAgentTask) -> Bool {
+        if let cached = userAttentionCache[task.id], cached.report == task.lastMessage {
+            return cached.requiresUser
+        }
+        let requiresUser = TaskAudit.requiresUser(task.lastMessage)
+        userAttentionCache[task.id] = (task.lastMessage, requiresUser)
+        return requiresUser
+    }
+
     /// The assessment for the task's latest report and current definition, if Ollama (or the rules) read it.
     func currentAssessment(for task: ClickyAgentTask, definition: String?) -> ClickyTaskAssessment? {
-        records[task.id]?.assessment.flatMap { $0.isCurrent(for: task, definition: definition) ? $0 : nil }
+        records[task.id]?.assessment.flatMap {
+            guard $0.isCurrent(for: task, definition: definition) else { return nil }
+            if definition != nil, $0.source.hasPrefix("ollama"),
+               !$0.evaluatesUserCriteria(definition) { return nil }
+            return $0
+        }
     }
 
     /// Reloads the task list. `measure` also re-measures cache sizes older than `maxSizeAge` in the background.
     func refresh(measure: Bool = false, maxSizeAge: TimeInterval = 30 * 60) async {
-        guard !loading else { return }
+        let requestedAt = Date()
+        while loading {
+            await withCheckedContinuation { refreshWaiters.append($0) }
+            if loadedAt.map({ $0 >= requestedAt }) == true, loadError == nil {
+                if measure { measureSizes(maxAge: maxSizeAge) }
+                return
+            }
+        }
         let readStarted = Date()
         loading = true
-        defer { loading = false }
+        defer {
+            loading = false
+            let waiters = refreshWaiters
+            refreshWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
         let root = root
         let result: Result<[ClickyAgentTask], Error> = await Task.detached(priority: .utility) {
             do {
@@ -123,6 +202,8 @@ final class ClickyTaskStore: ObservableObject {
         }.value
         switch result {
         case .success(let loaded):
+            let liveIDs = Set(loaded.map(\.id))
+            userAttentionCache = userAttentionCache.filter { liveIDs.contains($0.key) }
             tasks = loaded.map(applySizes)
             loadedAt = readStarted
             loadError = nil
@@ -229,6 +310,8 @@ final class ClickyTaskStore: ObservableObject {
         record.progress.rounds += 1
         record.progress.lastFingerprint = task.fingerprint
         record.progress.lastSentAt = Date()
+        record.progress.lastReport = task.lastMessage
+        record.progress.deliveredAt = nil
         record.progress.lastMissing = missing
             ?? record.assessment.flatMap { $0.isCurrent(for: task, definition: definition) ? $0.missing : nil }
         records[task.id] = record

@@ -22,12 +22,20 @@ enum VSCodeModels {
     ]
 
     static func scan(config: Config) -> VSCodeModelChat? {
+        try? inspect(config: config)
+    }
+
+    static func inspect(config: Config) throws -> VSCodeModelChat {
         guard let app = NSWorkspace.shared.frontmostApplication,
-              let id = app.bundleIdentifier, config.vscodeBundleIDs.contains(id) else { return nil }
+              let id = app.bundleIdentifier, config.vscodeBundleIDs.contains(id) else {
+            throw ModelError.action("VS Code is not the foreground app; no background chat was chosen")
+        }
         let root = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetMessagingTimeout(root, 0.75)
         AXUIElementSetAttributeValue(root, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-        guard let window: AXUIElement = AX.attr(root, kAXFocusedWindowAttribute) else { return nil }
+        guard let window: AXUIElement = AX.attr(root, kAXFocusedWindowAttribute) else {
+            throw ModelError.action("VS Code has no accessible focused window")
+        }
         var nodes: [(AXUIElement, String, String, String)] = []
         var visited = 0
         collect(window, depth: 0, visited: &visited, into: &nodes)
@@ -35,16 +43,33 @@ enum VSCodeModels {
         // Split editors can contain multiple chats: never choose an arbitrary one.
         guard pickers.count == 1, let picker = pickers.first,
               let chat = nodes.first(where: { $0.1 == kAXListRole && $0.2 == "Chat" }),
-              let input = nodes.first(where: { $0.2.hasPrefix("Chat Input (") }) else { return nil }
+              let input = nodes.first(where: { $0.2.hasPrefix("Chat Input (") }) else {
+            throw ModelError.action("expected exactly one model picker plus a readable Chat list and composer; found \(pickers.count) model pickers")
+        }
         let children: [AXUIElement] = AX.attr(chat.0, kAXChildrenAttribute) ?? []
-        let rows = children.compactMap { (AX.attr($0, kAXDescriptionAttribute) as String?) }
+        let rows = children.flatMap { child -> [String] in
+            let label: String = AX.attr(child, kAXDescriptionAttribute) ?? ""
+            if !label.isEmpty { return [label] }
+            var descendants: [(AXUIElement, String, String, String)] = []
+            var count = 0
+            collect(child, depth: 0, visited: &count, into: &descendants)
+            return descendants.filter { $0.1 == kAXGroupRole && !$0.2.isEmpty }.map(\.2)
+        }
         let title: String = AX.attr(window, kAXTitleAttribute) ?? ""
         // The task title beside "Pick Agent Session" distinguishes chats in the same window.
         let sessionIndex = nodes.firstIndex { $0.2 == "Pick Agent Session" }
-        let task = sessionIndex.flatMap { index in
+        let legacyTask = sessionIndex.flatMap { index in
             nodes.dropFirst(index + 1).prefix(5).first { $0.1 == kAXStaticTextRole && !$0.3.isEmpty && $0.3 != "Copilot" }?.3
         }
-        guard let task else { return nil }
+        let task = VSCodeChatIdentity.taskName(sessionLabels: nodes.filter { $0.1 == kAXGroupRole }.map(\.2),
+                                               legacyTask: legacyTask)
+        guard let task else { throw ModelError.action("chat session identity is missing or ambiguous") }
+        guard !rows.isEmpty, !rows.joined().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ModelError.action("chat report is unreadable")
+        }
+        guard let inputValue = AX.stringValue(input.0) else {
+            throw ModelError.action("composer value is unreadable; an empty draft cannot be proven")
+        }
         return VSCodeModelChat(
             window: window, picker: picker.0,
             key: "\(id)|\(title)|\(task)",
@@ -53,20 +78,21 @@ enum VSCodeModels {
             running: !nodes.contains { $0.1 == kAXButtonRole && $0.2.hasPrefix("Send") }
                 || nodes.contains { $0.1 == kAXButtonRole && ($0.2.hasPrefix("Cancel (") || $0.2.hasPrefix("Stop (")) }
                 || rows.contains { $0.lowercased().hasPrefix("chat confirmation required:") },
-            draft: input.3,
+            draft: inputValue,
             input: input.0,
             send: nodes.first { $0.1 == kAXButtonRole && $0.2.hasPrefix("Send") }?.0
         )
     }
 
-    static func sendFollowUp(_ message: String, chat: VSCodeModelChat, config: Config) async throws {
-        guard let fresh = scan(config: config), fresh.key == chat.key,
+    static func sendFollowUp(_ message: String, chat: VSCodeModelChat, config: Config,
+                             shouldContinue: () -> Bool) async throws {
+        guard shouldContinue(), let fresh = scan(config: config), fresh.key == chat.key,
               fresh.transcript == chat.transcript, !fresh.running, fresh.draft.isEmpty,
               fresh.send != nil, AX.setValue(fresh.input, message) else {
             throw ModelError.action("chat changed, draft exists, or composer is unavailable; follow-up not sent")
         }
         try await Task.sleep(nanoseconds: 200_000_000)
-        guard let ready = scan(config: config), ready.key == chat.key,
+        guard shouldContinue(), let ready = scan(config: config), ready.key == chat.key,
               ready.transcript == chat.transcript, ready.draft == message, !ready.running,
               let button = ready.send, AX.isEnabled(button) else {
             throw ModelError.action("composer changed while preparing the follow-up; leaving the draft for you")
@@ -75,7 +101,8 @@ enum VSCodeModels {
         for _ in 0..<10 {
             try await Task.sleep(nanoseconds: 200_000_000)
             if let verified = scan(config: config), verified.key == chat.key,
-               verified.draft.isEmpty, verified.running || verified.transcript != chat.transcript { return }
+               verified.draft.isEmpty,
+               VSCodeChatIdentity.confirmsFollowUp(message, before: chat.transcript, after: verified.transcript) { return }
         }
         throw ModelError.action("follow-up submission could not be verified; not resending")
     }
@@ -94,8 +121,9 @@ enum VSCodeModels {
             .map { ($0.0, ($0.2.isEmpty ? $0.3 : $0.2).components(separatedBy: ", ").first ?? "") }
     }
 
-    static func select(_ model: String, chat: VSCodeModelChat, config: Config, allowRunning: Bool = false) async throws {
-        guard let fresh = scan(config: config), fresh.key == chat.key, fresh.model == chat.model,
+    static func select(_ model: String, chat: VSCodeModelChat, config: Config, allowRunning: Bool = false,
+                       shouldContinue: () -> Bool = { true }) async throws {
+        guard shouldContinue(), let fresh = scan(config: config), fresh.key == chat.key, fresh.model == chat.model,
               allowRunning || (!fresh.running && fresh.draft.isEmpty && fresh.transcript == chat.transcript) else {
             throw ModelError.action("the active chat changed; model selection cancelled")
         }
@@ -110,7 +138,7 @@ enum VSCodeModels {
             try await Task.sleep(nanoseconds: 200_000_000)
             let candidates = options(fresh).filter { ModelRouting.normalize($0.1) == ModelRouting.normalize(model) }
             if candidates.count == 1, let option = candidates.first {
-                guard let focused = scan(config: config), focused.key == chat.key,
+                guard shouldContinue(), let focused = scan(config: config), focused.key == chat.key,
                       allowRunning || (!focused.running && focused.draft.isEmpty),
                       let frame = AX.frame(option.0) else {
                     throw ModelError.action("chat changed or model option is not visible")

@@ -53,6 +53,10 @@ public enum Matcher {
         return config.dismissLabels.contains { normalize($0) == n }
     }
 
+    public static func isTaskDismissButton(_ label: String) -> Bool {
+        ["close", "dismiss", "x", "xmark", "x mark", "close task", "dismiss task"].contains(normalize(label))
+    }
+
     /// Sidebar row for a task, e.g. "Rippa Repair, working" (not a timestamped message header).
     public static func isTaskRow(_ label: String, title: String) -> Bool {
         let n = normalize(label), t = normalize(title)

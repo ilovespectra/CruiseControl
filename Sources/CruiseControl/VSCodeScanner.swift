@@ -11,9 +11,26 @@ struct VSCodeConfirmation {
     let key: String
     let window: AXUIElement
     let sidebarThread: String?
+    let threadTitle: String?
+    let appPID: pid_t
+    let windowTitle: String
+    let navigationRow: AXUIElement?
     var writeMetadataOnly = false
     var toolPermission = false
     var urlFetch: Bool { request.hasPrefix(VSCodeApprovalContext.urlFetchPrefix) }
+}
+
+struct VSCodePendingRequestNotice: Identifiable {
+    let id: String
+    let requestKey: String?
+    let title: String
+    let workspace: String
+    let detail: String
+    let window: AXUIElement
+    let navigationRow: AXUIElement?
+    let appPID: pid_t
+    let automaticallyReviewable: Bool
+    var interactionTargets: [AXUIElement] = []
 }
 
 struct VSCodeAttentionThread {
@@ -22,6 +39,9 @@ struct VSCodeAttentionThread {
     let previousRow: AXUIElement
     let title: String
     let previousTitle: String
+    let rowLabel: String
+    let appPID: pid_t
+    let windowTitle: String
 }
 
 /// Finds VS Code's chat tool confirmation through Accessibility. Electron only builds its web-content tree after an
@@ -153,7 +173,8 @@ struct VSCodeScanner {
                     confirmations.append(VSCodeConfirmation(
                         allow: button.0, allowLabel: "Allow once", request: request,
                         key: "\(windowKey)|sidebar|\(row.title)|\(request)",
-                        window: window, sidebarThread: row.title))
+                        window: window, sidebarThread: row.title, threadTitle: row.title,
+                        appPID: app.processIdentifier, windowTitle: windowTitle, navigationRow: row.element))
                 }
                 for dialog in w.confirmations {
                     let metadata = VSCodeApprovalContext.writeMetadataRequest(
@@ -167,16 +188,81 @@ struct VSCodeScanner {
                         VSCodeApprovalContext.dialogRequest(title: $0, description: dialog.description, requests: w.requests)
                     })
                     if let request = request.map(VSCodeApprovalContext.classifyFetch) {
+                        let matchingRows = rows.filter { !$0.title.isEmpty && $0.title == w.session }
                         confirmations.append(VSCodeConfirmation(
                             allow: dialog.allow, allowLabel: dialog.label, request: request,
                             key: "\(windowKey)|\(w.session)|\(request)",
-                            window: window, sidebarThread: nil, writeMetadataOnly: !request.hasPrefix(VSCodeApprovalContext.urlFetchPrefix) && metadata != nil,
+                            window: window, sidebarThread: nil, threadTitle: w.session.isEmpty ? nil : w.session,
+                            appPID: app.processIdentifier, windowTitle: windowTitle,
+                            navigationRow: matchingRows.count == 1 ? matchingRows.first?.element : nil,
+                            writeMetadataOnly: !request.hasPrefix(VSCodeApprovalContext.urlFetchPrefix) && metadata != nil,
                             toolPermission: !request.hasPrefix(VSCodeApprovalContext.urlFetchPrefix) && isTool))
                     }
                 }
             }
         }
         return confirmations
+    }
+
+    /// Read-only notices for recognized approval controls and explicit Sessions states that say user attention is needed.
+    /// Other VS Code extensions may not expose equivalent Accessibility state; those cases are intentionally not guessed.
+    func pendingRequestNotices() -> [VSCodePendingRequestNotice] {
+        var byID: [String: VSCodePendingRequestNotice] = [:]
+        for confirmation in scanAll() {
+            let thread = confirmation.threadTitle
+            let id = Self.noticeID(pid: confirmation.appPID, window: confirmation.window, thread: thread)
+            let autoReviewable = config.vscodeApprovalsActive
+                && (!confirmation.writeMetadataOnly || config.vscodeAllowWriteMetadata)
+                && (!confirmation.toolPermission || config.vscodeAllowToolPermissions)
+                && (!confirmation.urlFetch || config.vscodeURLFetchPolicy != .hold)
+            let detail: String
+            if confirmation.urlFetch { detail = "Web-content request needs your review" }
+            else if confirmation.toolPermission { detail = "Tool permission needs your review" }
+            else if confirmation.writeMetadataOnly { detail = "File-change request needs your review" }
+            else { detail = "Command or tool request needs your review" }
+            byID[id] = VSCodePendingRequestNotice(
+                id: id, requestKey: confirmation.key,
+                title: thread ?? (confirmation.windowTitle.isEmpty ? "VS Code chat" : confirmation.windowTitle),
+                workspace: confirmation.windowTitle.isEmpty ? "Visual Studio Code" : confirmation.windowTitle,
+                detail: detail, window: confirmation.window, navigationRow: confirmation.navigationRow,
+                appPID: confirmation.appPID, automaticallyReviewable: autoReviewable,
+                interactionTargets: [confirmation.allow])
+        }
+
+        for id in config.vscodeBundleIDs {
+            for app in NSRunningApplication.runningApplications(withBundleIdentifier: id) where !app.isTerminated {
+                let root = AXUIElementCreateApplication(app.processIdentifier)
+                AXUIElementSetMessagingTimeout(root, 1)
+                AXUIElementSetAttributeValue(root, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+                let windows: [AXUIElement] = AX.attr(root, kAXWindowsAttribute) ?? []
+                for window in windows {
+                    let rows = sidebarRows(in: window)
+                    let windowTitle: String = AX.attr(window, kAXTitleAttribute) ?? ""
+                    for row in rows {
+                        let status = VSCodeApprovalContext.attentionStatus(row.label)
+                        guard status != nil || !row.buttons.isEmpty else { continue }
+                        let noticeID = Self.noticeID(pid: app.processIdentifier, window: window, thread: row.title)
+                        guard byID[noticeID] == nil else { continue }
+                        byID[noticeID] = VSCodePendingRequestNotice(
+                            id: noticeID, requestKey: nil, title: row.title,
+                            workspace: windowTitle.isEmpty ? "Visual Studio Code" : windowTitle,
+                            detail: status.map { "Waiting for your input · \($0)" }
+                                ?? "Approval request needs your review",
+                            window: window, navigationRow: row.element,
+                            appPID: app.processIdentifier, automaticallyReviewable: false)
+                    }
+                }
+            }
+        }
+        return byID.values.sorted {
+            if $0.workspace != $1.workspace { return $0.workspace < $1.workspace }
+            if $0.title != $1.title { return $0.title < $1.title }
+            return $0.id < $1.id
+        }
+    }
+
+    private static func noticeID(pid: pid_t, window: AXUIElement, thread: String?) -> String {
+        "\(pid)|\(CFHash(window))|\(thread ?? "chat")"
     }
 
     /// Nil means the owning row/window disappeared, not that the approval succeeded.
@@ -197,6 +283,8 @@ struct VSCodeScanner {
 
     private struct SidebarRow {
         let title: String
+        let label: String
+        let element: AXUIElement
         var buttons: [(AXUIElement, String)] = []
     }
 
@@ -221,7 +309,7 @@ struct VSCodeScanner {
                 current = nil
                 if let title = VSCodeApprovalContext.threadTitle(label) {
                     current = rows.count
-                    rows.append(SidebarRow(title: title))
+                    rows.append(SidebarRow(title: title, label: label, element: element))
                 }
             }
             if inside, let current, role == kAXButtonRole,
@@ -345,7 +433,9 @@ struct VSCodeScanner {
                         guard let title = VSCodeApprovalContext.threadTitle(row.1), title != session,
                               rows.filter({ VSCodeApprovalContext.threadTitle($0.1) == title }).count == 1 else { continue }
                         threads.append(VSCodeAttentionThread(window: window, row: row.0, previousRow: original.0,
-                                                           title: title, previousTitle: session))
+                                                           title: title, previousTitle: session, rowLabel: row.1,
+                                                           appPID: app.processIdentifier,
+                                                           windowTitle: AX.attr(window, kAXTitleAttribute) ?? ""))
                     }
                 }
             }

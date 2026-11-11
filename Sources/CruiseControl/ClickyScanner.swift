@@ -49,6 +49,9 @@ struct ScanResult {
     var reports: [ReportButton] = []
     var composer: Composer?
     var needsYou: NeedsYouCard?
+    /// Composer-less task notifications, including failed-task cards. Closing never retries their work.
+    var taskNotices: [NeedsYouCard] = []
+    var taskNoticeNames: [String] = []
     /// Tasks whose card says "Interrupted" (only exposed while the notch panel is expanded).
     var interrupted: [InterruptedCard] = []
     var update: UpdateButton?
@@ -64,6 +67,11 @@ struct ScanResult {
     var transcript: [String] = []
     /// Labelled buttons in the chat window, e.g. sidebar rows like "Rippa Repair, working".
     var chatButtons: [(element: AXUIElement, label: String)] = []
+    var chatWindow: AXUIElement?
+    var showSidebar: AXUIElement?
+    var dismissButtons: [AXUIElement] = []
+    var isTaskSidebar = false
+    var taskDismissControls: [(task: String, element: AXUIElement)] = []
     var recentTasks: [String] = []
     var selectedTask: String?
     /// Chat-header task while the composer holds a draft (HeyClicky hides the "Message <task>…" placeholder then).
@@ -86,6 +94,7 @@ struct ClickyScanner {
         kAXDescriptionAttribute as String,
         kAXValueAttribute as String,
         kAXChildrenAttribute as String,
+        kAXHelpAttribute as String,
     ]
 
     private struct WalkContext {
@@ -101,6 +110,9 @@ struct ClickyScanner {
         var lastText = ""
         var texts: [String] = []
         var buttons: [(element: AXUIElement, label: String)] = []
+        var taskDismissControls: [(task: String, element: AXUIElement)] = []
+        var showSidebar: AXUIElement?
+        var dismissButtons: [AXUIElement] = []
         var dismiss: AXUIElement?
         var needsYouTask: String?
         var interruptedTask: String?
@@ -121,6 +133,16 @@ struct ClickyScanner {
         var latestTurnStatus: String?
     }
 
+    func scanSidebar(_ area: AXUIElement) -> ScanResult {
+        var ctx = WalkContext()
+        walk(area, depth: 0, ctx: &ctx)
+        var result = ScanResult()
+        result.chatButtons = ctx.buttons
+        result.dismissButtons = ctx.dismissButtons
+        result.isTaskSidebar = ctx.inputs.isEmpty && ctx.buttons.contains { TaskRow.parse($0.label) != nil }
+        return result
+    }
+
     func scan() -> ScanResult {
         var result = ScanResult()
         let apps = config.clickyBundleIDs.flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0) }
@@ -138,6 +160,8 @@ struct ClickyScanner {
             for (index, window) in windows.enumerated() {
                 var ctx = WalkContext()
                 walk(window, depth: 0, ctx: &ctx)
+                result.taskDismissControls += ctx.taskDismissControls
+                result.dismissButtons += ctx.dismissButtons
 
                 if result.consent == nil, let allow = ctx.allow.first, let deny = ctx.deny.first {
                     result.consent = ConsentPrompt(allow: allow.0, allowLabel: allow.1, deny: deny.0, denyLabel: deny.1)
@@ -152,10 +176,15 @@ struct ClickyScanner {
                 // HeyClicky 1.1.3 has no labelled send button: the composer is the short (empty) box, not a report.
                 // A drafted composer can be longer than short reports; it is still the first text area.
                 if ctx.send == nil, let box = ctx.draftInput ?? ctx.inputs.min(by: { ($0.1, $0.2) < ($1.1, $1.2) })?.0 { ctx.input = box }
-                if let input = ctx.input, result.composer == nil || (result.composer?.send == nil && ctx.send != nil) {
+                let hasSidebar = ctx.buttons.contains { TaskRow.parse($0.label) != nil }
+                let selectedHasSidebar = result.chatButtons.contains { TaskRow.parse($0.label) != nil }
+                if let input = ctx.input, result.composer == nil || (hasSidebar && !selectedHasSidebar)
+                    || (hasSidebar == selectedHasSidebar && result.composer?.send == nil && ctx.send != nil) {
                     result.composer = Composer(input: input, send: ctx.send, pid: pid)
                     result.transcript = ctx.texts
                     result.chatButtons = ctx.buttons
+                    result.chatWindow = window
+                    result.showSidebar = ctx.showSidebar
                     result.conversation = ctx.texts
                     result.lastCard = ctx.lastCard
                     result.selectedTask = ctx.selectedTask
@@ -197,6 +226,17 @@ struct ClickyScanner {
                 if result.needsYou == nil, ctx.input == nil, let task = ctx.needsYouTask, let close = ctx.dismiss {
                     result.needsYou = NeedsYouCard(close: close, task: task)
                 }
+                if ctx.input == nil {
+                    let tasks = Set(ctx.interrupted.map(\.task) + [ctx.interruptedTask, ctx.needsYouTask].compactMap { $0 })
+                    result.taskNoticeNames.append(contentsOf: tasks)
+                    let closes = ctx.dismissButtons.filter {
+                        let subrole: String = AX.attr($0, kAXSubroleAttribute) ?? ""
+                        return subrole != kAXCloseButtonSubrole && AX.isEnabled($0)
+                    }
+                    if tasks.count == 1, let task = tasks.first, closes.count == 1, let close = closes.first {
+                        result.taskNotices.append(NeedsYouCard(close: close, task: task))
+                    }
+                }
             }
             if result.consent != nil { break }
         }
@@ -214,6 +254,7 @@ struct ClickyScanner {
         let value = v[3] as? String
         let scopedRetryTask = Matcher.failedTask(desc, selectedTask: ctx.selectedTask) ?? retryTask
         let children = v[4] as? [AXUIElement] ?? []
+        let help = v[5] as? String ?? ""
 
         if let task = Matcher.interruptedCardTask(desc, config: config) {
             if let pending = ctx.interruptedTask, pending != task { ctx.interrupted.append(InterruptedCard(task: pending, retry: nil)) }
@@ -248,6 +289,15 @@ struct ClickyScanner {
                 ctx.dismiss = e
             }
             if !label.isEmpty { ctx.buttons.append((e, label)) }
+            if Matcher.normalize(help) == "show sidebar" { ctx.showSidebar = e }
+            if [title, desc, help].contains(where: Matcher.isTaskDismissButton) {
+                ctx.dismissButtons.append(e)
+            }
+            if !label.isEmpty, !Matcher.isDismiss(label, config: config),
+               let close = descendantDismiss(children, depth: 4) {
+                ctx.taskDismissControls.append((TaskRow.parse(label)?.name ?? label, close))
+                ctx.dismissButtons.append(close)
+            }
             if ctx.inRecents, ctx.recentTasks.count < 3, !label.contains(", "), !label.isEmpty {
                 ctx.recentTasks.append(label)
             }
@@ -330,5 +380,24 @@ struct ClickyScanner {
             if !nested.isEmpty { return nested }
         }
         return ""
+    }
+
+    private func descendantDismiss(_ children: [AXUIElement], depth: Int) -> AXUIElement? {
+        guard depth > 0 else { return nil }
+        for child in children {
+            let values = AX.multi(child, Self.attrNames)
+            let role = values[0] as? String ?? ""
+            let title = values[1] as? String ?? ""
+            let description = values[2] as? String ?? ""
+            let help = values[5] as? String ?? ""
+            if role == kAXButtonRole, AX.isEnabled(child),
+               [title, description, help].contains(where: Matcher.isTaskDismissButton) {
+                return child
+            }
+            if let close = descendantDismiss(values[4] as? [AXUIElement] ?? [], depth: depth - 1) {
+                return close
+            }
+        }
+        return nil
     }
 }

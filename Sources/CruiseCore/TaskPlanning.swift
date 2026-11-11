@@ -29,20 +29,31 @@ public struct TaskPlan: Codable, Equatable, Sendable {
     public var enabled = false
     /// New, independent opt-in for automatic report-vs-definition follow-ups. Defaults off on migration.
     public var autoBump = false
+    public var persistTimeLimit = false
+    public var persistCreditLimit = false
+    public var persistMessageLimit = false
     public var priority: TaskPriority?
     public init() {}
 
-    private enum CodingKeys: String, CodingKey { case enabled, autoBump, priority }
+    private enum CodingKeys: String, CodingKey {
+        case enabled, autoBump, priority, persistTimeLimit, persistCreditLimit, persistMessageLimit
+    }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try values.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
         autoBump = try values.decodeIfPresent(Bool.self, forKey: .autoBump) ?? false
+        persistTimeLimit = try values.decodeIfPresent(Bool.self, forKey: .persistTimeLimit) ?? false
+        persistCreditLimit = try values.decodeIfPresent(Bool.self, forKey: .persistCreditLimit) ?? false
+        persistMessageLimit = try values.decodeIfPresent(Bool.self, forKey: .persistMessageLimit) ?? false
         priority = try values.decodeIfPresent(TaskPriority.self, forKey: .priority)
     }
     public func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(enabled, forKey: .enabled)
         try values.encode(autoBump, forKey: .autoBump)
+        try values.encode(persistTimeLimit, forKey: .persistTimeLimit)
+        try values.encode(persistCreditLimit, forKey: .persistCreditLimit)
+        try values.encode(persistMessageLimit, forKey: .persistMessageLimit)
         try values.encodeIfPresent(priority, forKey: .priority)
     }
 }
@@ -59,10 +70,46 @@ public enum TaskDeliveryMode: String, Codable, CaseIterable, Identifiable, Senda
 }
 
 public enum TaskPlanning {
+    public static func finishBlocker(taskID: String, tasks: [ClickyAgentTask]) -> String? {
+        guard let task = tasks.first(where: { $0.id == taskID }) else {
+            return "Close blocked: this HeyClicky job is no longer available. Refresh the task list."
+        }
+        guard !task.isWorking else {
+            return "Close blocked: “\(task.name)” is still working. Stop it in HeyClicky before marking it finished."
+        }
+        guard !ClickyTaskLibrary.ambiguousNames(tasks).contains(Matcher.normalize(task.name)) else {
+            return "Close blocked: more than one HeyClicky job is named “\(task.name)”. Give this job a unique name in HeyClicky, then retry. Nothing was clicked."
+        }
+        return nil
+    }
+
+    public static func continuationAllowed(_ task: ClickyAgentTask, config: Config, manual: Bool) -> Bool {
+        guard !task.dismissed, !task.isWorking, !task.isStopped,
+              !TaskAudit.requiresUser(task.lastMessage) else { return false }
+        guard !manual else { return true }
+        let sentences = (task.outcome + "\n" + task.lastMessage)
+            .components(separatedBy: CharacterSet(charactersIn: ".!?\n"))
+            .map { Matcher.normalize($0).trimmingCharacters(in: .whitespaces) }
+        let limits: [(String, Bool)] = [
+            ("time limit", config.persistTimeLimit), ("credit limit", config.persistCreditLimit),
+            ("message limit", config.persistMessageLimit),
+        ]
+        return limits.allSatisfy { phrase, enabled in
+            enabled || !sentences.contains { sentence in
+                !sentence.hasPrefix("if ") && sentence.contains(phrase)
+                    && ["stopped", "reached", "exceeded", "exhausted", "ended", "hit the"].contains(where: sentence.contains)
+            }
+        }
+    }
+
+    public static func definitionDeliveryAllowed(config: Config, oneShot: Bool) -> Bool {
+        config.mode != .rest && (oneShot || config.continueUntilDefinedDone)
+            && config.ollamaEnabled && usesLocalOllama(config) && !config.usageCutoffReached
+    }
     public static let deliveryHold = "Reply held: this HeyClicky version has no supported background message API configured. Cruise will not focus windows, type, click, press Return or approve permissions to deliver it."
     public static let chatOnlyStatus = "Chat-only sending waits for idle input and a unique verified task. It may open HeyClicky's chat and type/send messages, but never approves drive, tools or permissions."
 
-    /// Explicit per-task opt-in plus a saved user goal and global Cruise-mode gate.
+    /// Explicit per-task opt-in plus a saved user goal, independently of drive approvals.
     public static func autoBumpEnabled(_ task: ClickyAgentTask, config: Config) -> Bool {
         config.continueUntilDefinedDone && config.taskPlans[task.id]?.autoBump == true
             && DefinitionOfDone.normalized(config.clickyDefinitionsOfDone[task.id]) != nil
@@ -71,11 +118,10 @@ public enum TaskPlanning {
     /// A user-initiated one-shot bump does not require persistent per-task Auto-bump opt-in.
     /// It still uses Cruise's normal quiet-time sender and the same safe report/goal gates.
     public static func manualBumpAvailable(_ task: ClickyAgentTask, allTasks: [ClickyAgentTask], config: Config) -> Bool {
-        guard config.continueUntilDefinedDone, config.mode == .cruise, config.autoContinueReports,
-              config.ollamaEnabled, Self.usesLocalOllama(config), !config.usageCutoffReached,
+        guard definitionDeliveryAllowed(config: config, oneShot: true),
               DefinitionOfDone.normalized(config.clickyDefinitionsOfDone[task.id]) != nil,
               task.hasReport, !task.isWorking, !task.isStopped, !task.dismissed,
-              !TaskAudit.requiresUser(task.lastMessage),
+              continuationAllowed(task, config: config, manual: true),
               !ClickyTaskLibrary.ambiguousNames(allTasks).contains(Matcher.normalize(task.name)) else { return false }
         return true
     }
@@ -96,10 +142,14 @@ public enum TaskPlanning {
     }
 
     public static func ranked(_ tasks: [ClickyAgentTask], catalog: TaskCatalog, config: Config) -> [ClickyAgentTask] {
+        prioritized(tasks.filter { eligible($0, config: config) }, catalog: catalog, config: config)
+    }
+
+    public static func prioritized(_ tasks: [ClickyAgentTask], catalog: TaskCatalog, config: Config) -> [ClickyAgentTask] {
         let defaults = Dictionary(uniqueKeysWithValues: catalog.groups(by: .project, sort: .sourceOrder).flatMap { group in
             group.tasks.map { ($0.id, config.projectPriorities[group.project.priorityKey] ?? .normal) }
         })
-        return tasks.filter { eligible($0, config: config) }.sorted {
+        return tasks.sorted {
             let left = (config.taskPlans[$0.id]?.priority ?? defaults[$0.id] ?? .normal).rank
             let right = (config.taskPlans[$1.id]?.priority ?? defaults[$1.id] ?? .normal).rank
             if left != right { return left < right }

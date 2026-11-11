@@ -14,14 +14,14 @@ final class SettingsController: NSObject, NSToolbarDelegate {
     private let store: ConfigStore
     private let monitor: ClickyMonitor
     private let ollama: OllamaSetupController
-    private let audio: AudioVolumeController
+    private let audio: AudioVolumeController?
     private var window: NSWindow!
     private var dashboardContentView: NSView!
     private var isShowingAudio = false
     private var cancellables: Set<AnyCancellable> = []
 
     init(store: ConfigStore, monitor: ClickyMonitor, ollama: OllamaSetupController,
-         audio: AudioVolumeController) {
+         audio: AudioVolumeController?) {
         self.store = store
         self.monitor = monitor
         self.ollama = ollama
@@ -41,7 +41,7 @@ final class SettingsController: NSObject, NSToolbarDelegate {
         toolbar.displayMode = .iconAndLabel
         toolbar.allowsUserCustomization = false
         toolbar.autosavesConfiguration = false
-        window.toolbar = toolbar
+        if audio != nil { window.toolbar = toolbar }
         window.center()
         NotificationCenter.default.publisher(for: Self.openNotification)
             .sink { [weak self] _ in self?.show() }
@@ -108,6 +108,7 @@ final class SettingsController: NSObject, NSToolbarDelegate {
     }
 
     @objc private func toggleAudioControls() {
+        guard let audio else { return }
         guard isShowingAudio else {
             isShowingAudio = true
             window.contentView = NSHostingView(rootView: AudioVolumeSettingsView(controller: audio))

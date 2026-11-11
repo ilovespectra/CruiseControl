@@ -26,11 +26,40 @@ import Testing
         #expect(context.count < 12100)
     }
 
+    @Test func definitionFollowUpMustRequestActionRatherThanRestateGap() {
+        #expect(TaskAudit.definitionFollowUpIsActionable("Cruise Control follow-up: Cruise Audio Mixer: Please build and verify the volume controls."))
+        #expect(!TaskAudit.definitionFollowUpIsActionable("Cruise Control follow-up: Cruise Audio Mixer: The volume controls have not been built or verified."))
+        #expect(!TaskAudit.definitionFollowUpIsActionable("Cruise Control follow-up: Cruise Audio Mixer: Please note the controls are incomplete."))
+        #expect(!TaskAudit.definitionFollowUpIsActionable("Cruise Control follow-up: Cruise Audio Mixer: Please enable System Audio Recording Only access before live testing and verify the controls."))
+        #expect(!TaskAudit.definitionFollowUpIsActionable("Cruise Control follow-up: Cruise Audio Mixer: Please grant microphone access and test."))
+        #expect(TaskAudit.definitionFollowUpIsActionable("Cruise Control follow-up: Cruise Audio Mixer: Please verify the controls with current grants and report any blocker."))
+    }
+
     @Test func doesNotReviveUserBlockedOrPublishingTasks() {
         #expect(TaskAudit.requiresUser("Can you make the @heyclicky composer available?"))
         #expect(TaskAudit.requiresUser("Brave is signed into @iLoveSpectra."))
         #expect(TaskAudit.requiresUser("Proceed with upload and publish the post once."))
         #expect(!TaskAudit.requiresUser("The position reader is source-only. Automated recording and export remain unverified."))
+    }
+
+    @Test func historicalAssetPublicationDoesNotBlockMissingDeliverables() {
+        #expect(!TaskAudit.requiresUser("No app releases or drafts were published."))
+        #expect(!TaskAudit.requiresUser("Neither app has matching published installer assets; drafts are excluded."))
+        #expect(TaskAudit.requiresUser("Please approve the published installer assets before we continue."))
+        #expect(TaskAudit.requiresUser("We need your approval to publish the release."))
+        #expect(TaskAudit.requiresUser("No app releases were published. Please sign in to continue."))
+    }
+
+    @Test func conditionalFuturePermissionIsNotMisclassifiedAsCurrentBlocker() {
+        let hypothetical = "If macOS requests System Audio Recording Only access, enable it before live testing."
+        #expect(!TaskAudit.requiresUser(hypothetical))
+        #expect(!TaskAudit.requiresUser("The controls are not implemented or tested yet. \(hypothetical)"))
+        #expect(TaskAudit.requiresUser("macOS is requesting System Audio Recording Only access now."))
+        #expect(TaskAudit.requiresUser("The app cannot continue until you grant microphone permission."))
+        #expect(TaskAudit.requiresUser("\(hypothetical) The actual permission prompt is open and requires your approval."))
+        #expect(!TaskAudit.requiresUser("If permission is needed, pause then. Implementation remains unverified."))
+        #expect(!TaskAudit.requiresUser("The permission is needed for macOS process-audio capture; the design does not require a virtual driver. No install or permission change has been made."))
+        #expect(TaskAudit.requiresUser("Permission is needed now; cannot continue until you approve the prompt."))
     }
 
     @Test func auditStateSurvivesRestartAndDoesNotDuplicateUnchangedReports() throws {

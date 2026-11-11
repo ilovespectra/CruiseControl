@@ -3,49 +3,6 @@ import UniformTypeIdentifiers
 import AppKit
 import CruiseCore
 
-@MainActor
-private final class TaskLifecycleStore: ObservableObject {
-    static let shared = TaskLifecycleStore()
-    @Published private(set) var closedIDs: Set<String>
-    @Published private(set) var finishedIDs: Set<String>
-
-    private let defaults: UserDefaults
-    private let closedKey = "com.ilovespectra.CruiseControl.tasks.closed.v1"
-    private let finishedKey = "com.ilovespectra.CruiseControl.tasks.finished.v1"
-
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-        closedIDs = Set(defaults.stringArray(forKey: "com.ilovespectra.CruiseControl.tasks.closed.v1") ?? [])
-        finishedIDs = Set(defaults.stringArray(forKey: "com.ilovespectra.CruiseControl.tasks.finished.v1") ?? [])
-    }
-
-    func isClosed(_ id: String) -> Bool { closedIDs.contains(id) }
-    func isFinished(_ id: String) -> Bool { finishedIDs.contains(id) }
-
-    func close(_ id: String) {
-        guard !finishedIDs.contains(id) else { return }
-        closedIDs.insert(id)
-        persist()
-    }
-
-    func finish(_ id: String) {
-        closedIDs.remove(id)
-        finishedIDs.insert(id)
-        persist()
-    }
-
-    func reopen(_ id: String) {
-        closedIDs.remove(id)
-        finishedIDs.remove(id)
-        persist()
-    }
-
-    private func persist() {
-        defaults.set(closedIDs.sorted(), forKey: closedKey)
-        defaults.set(finishedIDs.sorted(), forKey: finishedKey)
-    }
-}
-
 private enum TaskReportBlock: Identifiable {
     case markdown(Int, String)
     case code(Int, String, String)
@@ -169,20 +126,20 @@ private struct TaskReportContent: View {
 }
 
 private enum TaskListFilter: String, CaseIterable, Identifiable {
-    case all, needsDefinition, attention, working, reportedDone, unassigned, reviewEnabled, closed, finished
+    case all, needsDefinition, defined, attention, working, reportedDone, unassigned, reviewEnabled, closed
 
     var id: String { rawValue }
     var title: String {
         switch self {
         case .all: "Open tasks"
         case .needsDefinition: "Needs a definition"
+        case .defined: "Defined"
         case .attention: "Needs attention"
         case .working: "Working"
-        case .reportedDone: "Reported done"
+        case .reportedDone: "Ready for your review"
         case .unassigned: "Unassigned project"
         case .reviewEnabled: "In Cruise review"
-        case .closed: "Closed in Cruise"
-        case .finished: "Finished in Cruise"
+        case .closed: "Dismissed in HeyClicky"
         }
     }
 }
@@ -199,7 +156,6 @@ struct TasksSettingsView: View {
     @State private var initializedGroupState = false
     @State private var refreshing = false
     @State private var selectedTaskID: String?
-    @ObservedObject private var lifecycle = TaskLifecycleStore.shared
 
     private let visibleSorts: [TaskSort] = [.priority, .updated, .newest, .name]
 
@@ -215,12 +171,16 @@ struct TasksSettingsView: View {
     }
 
     private var visibleGroups: [TaskCatalog.Group] {
+        groups(matching: filter)
+    }
+
+    private func groups(matching listFilter: TaskListFilter) -> [TaskCatalog.Group] {
         let grouping: TaskGrouping = groupedByWorkspace ? .directory : groupedByProject ? .project : .none
         let catalogSort: TaskSort = selectedSort == .priority ? .name : selectedSort
         let candidates = monitor.taskCatalog.groups(by: grouping, sort: catalogSort, query: search)
         let included = candidates.filter { group in
             (projectFilter == "all" || !groupedByProject || group.id == projectFilter)
-                && !visibleTasks(in: group).isEmpty
+                && !visibleTasks(in: group, matching: listFilter).isEmpty
         }
         guard selectedSort == .priority else { return included }
         return included.sorted { left, right in
@@ -240,8 +200,12 @@ struct TasksSettingsView: View {
         visibleGroups.reduce(0) { $0 + visibleTasks(in: $1).count }
     }
 
-    private func visibleTasks(in group: TaskCatalog.Group) -> [CatalogTask] {
-        let matches = group.tasks.filter { matchesFilter($0) && priorityFilter.includes(priority(for: $0)) }
+    private var attentionTaskCount: Int {
+        groups(matching: .attention).reduce(0) { $0 + visibleTasks(in: $1, matching: .attention).count }
+    }
+
+    private func visibleTasks(in group: TaskCatalog.Group, matching listFilter: TaskListFilter? = nil) -> [CatalogTask] {
+        let matches = group.tasks.filter { matchesFilter($0, matching: listFilter ?? filter) && priorityFilter.includes(priority(for: $0)) }
         guard selectedSort == .priority else { return matches }
         return matches.sorted { left, right in
             let leftPriority = priority(for: left).rank
@@ -255,25 +219,26 @@ struct TasksSettingsView: View {
         }
     }
 
-    private func matchesFilter(_ item: CatalogTask) -> Bool {
-        if lifecycle.isFinished(item.id) { return filter == .finished }
-        if lifecycle.isClosed(item.id) { return filter == .closed }
+    private func matchesFilter(_ item: CatalogTask, matching listFilter: TaskListFilter) -> Bool {
         let definition = store.config.clickyDefinitionsOfDone[item.id]
         let current = tasks.task(item.id)
+        if current?.dismissed == true { return listFilter == .closed }
         let assessment = current.flatMap { tasks.currentAssessment(for: $0, definition: definition) }
         let status = item.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        switch filter {
+        switch listFilter {
         case .all:
-            return !lifecycle.isClosed(item.id) && !lifecycle.isFinished(item.id)
+            return current?.dismissed != true
         case .needsDefinition:
             return current != nil && DefinitionOfDone.normalized(definition) == nil
+        case .defined:
+            return current != nil && DefinitionOfDone.normalized(definition) != nil
         case .attention:
             if let current, current.isWorking { return false }
             if let assessment,
                assessment.state == .needsYou || assessment.state == .unfinished || assessment.state == .failed {
                 return true
             }
-            return status == "failed" || current.map { TaskAudit.requiresUser($0.lastMessage) } == true
+            return status == "failed" || current.map { tasks.reportRequiresUser($0) } == true
         case .working:
             return current?.isWorking == true || ["working", "running", "in progress"].contains(status)
         case .reportedDone:
@@ -283,9 +248,7 @@ struct TasksSettingsView: View {
         case .reviewEnabled:
             return store.config.taskPlans[item.id]?.enabled == true
         case .closed:
-            return lifecycle.isClosed(item.id)
-        case .finished:
-            return lifecycle.isFinished(item.id)
+            return current?.dismissed == true
         }
     }
 
@@ -323,6 +286,21 @@ struct TasksSettingsView: View {
             taskOverview.padding(.bottom, 12)
             taskControls.padding(.bottom, 8)
             taskFilters.padding(.bottom, 10)
+            DisclosureGroup("Cruise permissions & background review") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Mode: \(store.config.mode.rawValue.capitalized). Task Auto-bump runs in Manual or Cruise independently of drive approvals; Rest pauses it.")
+                    Toggle("Allow per-task auto-bumps", isOn: $store.config.continueUntilDefinedDone)
+                    Toggle("Keep unfinished tasks going", isOn: $store.config.autoContinueReports)
+                    Toggle("Review opted-in tasks in the background", isOn: $store.config.backgroundTaskReview)
+                    Text("Background review is separate from Auto-bump and selected-task previews. Global switches never change a task's saved opt-in.")
+                    if let message = monitor.pendingMessage {
+                        Text("Sending is blocked by a saved message to \(message.task). Review it in Activity before discarding the delivery record.")
+                            .foregroundStyle(Brand.youBadge)
+                    }
+                }
+                .font(.caption)
+            }
+            .padding(.bottom, 8)
             taskContentColumns
                 .frame(maxHeight: .infinity)
                 .background(Color.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 14))
@@ -342,8 +320,20 @@ struct TasksSettingsView: View {
             if selectedTaskID == nil { selectedTaskID = listedTaskIDs.first }
             if projectFilter != "all" && !visibleGroups.contains(where: { $0.id == projectFilter }) { projectFilter = "all" }
         }
-        .onChange(of: listedTaskIDs) { _, ids in
-            if !ids.contains(selectedTaskID ?? "") { selectedTaskID = ids.first }
+        .onChange(of: listedTaskIDs) { previousIDs, ids in
+            if !ids.contains(selectedTaskID ?? "") {
+                let previousIndex = previousIDs.firstIndex(of: selectedTaskID ?? "") ?? 0
+                selectedTaskID = ids.isEmpty ? nil : ids[min(previousIndex, ids.count - 1)]
+            }
+        }
+        .onReceive(tasks.$requestedTaskID) { id in
+            guard let id else { return }
+            search = ""
+            filter = .all
+            priorityFilter = .all
+            projectFilter = "all"
+            selectedTaskID = id
+            tasks.requestedTaskID = nil
         }
     }
 
@@ -372,7 +362,7 @@ struct TasksSettingsView: View {
     private var taskOverview: some View {
         HStack(spacing: 8) {
             overviewMetric("CURRENT TASKS", "\(monitor.taskCatalog.currentTaskCount)", "checklist", Brand.periwinkle)
-            overviewMetric("NEED ATTENTION", "\(tasks.tasks.filter { TaskAudit.requiresUser($0.lastMessage) || $0.isStopped }.count)", "exclamationmark.circle", Brand.youBadge)
+            overviewMetric("NEED ATTENTION", "\(attentionTaskCount)", "exclamationmark.circle", Brand.youBadge)
             overviewMetric("PROJECTS", "\(projectGroups.count)", "folder", Brand.accent(for: .cruise))
         }
     }
@@ -471,6 +461,14 @@ struct TasksSettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .accessibilityIdentifier("task-sidebar-scroll")
+        .focusable()
+        .onMoveCommand { direction in
+            let ids = listedTaskIDs
+            guard !ids.isEmpty else { return }
+            let index = ids.firstIndex(of: selectedTaskID ?? "") ?? 0
+            if direction == .up { selectedTaskID = ids[max(0, index - 1)] }
+            if direction == .down { selectedTaskID = ids[min(ids.count - 1, index + 1)] }
+        }
     }
 
     private func taskGroupRow(_ group: TaskCatalog.Group) -> some View {
@@ -518,6 +516,7 @@ struct TasksSettingsView: View {
                                tasks: tasks, monitor: monitor,
                                assign: { monitor.assignProject($0, to: current.id) },
                                reset: { monitor.resetProject(for: current.id) }, initiallyExpanded: true)
+                    .id(current.id)
                     .padding(12)
                     .background(Brand.card, in: RoundedRectangle(cornerRadius: 12))
             }
@@ -836,23 +835,19 @@ private struct TaskProjectRow: View {
     @State private var reviewingLatestReport = false
     @State private var sendingBump = false
     @State private var bumpDraftMessage: String?
+    @State private var bumpDraftFingerprint: String?
+    @State private var bumpDraftDefinition: String?
+    @State private var bumpDraftAssessment: ClickyTaskAssessment?
     @State private var bumpDraftError: String?
     @State private var bumpSendStatus: String?
     @State private var copiedReport = false
-    @State private var confirmingClose = false
-    @State private var confirmingFinish = false
-    @State private var confirmingReopen = false
     @State private var sendingLifecycleNotice = false
     @State private var lifecycleNoticeStatus: String?
-    @ObservedObject private var lifecycle = TaskLifecycleStore.shared
-
-    private static let closeNotice = "Cruise Control asks you to stop work and close or dismiss this task in HeyClicky. Preserve its history; do not delete anything or take further actions."
-    private static let finishNotice = "Cruise Control is marking this task finished. Please stop work, post a brief final status, and close or dismiss this task in HeyClicky without deleting its history or taking further actions."
 
     private var details: ClickyAgentTask? { tasks.task(task.id) }
     private var stateLabel: String {
         let state = Matcher.normalize(task.status)
-        return ["done", "complete", "completed", "reported done"].contains(state) ? "Reported done" : task.status.replacingOccurrences(of: "_", with: " ").capitalized
+        return ["done", "complete", "completed", "reported done"].contains(state) ? "Ready for your review" : task.status.replacingOccurrences(of: "_", with: " ").capitalized
     }
     private var definition: String? { DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id]) }
     private var assessment: ClickyTaskAssessment? {
@@ -868,14 +863,41 @@ private struct TaskProjectRow: View {
     private var autoBumpEnabled: Bool {
         store.config.taskPlans[task.id]?.autoBump == true
     }
-    private var canDraftBump: Bool {
-        guard let details, definition != nil, let assessment else { return false }
-        return details.hasReport && !details.isWorking && !details.isStopped && !details.dismissed
-            && !TaskAudit.requiresUser(details.lastMessage)
-            && !lifecycle.isFinished(task.id)
-            && !ClickyTaskLibrary.ambiguousNames(tasks.tasks).contains(Matcher.normalize(details.name))
-            && assessment.meetsDefinition == false && !assessment.missing.isEmpty
-            && [.unfinished, .failed].contains(assessment.state)
+    private var draftGate: TaskDraftGate {
+        guard let details else { return .latestReportUnavailable }
+        return TaskDraftGate.evaluate(
+            task: details,
+            definition: definition,
+            assessment: assessment,
+            finished: false,
+            ambiguous: ClickyTaskLibrary.ambiguousNames(tasks.tasks).contains(Matcher.normalize(details.name))
+        )
+    }
+    private var canDraftBump: Bool { draftGate == .ready }
+    private var previewKey: String {
+        [task.id, details?.fingerprint ?? "", definition ?? ""].joined(separator: "\u{1F}")
+    }
+
+    private func prepareCurrentPreview() async {
+        guard definition != nil else { return }
+        await reviewLatestReport()
+        guard !Task.isCancelled, canDraftBump, bumpDraftError == nil else { return }
+        await createBumpDraft()
+    }
+
+    private func draftOrSendBump() {
+        if bumpDraftMessage != nil {
+            Task { await sendBumpDraft() }
+            return
+        }
+        Task {
+            await reviewLatestReport()
+            guard canDraftBump else {
+                bumpDraftError = draftGate.message
+                return
+            }
+            await createBumpDraft()
+        }
     }
 
     private func reviewLatestReport() async {
@@ -934,6 +956,9 @@ private struct TaskProjectRow: View {
                 return
             }
             bumpDraftMessage = draft.message
+            bumpDraftFingerprint = expectedFingerprint
+            bumpDraftDefinition = expectedDefinition
+            bumpDraftAssessment = reviewed
         } catch {
             bumpDraftError = error.localizedDescription
         }
@@ -947,7 +972,14 @@ private struct TaskProjectRow: View {
     }
 
     private func sendBumpDraft() async {
-        guard let message = bumpDraftMessage, let details, let definition, let reviewed = assessment else { return }
+        guard let message = bumpDraftMessage, let details, let definition, let reviewed = assessment,
+              bumpDraftFingerprint == details.fingerprint, bumpDraftDefinition == definition,
+              bumpDraftAssessment == reviewed, canDraftBump else {
+            bumpDraftMessage = nil
+            bumpDraftError = "The draft is stale. Refreshing the current review and continuation."
+            await prepareCurrentPreview()
+            return
+        }
         sendingBump = true
         bumpSendStatus = nil
         defer { sendingBump = false }
@@ -962,53 +994,35 @@ private struct TaskProjectRow: View {
         }
     }
 
-    private func finishLocally() {
-        var plan = store.config.taskPlans[task.id] ?? TaskPlan()
-        plan.autoBump = false
-        store.config.taskPlans[task.id] = plan
-        lifecycle.finish(task.id)
-    }
-
-    private func sendLifecycleNotice(_ text: String, finish: Bool) async {
+    private func closeTask() async {
         guard !sendingLifecycleNotice else { return }
         sendingLifecycleNotice = true
-        lifecycleNoticeStatus = nil
+        lifecycleNoticeStatus = "Finish requested: checking the current HeyClicky job before opening its sidebar…"
         defer { sendingLifecycleNotice = false }
 
-        if let result = await monitor.sendTaskLifecycleNotice(taskID: task.id, text: text) {
+        if let result = await monitor.closeHeyClickyTask(taskID: task.id) {
             lifecycleNoticeStatus = result
             return
         }
-        if finish { finishLocally() } else { lifecycle.close(task.id) }
-
-        let verifyStarted = Date()
-        await tasks.refresh(measure: false)
-        if let loadedAt = tasks.loadedAt, loadedAt >= verifyStarted, tasks.loadError == nil,
-           tasks.task(task.id)?.dismissed == true {
-            lifecycleNoticeStatus = "HeyClicky now shows this task dismissed; Cruise also marked it \(finish ? "finished" : "closed") locally."
-        } else {
-            lifecycleNoticeStatus = "Message delivery was confirmed. Cruise marked this task \(finish ? "finished" : "closed") locally; HeyClicky's sidebar/state change is not confirmed."
-        }
+        lifecycleNoticeStatus = "Dismissed from HeyClicky's active tasks. History, caches and all project files are preserved."
     }
 
     private var lifecycleActions: some View {
         HStack(spacing: 8) {
-            Image(systemName: lifecycle.isFinished(task.id) ? "checkmark.seal.fill" : lifecycle.isClosed(task.id) ? "archivebox" : "arrow.triangle.branch")
-                .foregroundStyle(lifecycle.isFinished(task.id) ? Brand.periwinkle : .secondary)
-            Text("Cruise-only task state")
+            Image(systemName: "archivebox").foregroundStyle(.secondary)
+            Text("HeyClicky task")
                 .font(.caption2).foregroundStyle(.secondary)
             Spacer()
-            if lifecycle.isFinished(task.id) || lifecycle.isClosed(task.id) {
-                Button("Reopen in Cruise") { confirmingReopen = true }
-                    .buttonStyle(ClickyPillButtonStyle(primary: true))
-                    .accessibilityIdentifier("reopen-task-\(task.id)")
+            if details == nil {
+                Text("Finish unavailable · no matching HeyClicky job")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if details?.dismissed == true {
+                Text("Dismissed · history preserved").font(.caption).foregroundStyle(.secondary)
             } else {
-                Button("Close in Cruise…") { confirmingClose = true }
-                    .buttonStyle(TaskControlPillStyle(selected: false))
-                    .accessibilityIdentifier("close-task-\(task.id)")
-                Button("Mark finished…") { confirmingFinish = true }
+                Button(sendingLifecycleNotice ? "Finishing…" : "Mark as Finished") { Task { await closeTask() } }
                     .buttonStyle(ClickyPillButtonStyle(primary: false))
-                    .accessibilityIdentifier("finish-task-\(task.id)")
+                    .disabled(sendingLifecycleNotice)
+                    .accessibilityIdentifier("close-task-\(task.id)")
             }
         }
         .padding(.top, 4)
@@ -1023,10 +1037,8 @@ private struct TaskProjectRow: View {
                         Text(stateLabel)
                             .font(.caption2).padding(.horizontal, 7).padding(.vertical, 3)
                             .background(Brand.card, in: Capsule())
-                        if lifecycle.isClosed(task.id) {
-                            Text("Closed in Cruise").font(.caption2).foregroundStyle(.secondary)
-                        } else if lifecycle.isFinished(task.id) {
-                            Text("Finished in Cruise").font(.caption2).foregroundStyle(Brand.periwinkle)
+                        if details?.dismissed == true {
+                            Text("Dismissed in HeyClicky").font(.caption2).foregroundStyle(.secondary)
                         }
                         if store.config.taskGrouping == .none, let project = task.project.title {
                             Label(project, systemImage: "folder").font(.caption2).foregroundStyle(.secondary)
@@ -1101,6 +1113,15 @@ private struct TaskProjectRow: View {
                     Spacer(minLength: 0)
                 }
                 criteriaSummary(details)
+                let progress = tasks.record(task.id).progress
+                if let deliveredAt = progress.deliveredAt {
+                    Label("Delivery confirmed in this HeyClicky task · \(deliveredAt.formatted(date: .abbreviated, time: .shortened))",
+                          systemImage: "checkmark.circle.fill")
+                        .font(.caption2).foregroundStyle(Brand.periwinkle)
+                } else if monitor.pendingMessage?.completionTarget?.taskID == task.id {
+                    Text("Delivery pending: \(monitor.pendingMessage?.holdReason ?? "waiting for HeyClicky's receipt")")
+                        .font(.caption2).foregroundStyle(Brand.youBadge)
+                }
                 HStack(spacing: 10) {
                     Toggle("Auto-bump this task", isOn: Binding(
                         get: { autoBumpEnabled },
@@ -1108,33 +1129,33 @@ private struct TaskProjectRow: View {
                     ))
                     .toggleStyle(.switch)
                     .controlSize(.small)
-                    .disabled(definition == nil || lifecycle.isFinished(task.id))
+                    .disabled(definition == nil || details.dismissed)
                     .help("Opt this task into automatic follow-ups when a fresh report falls short of its saved criteria.")
                     Spacer(minLength: 0)
                 }
-                Text(autoBumpEnabled && store.config.mode == .cruise
-                     ? "Auto-bump is on: Cruise reviews fresh reports and sends eligible follow-ups automatically after its safety checks."
+                Text(autoBumpEnabled && monitor.autoBumpHoldReason(taskID: task.id) != nil
+                     ? "Auto-bump held: \(monitor.autoBumpHoldReason(taskID: task.id) ?? "")"
+                     : autoBumpEnabled && store.config.mode != .rest
+                     ? "Auto-bump is on: reviews fresh reports and sends eligible follow-ups in Manual or Cruise, without enabling drive or tool approvals."
                      : autoBumpEnabled
-                        ? "Auto-bump is selected, but Cruise mode is off; automatic sending waits until Cruise mode is active."
-                        : "Manual flow: review, draft, then press Send. Turn on Auto-bump in Cruise mode for automatic eligible follow-ups.")
+                        ? "Auto-bump is selected, but Rest mode pauses sending."
+                        : "Cruise refreshes, reviews and prepares a draft when you view this task. Sending stays under your control.")
                     .font(.caption2).foregroundStyle(.secondary)
                     HStack(alignment: .center, spacing: 10) {
                         Text("3").font(BrandFont.mono(9)).foregroundStyle(Brand.navy)
                             .frame(width: 20, height: 20)
                             .background(Brand.periwinkle, in: Circle())
                             .accessibilityLabel("Step 3")
-                        Button {
-                            if bumpDraftMessage == nil { Task { await createBumpDraft() } }
-                            else { Task { await sendBumpDraft() } }
-                        } label: {
-                            Label(draftingBump ? "Drafting…" : sendingBump ? "Sending…" : bumpDraftMessage == nil ? "Draft follow-up" : "Send to HeyClicky",
+                        Button(action: draftOrSendBump) {
+                            Label(draftingBump ? "Drafting…" : reviewingLatestReport ? "Analyzing…" : sendingBump ? "Sending…" : bumpDraftMessage == nil ? "Generate response" : "Send to HeyClicky",
                                   systemImage: bumpDraftMessage == nil ? "doc.text" : "paperplane.fill")
                         }
                         .buttonStyle(ClickyPillButtonStyle(primary: bumpDraftMessage != nil))
-                        .disabled(bumpDraftMessage == nil ? (!canDraftBump || draftingBump) : (sendingBump || !canDraftBump))
+                        .disabled(draftingBump || reviewingLatestReport || sendingBump || definition == nil || !details.hasReport || details.dismissed)
                         .help(bumpDraftMessage == nil
-                              ? "Drafts only from a current review with concrete gaps. After drafting, this button becomes Send to HeyClicky."
+                              ? "Refreshes and analyzes the full report against your saved Done definition, then generates a response for eligible gaps. Clarification and safety blockers are shown here."
                               : "Sends exactly the visible draft to this uniquely matched HeyClicky task after freshness and safety checks.")
+                        .accessibilityHint(bumpDraftMessage == nil ? draftGate.message : "Sends only the exact visible draft after freshness checks.")
                         .accessibilityIdentifier("bump-task-\(task.id)")
                         Spacer(minLength: 0)
                     }
@@ -1150,6 +1171,10 @@ private struct TaskProjectRow: View {
                 }
                 if let bumpDraftError {
                     Text("Workflow paused: \(bumpDraftError)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                } else if bumpDraftMessage == nil && !canDraftBump {
+                    Text("Workflow paused: \(draftGate.message)")
+                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        .accessibilityIdentifier("draft-gate-status-\(task.id)")
                 }
                 if let bumpSendStatus {
                     Text(bumpSendStatus).font(.caption).foregroundStyle(bumpSendStatus.hasPrefix("Sent") ? Brand.periwinkle : Brand.youBadge)
@@ -1171,6 +1196,7 @@ private struct TaskProjectRow: View {
             }
         }
         .padding(.vertical, 8)
+        .task(id: previewKey) { await prepareCurrentPreview() }
         .onAppear { showingDetails = initiallyExpanded }
         .onChange(of: task.id) { _, _ in
             showingDetails = initiallyExpanded
@@ -1187,32 +1213,6 @@ private struct TaskProjectRow: View {
             bumpDraftMessage = nil
             bumpDraftError = nil
             bumpSendStatus = nil
-        }
-        .confirmationDialog("Close this task?", isPresented: $confirmingClose, titleVisibility: .visible) {
-            Button(sendingLifecycleNotice ? "Sending close request…" : "Send close request & close in Cruise") {
-                Task { await sendLifecycleNotice(Self.closeNotice, finish: false) }
-            }
-            .disabled(sendingLifecycleNotice)
-            Button("Close in Cruise only", role: .destructive) { lifecycle.close(task.id) }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("The first option sends this exact message to the uniquely matched HeyClicky task, then hides it in Cruise after delivery is confirmed. It asks HeyClicky to close the task; it cannot force the sidebar/status change.\n\n\(Self.closeNotice)")
-        }
-        .confirmationDialog("Mark this task finished?", isPresented: $confirmingFinish, titleVisibility: .visible) {
-            Button(sendingLifecycleNotice ? "Sending finish notice…" : "Send notice & mark finished") {
-                Task { await sendLifecycleNotice(Self.finishNotice, finish: true) }
-            }
-            .disabled(sendingLifecycleNotice)
-            Button("Mark finished in Cruise only") { finishLocally() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("The first option sends this exact notice to the uniquely matched HeyClicky task. Cruise marks it finished only after delivery is confirmed; HeyClicky's sidebar/status change is not guaranteed.\n\n\(Self.finishNotice)")
-        }
-        .confirmationDialog("Reopen this task in Cruise?", isPresented: $confirmingReopen, titleVisibility: .visible) {
-            Button("Reopen in Cruise") { lifecycle.reopen(task.id) }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This restores the task to Open tasks in Cruise only. Its HeyClicky status is unchanged; Auto-bump remains off until you enable it again.")
         }
         .accessibilityIdentifier("task-row-\(task.id)")
         .sheet(isPresented: $editingProject) {
@@ -1325,9 +1325,31 @@ private struct TaskProjectRow: View {
                     .font(.caption.weight(.semibold))
                 Text("Assessment: \(assessment.state.title) · \(assessment.reason)")
                     .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if let question = assessment.clarificationQuestion {
+                    Label("Please clarify Done: \(question)", systemImage: "person.fill.questionmark")
+                        .font(.caption).foregroundStyle(Brand.youBadge)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Clarify Done…") {
+                        definitionDraft = definition ?? ""
+                        definingDone = true
+                    }
+                    .buttonStyle(ClickyPillButtonStyle(primary: false))
+                    Text("Automatic and manual continuation are paused until you clarify the saved definition.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
                 ForEach(Array(assessment.missing.prefix(6)), id: \.self) { gap in
                     Label(gap, systemImage: "arrow.turn.down.right")
                         .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                if let criteria = assessment.criteria {
+                    ForEach(Array(criteria.enumerated()), id: \.offset) { _, criterion in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("\(criterion.status.rawValue.capitalized): \(criterion.criterion)")
+                                .font(.caption2.weight(.semibold))
+                            Text(criterion.evidence.isEmpty ? "No supporting evidence in the current report." : "Evidence: \(criterion.evidence)")
+                                .font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+                        }
+                    }
                 }
                 if assessment.missing.count > 6 {
                     Text("And \(assessment.missing.count - 6) more gaps in Details.").font(.caption2).foregroundStyle(.secondary)

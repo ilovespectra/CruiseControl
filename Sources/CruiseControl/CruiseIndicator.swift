@@ -9,6 +9,80 @@ private final class CruiseIndicatorPanel: NSPanel {
 }
 
 @MainActor
+final class CruiseDrivingController {
+    private var taskName: String?
+    private var panels: [NSPanel] = []
+    private var cancellables: Set<AnyCancellable> = []
+
+    init(monitor: ClickyMonitor) {
+        taskName = monitor.drivingTaskName
+        rebuildPanels()
+        monitor.$drivingTaskName.combineLatest(monitor.$preparingFinish)
+            .sink { [weak self] task, preparing in
+                self?.taskName = preparing ? nil : task
+                self?.update()
+            }
+            .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .sink { [weak self] _ in self?.rebuildPanels() }
+            .store(in: &cancellables)
+    }
+
+    private func rebuildPanels() {
+        panels.forEach { $0.orderOut(nil) }
+        panels = NSScreen.screens.map { screen in
+            let panel = CruiseIndicatorPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
+                                             backing: .buffered, defer: false)
+            panel.title = "Cruise Control driving HeyClicky"
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = false
+            panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)) + 3)
+            panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+            panel.ignoresMouseEvents = true
+            panel.hidesOnDeactivate = false
+            return panel
+        }
+        update()
+    }
+
+    private func update() {
+        for panel in panels {
+            guard let task = taskName else {
+                panel.orderOut(nil)
+                continue
+            }
+            let host = NSHostingView(rootView: CruiseDrivingView(task: task))
+            host.sizingOptions = []
+            panel.contentView = host
+            panel.orderFrontRegardless()
+        }
+    }
+}
+
+private struct CruiseDrivingView: View {
+    let task: String
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Brand.periwinkle.opacity(0.85), lineWidth: 24)
+                .blur(radius: 22)
+                .padding(-6)
+            Text("Cruise is driving HeyClicky: \(task) · Esc stops")
+                .font(BrandFont.inter(13, .semibold))
+                .foregroundStyle(Brand.lavender)
+                .padding(12)
+                .background(Brand.card, in: Capsule())
+                .padding(.top, 114)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Cruise is driving HeyClicky to finish \(task). Escape or any input stops before the X is clicked.")
+        .allowsHitTesting(false)
+    }
+}
+
+@MainActor
 final class CruiseIndicatorController {
     private let store: ConfigStore
     private var panels: [NSPanel] = []

@@ -21,6 +21,10 @@ public struct TaskRecovery: Codable, Equatable, Sendable {
         stoppedTasks.contains(Matcher.normalize(task))
     }
 
+    public mutating func release(task: String) {
+        stoppedTasks.remove(Matcher.normalize(task))
+    }
+
     public mutating func observe(task: String, status: String?, latestTurnStatus: String?) {
         let key = Matcher.normalize(task)
         guard !key.isEmpty else { return }

@@ -14,6 +14,27 @@ import Testing
             allowLabel: "Allow in this Session") == nil)
     }
 
+    @Test func pendingRequestAlertsDefaultOnSoundDefaultsOffAndPersist() throws {
+        let legacy = try JSONDecoder().decode(Config.self, from: Data(#"{"vscodeAutoApprove":true}"#.utf8))
+        #expect(legacy.vscodeRequestAlertsEnabled)
+        #expect(!legacy.vscodeRequestAlertSound)
+        var config = Config()
+        config.vscodeRequestAlertsEnabled = false
+        config.vscodeRequestAlertSound = true
+        let restored = try JSONDecoder().decode(Config.self, from: JSONEncoder().encode(config))
+        #expect(!restored.vscodeRequestAlertsEnabled)
+        #expect(restored.vscodeRequestAlertSound)
+    }
+
+    @Test func attentionStatusIsExplicitAndDoesNotConfuseWorkingOrTerminalStates() {
+        for status in ["Attention Needed", "Needs Input", "Waiting for your input", "Approval Required"] {
+            #expect(VSCodeApprovalContext.needsAttention("Task, State: \(status)"))
+        }
+        for status in ["Working", "Running", "Completed", "Error", "Idle"] {
+            #expect(!VSCodeApprovalContext.needsAttention("Task, State: \(status)"))
+        }
+    }
+
     @Test func toolPermissionPolicyIsSeparateOptInAndPersists() throws {
         let legacy = try JSONDecoder().decode(Config.self, from: Data(#"{"vscodeAutoApprove":true,"vscodeAllowWriteMetadata":true}"#.utf8))
         #expect(!legacy.vscodeAllowToolPermissions)

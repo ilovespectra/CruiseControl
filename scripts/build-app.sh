@@ -5,8 +5,15 @@
 #
 # Signing: uses $CC_SIGN_IDENTITY, else the first valid code-signing identity in your keychain,
 # else ad-hoc. A stable identity keeps macOS Accessibility / Screen Recording grants across rebuilds.
+# CC_AUDIO_CONTROLS=0 excludes the experimental mixer UI and audio routing at launch.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+case "${CC_AUDIO_CONTROLS:-1}" in
+  0) AUDIO_CONTROLS=false ;;
+  1) AUDIO_CONTROLS=true ;;
+  *) echo "CC_AUDIO_CONTROLS must be 0 or 1." >&2; exit 1 ;;
+esac
 
 if [[ "${1:-}" == "--install" && -e "/Applications/Cruise Control.app" && ! -w "/Applications/Cruise Control.app/Contents/MacOS" ]]; then
   echo "The installed app is administrator-owned. Use the packaged macOS installer to update it; the running agent has not been stopped." >&2
@@ -33,6 +40,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/CruiseControl"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :CruiseControlAudioControlsEnabled bool $AUDIO_CONTROLS" "$APP/Contents/Info.plist"
 if [[ -n "${CC_VERSION:-}" ]]; then
   /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $CC_VERSION" "$APP/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${CC_BUILD:?CC_BUILD is required}" "$APP/Contents/Info.plist"
