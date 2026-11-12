@@ -190,6 +190,16 @@ struct TaskPlanningTests {
         #expect(TaskAudit.definitionBumpSystem.contains("Priority is only a local sorting label"))
     }
 
+    @Test func autoBumpFilterShowsPerTaskOptInEvenWhenGlobalSendingIsPaused() {
+        let task = ClickyTasksTests.task("Build and verify the Silo page.")
+        var config = Config()
+        config.taskPlans[task.id] = TaskPlan()
+        config.taskPlans[task.id]?.autoBump = true
+        #expect(TaskPlanning.autoBumpOptedIn(taskID: task.id, config: config))
+        config.taskPlans[task.id]?.autoBump = false
+        #expect(!TaskPlanning.autoBumpOptedIn(taskID: task.id, config: config))
+    }
+
     @Test func automaticBumpRequiresGlobalAndPerTaskOptInAndDefinition() {
         let task = ClickyTasksTests.task("Tests remain incomplete.")
         var config = Config()

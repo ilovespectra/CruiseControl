@@ -126,7 +126,7 @@ private struct TaskReportContent: View {
 }
 
 private enum TaskListFilter: String, CaseIterable, Identifiable {
-    case all, needsDefinition, defined, attention, working, reportedDone, unassigned, reviewEnabled, closed
+    case all, needsDefinition, defined, attention, working, reportedDone, unassigned, reviewEnabled, autoBumpEnabled, closed
 
     var id: String { rawValue }
     var title: String {
@@ -139,7 +139,8 @@ private enum TaskListFilter: String, CaseIterable, Identifiable {
         case .reportedDone: "Ready for your review"
         case .unassigned: "Unassigned project"
         case .reviewEnabled: "In Cruise review"
-        case .closed: "Dismissed in HeyClicky"
+        case .autoBumpEnabled: "Auto-bump enabled"
+        case .closed: "Dismissed"
         }
     }
 }
@@ -247,6 +248,8 @@ struct TasksSettingsView: View {
             return item.project.title == nil
         case .reviewEnabled:
             return store.config.taskPlans[item.id]?.enabled == true
+        case .autoBumpEnabled:
+            return TaskPlanning.autoBumpOptedIn(taskID: item.id, config: store.config)
         case .closed:
             return current?.dismissed == true
         }

@@ -109,6 +109,11 @@ public enum TaskPlanning {
     public static let deliveryHold = "Reply held: this HeyClicky version has no supported background message API configured. Cruise will not focus windows, type, click, press Return or approve permissions to deliver it."
     public static let chatOnlyStatus = "Chat-only sending waits for idle input and a unique verified task. It may open HeyClicky's chat and type/send messages, but never approves drive, tools or permissions."
 
+    /// Per-task preference for filtering and review, even while the global switch is off.
+    public static func autoBumpOptedIn(taskID: String, config: Config) -> Bool {
+        config.taskPlans[taskID]?.autoBump == true
+    }
+
     /// Explicit per-task opt-in plus a saved user goal, independently of drive approvals.
     public static func autoBumpEnabled(_ task: ClickyAgentTask, config: Config) -> Bool {
         config.continueUntilDefinedDone && config.taskPlans[task.id]?.autoBump == true
