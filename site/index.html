@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#fbfaf8" />
-  <meta name="description" content="An independent HeyClicky dashboard for task goals, automation guardrails, and local storage." />
+  <meta name="description" content="Cruise Control is a Mac dashboard for HeyClicky: define task goals, set drive-prompt guardrails, and inspect local storage." />
   <title>Cruise Control — define done</title>
   <link rel="icon" href="icon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="playful.css" />
@@ -14,89 +14,78 @@
   <div class="page">
     <nav class="nav" aria-label="Main navigation">
       <a class="brand" href="#top"><img src="icon.svg" alt="" />Cruise Control</a>
-      <div class="nav-links"><a href="#demos">Take a peek</a><a href="docs.html">Docs</a><a href="https://github.com/ilovespectra/CruiseControl">GitHub</a></div>
+      <div class="nav-links"><a href="#features">What it does</a><a href="docs.html">Docs</a><a href="https://github.com/ilovespectra/CruiseControl">GitHub</a></div>
       <a class="button button-primary" data-latest-installer href="https://github.com/ilovespectra/CruiseControl/releases/latest/download/CruiseControl.pkg">Get Cruise <span aria-hidden="true">↗</span></a>
     </nav>
 
     <main id="top">
       <section class="hero" aria-labelledby="hero-title">
         <div class="hero-copy">
-          <p class="hello"><span class="hello-star" aria-hidden="true">✳</span> Hello, buddy.</p>
-          <h1 id="hero-title">Define <em>done.</em><br />Keep the wheel.</h1>
-          <p>Cruise is the dashboard for your HeyClicky buddy: set the finish line, see the work, and choose how far automation can go.</p>
-          <div class="hero-actions"><a class="button button-primary" data-latest-installer href="https://github.com/ilovespectra/CruiseControl/releases/latest/download/CruiseControl.pkg">Download for Mac <span aria-hidden="true">↗</span></a><a class="button" href="#demos">See it in action <span aria-hidden="true">↓</span></a></div>
+          <p class="hello"><span class="hello-star" aria-hidden="true">✳</span> Your HeyClicky sidekick</p>
+          <h1 id="hero-title">Define <em>done.</em><br />Steer the rest.</h1>
+          <p class="hero-lede">Cruise Control is a Mac dashboard for HeyClicky: set a finish line per task, compare it with the latest report, and choose how drive prompts are handled.</p>
+          <div class="hero-actions"><a class="button button-primary" data-latest-installer href="https://github.com/ilovespectra/CruiseControl/releases/latest/download/CruiseControl.pkg">Download for Mac <span aria-hidden="true">↗</span></a><a class="button" href="#features">See what it does <span aria-hidden="true">↓</span></a></div>
           <p class="release-meta">Latest on GitHub: <span class="latest-version" aria-live="polite">Checking GitHub…</span> · <a class="latest-release-link" href="https://github.com/ilovespectra/CruiseControl/releases/latest">release notes</a></p>
+          <p class="mode-label">Three ways to handle a drive prompt</p>
           <div class="mode-cluster" aria-label="Cruise Control drive prompt modes">
-            <span class="mode-title">Three answers to a drive prompt</span>
-            <span class="mode"><i aria-hidden="true"></i><b>Manual</b> · you decide</span>
-            <span class="mode mode-rest"><i aria-hidden="true"></i><b>Rest</b> · deny</span>
-            <span class="mode mode-cruise"><i aria-hidden="true"></i><b>Cruise</b> · approve</span>
+            <span class="mode"><i aria-hidden="true"></i><b>Manual</b><small>You decide</small></span>
+            <span class="mode mode-rest"><i aria-hidden="true"></i><b>Rest</b><small>Deny</small></span>
+            <span class="mode mode-cruise"><i aria-hidden="true"></i><b>Cruise</b><small>Auto-approve</small></span>
           </div>
-          <p class="mode-note">Cruise mode auto-approves drive prompts. It is a real guardrail choice—not a promise that work is harmless.</p>
+          <p class="mode-note">Cruise mode removes the human checkpoint for drive prompts. VS Code approvals are separate opt-ins.</p>
         </div>
 
-        <div class="hero-art">
-          <div class="hero-sticker"><b>Define</b> the finish line first <span aria-hidden="true">✦</span></div>
-          <figure class="demo-frame demo-frame-goal" data-demo-frame="define-done">
-            <video data-demo-video="demos/define-done.mp4" hidden controls muted playsinline loop preload="metadata" aria-label="Real Cruise Control recording showing a saved Done goal in the reopened Silo task"></video>
-            <div class="recording-placeholder"><span class="rec-light"><i aria-hidden="true"></i> REAL APP CLIP</span><h2>One task.<br />One clear finish line.</h2><p>Set what “done” means. Find the saved goal when you return.</p></div>
-          </figure>
-          <figcaption class="clip-caption"><b>01 · The Silo task, reopened</b><span>saved goal · real capture</span></figcaption>
-          <span class="doodle" aria-hidden="true"></span>
-        </div>
+        <figure class="capture-stage">
+          <span class="capture-sticker"><b>Real app</b> · a Silo task <span aria-hidden="true">✦</span></span>
+          <div class="capture-card"><img src="demos/define-done.jpg" alt="Cruise Control showing the saved Done goal for the Silo Landing Scribe task; its report is not shown." width="1600" height="530" /></div>
+          <figcaption><b>A task-sized finish line.</b><span>Saved goal · latest report kept private</span></figcaption>
+          <span class="doodle doodle-star" aria-hidden="true">✳</span>
+        </figure>
       </section>
 
-      <section class="section" id="demos" aria-labelledby="demos-title">
-        <p class="section-kicker">Five tiny field trips</p>
-        <div class="section-heading"><h2 id="demos-title">A dashboard for your <em>HeyClicky buddy.</em></h2><p>Two real clips. Three next-take ideas. No pretend footage.</p></div>
-        <div class="demo-grid demo-grid-five">
-          <article class="demo-card demo-card-real" data-demo-card="define-done">
-            <div class="demo-card-head"><b>Done means your Done.</b><span>01 · REAL CLIP</span></div>
-            <div class="mini-scene mini-scene-goal" aria-hidden="true"><span>MY FINISH LINE</span><b>Saved.<br />Still here.</b><i>↗</i></div>
-            <div class="demo-copy"><p>Set a goal for a real Silo task, return, and find it saved.</p><small>Clip shows the reopened task · no edits</small></div>
+      <section class="features" id="features" aria-labelledby="features-title">
+        <div class="section-heading"><div><p class="section-kicker">A little more clarity</p><h2 id="features-title">What Cruise is <em>for.</em></h2></div><p>HeyClicky does the work. Cruise gives you a clear place to set goals, steer prompts, and see local storage.</p></div>
+        <div class="feature-grid">
+          <article class="feature feature-goals">
+            <div class="feature-top"><span class="number">01</span><span class="feature-icon" aria-hidden="true">✓</span></div>
+            <h3>Define Done</h3>
+            <p>Write what success means for each task. Cruise keeps your goal beside the latest HeyClicky report, so progress has a yardstick.</p>
+            <div class="goal-flow" aria-label="A simple task review: your goal, latest report, then your review"><span>Your goal</span><i aria-hidden="true">→</i><span>Latest report</span><i aria-hidden="true">→</i><span>Your call</span></div>
+            <small class="diagram-note">A simple workflow diagram · not app footage</small>
           </article>
-          <article class="demo-card demo-card-idea" data-demo-card="notice">
-            <div class="demo-card-head"><b>A ping with proof.</b><span>02 · NEXT TAKE</span></div>
-            <div class="mini-scene mini-scene-ping" aria-hidden="true"><span class="ping-dot"></span><b>Task updated</b><small>same task · receipt checked</small></div>
-            <div class="demo-copy"><p>Pair a real Cruise notice with that same task’s HeyClicky receipt.</p><small>Capture only after matching the receipt</small></div>
+          <article class="feature feature-guardrails">
+            <div class="feature-top"><span class="number">02</span><span class="feature-icon" aria-hidden="true">↗</span></div>
+            <h3>Move the guardrails</h3>
+            <p>Pick the policy that fits the moment. Change it when you want; Manual is the place to start.</p>
+            <div class="mode-map" aria-label="Manual: you decide. Rest: deny. Cruise: automatically approve drive prompts.">
+              <div><i class="manual-dot" aria-hidden="true"></i><b>Manual</b><small>You decide</small></div>
+              <div><i class="rest-dot" aria-hidden="true"></i><b>Rest</b><small>Deny prompts</small></div>
+              <div><i class="cruise-dot" aria-hidden="true"></i><b>Cruise</b><small>Auto-approve</small></div>
+            </div>
+            <small class="diagram-note">Prompt choices · VS Code is separate</small>
           </article>
-          <article class="demo-card demo-card-idea" data-demo-card="ollama">
-            <div class="demo-card-head"><b>Ollama, hold the send.</b><span>03 · NEXT TAKE</span></div>
-            <div class="mini-scene mini-scene-draft" aria-hidden="true"><span>LOCAL DRAFT</span><b>One thoughtful<br />next step…</b><i>not sent</i></div>
-            <div class="demo-copy"><p>Let the local model draft a task-specific follow-up; leave it unsent.</p><small>Use a task with Auto-bump off</small></div>
+          <article class="feature feature-storage">
+            <div class="feature-top"><span class="number">03</span><span class="feature-icon" aria-hidden="true">▤</span></div>
+            <h3>See what storage weighs</h3>
+            <p>Inspect Clicky support, caches, and workspaces by size, age, and known task link. The inventory is read-only—no files moved or deleted.</p>
+            <div class="storage-illustration">
+              <img src="demos/storage-inventory-heading.jpg" alt="Real Cruise Control Storage screen heading; no paths or measurements are shown." width="1600" height="90" />
+              <div class="storage-labels"><span>Task caches</span><span>Workspaces</span><span>App support</span></div>
+            </div>
+            <small class="diagram-note">Real screen heading · no personal totals shown</small>
           </article>
-          <article class="demo-card demo-card-real" data-demo-card="storage">
-            <div class="demo-card-head"><b>Look, don’t toss.</b><span>04 · REAL CLIP</span></div>
-            <figure class="demo-frame demo-frame-storage" data-demo-frame="storage"><video data-demo-video="demos/storage-inventory.mp4" hidden controls muted playsinline loop preload="metadata" aria-label="Real Cruise Control recording of the read-only Storage totals"></video><div class="recording-placeholder"><span class="rec-light"><i aria-hidden="true"></i> REAL APP CLIP</span><h2>Storage,<br />at a glance.</h2><p>Read-only totals. Nothing moved or deleted.</p></div></figure>
-            <div class="demo-copy"><p>Take in the local footprint without touching a single file.</p><small>Aggregate view · read-only capture</small></div>
-          </article>
-          <article class="demo-card demo-card-idea" data-demo-card="guardrails">
-            <div class="demo-card-head"><b>Your wheel, your rules.</b><span>05 · NEXT TAKE</span></div>
-            <div class="mini-scene mini-scene-modes" aria-hidden="true"><span>MANUAL</span><span>REST</span><span>CRUISE</span><i></i></div>
-            <div class="demo-copy"><p>Show the three prompt choices—and the one you choose to keep.</p><small>Show options; don’t trigger a real approval</small></div>
-          </article>
-        </div>
-      </section>
-
-      <section class="guardrails" aria-labelledby="guardrails-title">
-        <div><p class="section-kicker">Your call, every time</p><h2 id="guardrails-title">Move the guardrails.<br />Keep the say.</h2><p>Manual, Rest, and Cruise answer drive prompts differently. VS Code approvals stay a separate opt-in.</p></div>
-        <div class="guardrail-map" aria-label="Manual means you decide; Rest means deny; Cruise means approve drive prompts">
-          <div class="guardrail"><i aria-hidden="true"></i><b>Manual</b><small>You decide</small></div>
-          <div class="guardrail"><i aria-hidden="true"></i><b>Rest</b><small>Deny prompts</small></div>
-          <div class="guardrail"><i aria-hidden="true"></i><b>Cruise</b><small>Approve prompts</small></div>
         </div>
       </section>
 
       <section class="download" id="download" aria-labelledby="download-title">
-        <div><p class="section-kicker">Cruise Control · macOS 14+</p><h2 id="download-title">Ready when you are.</h2><p>Unsigned and not notarized; macOS may show a warning.</p><p class="release-note">The page follows GitHub’s latest published release.</p></div>
-        <div class="download-info"><a class="button" data-latest-installer href="https://github.com/ilovespectra/CruiseControl/releases/latest/download/CruiseControl.pkg">Download latest installer <span aria-hidden="true">↗</span></a><span class="binary-count" id="binary-downloads" aria-live="polite">GitHub binary-download count loading…</span></div>
+        <div><p class="section-kicker">Cruise Control · macOS 14+</p><h2 id="download-title">Ready when you are.</h2><p>Unsigned and not notarized; macOS may show a warning.</p><p class="release-note">This page follows GitHub’s latest release. Some current-source features may not be in every installer; Auto-bump delivery is unverified for v1.1.1.</p></div>
+        <div class="download-info"><a class="button button-light" data-latest-installer href="https://github.com/ilovespectra/CruiseControl/releases/latest/download/CruiseControl.pkg">Download latest installer <span aria-hidden="true">↗</span></a><span class="binary-count" id="binary-downloads" aria-live="polite">GitHub binary-download count loading…</span><a class="latest-release-link" href="https://github.com/ilovespectra/CruiseControl/releases/latest">Read release notes</a></div>
       </section>
-      <aside class="safety"><b>Automation has reach.</b> Cruise can approve drive prompts. Review the <a href="docs.html#safety">safety notes</a> before enabling it.</aside>
+      <aside class="safety"><b>Automation has reach.</b> Cruise can approve drive prompts. <a href="docs.html#safety">Read the safety notes</a> before enabling it.</aside>
     </main>
 
     <footer class="footer"><span>Independent · open source · for macOS</span><nav aria-label="Project links"><a href="docs.html">Docs &amp; safety</a><a href="https://github.com/ilovespectra/CruiseControl/releases">Releases</a><a href="https://github.com/ilovespectra/CruiseControl">GitHub</a></nav></footer>
   </div>
   <script type="module" src="downloads.mjs"></script>
-  <script type="module" src="playful.js"></script>
 </body>
 </html>
