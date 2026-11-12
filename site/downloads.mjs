@@ -1,4 +1,59 @@
 const releasesEndpoint = 'https://api.github.com/repos/ilovespectra/CruiseControl/releases';
+const latestReleaseEndpoint = `${releasesEndpoint}/latest`;
+const releasesPage = 'https://github.com/ilovespectra/CruiseControl/releases/latest';
+const latestInstaller = `${releasesPage}/download/CruiseControl.pkg`;
+
+export function latestPublishedRelease(release) {
+  if (!release || typeof release !== 'object' || release.draft || release.prerelease
+      || typeof release.tag_name !== 'string' || typeof release.html_url !== 'string'
+      || !Array.isArray(release.assets)) throw new Error('Invalid latest GitHub release response.');
+  const version = release.tag_name.replace(/^v/, '');
+  if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
+    throw new Error('Latest GitHub release has an invalid version tag.');
+  }
+  const packageAsset = release.assets.find((asset) => asset.name === 'CruiseControl.pkg')
+    ?? release.assets.find((asset) => /^CruiseControl-\d+\.\d+\.\d+\.pkg$/.test(asset.name ?? ''));
+  if (!packageAsset || typeof packageAsset.browser_download_url !== 'string') {
+    throw new Error('Latest GitHub release has no Cruise Control installer.');
+  }
+  const releaseUrl = new URL(release.html_url);
+  const installerUrl = new URL(packageAsset.browser_download_url);
+  if (releaseUrl.protocol !== 'https:' || releaseUrl.hostname !== 'github.com'
+      || installerUrl.protocol !== 'https:' || installerUrl.hostname !== 'github.com') {
+    throw new Error('Latest GitHub release returned an unexpected link.');
+  }
+  return { version: release.tag_name.startsWith('v') ? release.tag_name : `v${release.tag_name}`,
+    releaseUrl: releaseUrl.href, installerUrl: installerUrl.href };
+}
+
+export async function fetchLatestRelease(fetcher = fetch) {
+  const response = await fetcher(latestReleaseEndpoint, {
+    headers: { Accept: 'application/vnd.github+json' },
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!response.ok) throw new Error(`GitHub latest-release lookup failed (${response.status}).`);
+  return latestPublishedRelease(await response.json());
+}
+
+export function applyLatestRelease(release, root = globalThis.document) {
+  for (const element of root?.querySelectorAll?.('.latest-version') ?? []) element.textContent = release.version;
+  for (const element of root?.querySelectorAll?.('.latest-release-link') ?? []) element.href = release.releaseUrl;
+  for (const element of root?.querySelectorAll?.('[data-latest-installer]') ?? []) element.href = release.installerUrl;
+}
+
+export async function showLatestRelease(fetcher = fetch, root = globalThis.document) {
+  try {
+    const release = await fetchLatestRelease(fetcher);
+    applyLatestRelease(release, root);
+    return release;
+  } catch (error) {
+    for (const element of root?.querySelectorAll?.('.latest-version') ?? []) element.textContent = 'See GitHub Releases';
+    for (const element of root?.querySelectorAll?.('.latest-release-link') ?? []) element.href = releasesPage;
+    for (const element of root?.querySelectorAll?.('[data-latest-installer]') ?? []) element.href = latestInstaller;
+    console.error('Could not load the latest Cruise Control release:', error);
+    return null;
+  }
+}
 
 export function countBinaryDownloads(releases) {
   if (!Array.isArray(releases)) throw new Error('Invalid GitHub releases response.');
@@ -67,6 +122,7 @@ export async function showBinaryDownloads(element, fetcher = fetch) {
 }
 
 if (typeof document !== 'undefined') {
+  void showLatestRelease();
   const element = document.getElementById('binary-downloads');
   if (element) void showBinaryDownloads(element);
 }

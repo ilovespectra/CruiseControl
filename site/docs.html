@@ -28,8 +28,11 @@
     <header>
       <p class="eyebrow">documentation</p>
       <h1>your controls.<br />your responsibility.</h1>
-      <p class="lede">Cruise Control is an unofficial macOS companion that answers HeyClicky's drive prompts and helps unfinished tasks continue. Optional VS Code features are enabled separately. Read the risks before allowing unattended work.</p>
-      <p class="version-status"><strong>Version status (verified Nov 11, 2026):</strong> The latest public installer is <a href="https://github.com/ilovespectra/CruiseControl/releases/tag/v1.1.0">1.1.0</a>. The current local verification build installed on the maintainer’s Mac is <strong>1.1.4 (build 2026111132)</strong>; it is not a published release. The Tasks and Storage views described below are in current source/local verification, not in the public 1.1.0 installer. Check <a href="https://github.com/ilovespectra/CruiseControl/releases">GitHub Releases</a> for the latest public download.</p>
+      <p class="lede">Modes for automation, a workspace for task goals, and a read-only view of local storage. VS Code options are separate.</p>
+      <aside class="release-note" aria-label="Release information">
+        <p><strong>Latest published:</strong> <span class="latest-version" aria-live="polite">Checking GitHub…</span> · <a class="latest-release-link" href="https://github.com/ilovespectra/CruiseControl/releases/latest">release notes</a> · <a data-latest-installer href="https://github.com/ilovespectra/CruiseControl/releases/latest/download/CruiseControl.pkg">download installer</a></p>
+        <p class="release-caveat">Docs track current source; not every feature is verified in this installer. Delivery needs a same-task transcript receipt; Storage totals may be partial.</p>
+      </aside>
       <nav class="docs-toc" aria-label="documentation contents">
         <a href="#safety">safety warnings</a>
         <a href="#stop">stop automation</a>
@@ -45,19 +48,21 @@
     </header>
 
     <section id="safety" class="safety-warning" aria-labelledby="safety-heading">
-      <h2 id="safety-heading">Warning: auto-allowing agents can cause real harm</h2>
-      <p><strong>Auto-approval removes the human checkpoint provided by a permission prompt.</strong> Pressing the normal Allow button is not equivalent to reviewing the proposed action. In Cruise mode, an agent can operate your computer without you reviewing each request.</p>
-      <ul>
-        <li><strong>Data loss:</strong> commands, clicks, overwrites, database changes, and exports can destroy work or modify files that are not backed up.</li>
-        <li><strong>Secret exposure:</strong> agents may access tokens, credentials, personal documents, browser data, or other app data and transmit them elsewhere.</li>
-        <li><strong>Prompt injection and malware:</strong> pages, repositories, messages, and packages can contain hostile instructions. Approved installations may execute malicious code.</li>
-        <li><strong>Real-world actions and cost:</strong> deployments, purchases, cloud resources, messages, pushes, and account changes can have lasting consequences and consume paid credits.</li>
-        <li><strong>Persistent permissions:</strong> allowing HeyClicky to control another app through a macOS dialog can grant ongoing access to that app's documents and data. Switching to Manual does not revoke an existing macOS grant.</li>
-        <li><strong>Repeated mistakes:</strong> continuation prompts can repeat a failing or harmful approach. Idle detection can mistake a pause for unfinished work; interruption recovery may restart work you intended to stop.</li>
-      </ul>
-      <p><strong>Ollama, label matching, blocklists, and rate limits are not security boundaries.</strong> Models can miss risks or misread context, and UI changes can break detection. There is no guarantee of safety, successful completion, or a spending cap.</p>
-      <p>Start in Manual. Test a low-risk task under supervision. Keep version-control and offline backups, use a separate restricted account or test environment, and remove credentials and sensitive data from the agent's reach. Do not use unattended automation for irreversible or high-stakes work.</p>
-      <p>Cruise Control is an independent public-beta project, not affiliated with, endorsed by, or supported by HeyClicky, VS Code, or GitHub. Compatibility names belong to their respective owners. <strong>Use at your own risk.</strong></p>
+      <h2 id="safety-heading">Before you automate</h2>
+      <p><strong>Cruise mode removes the human checkpoint on drive prompts.</strong> Agents may change or delete files, access sensitive data, take real-world actions, or spend money. Start in Manual, use backups and a restricted test environment, and supervise important work.</p>
+      <details class="safety-details">
+        <summary>Read the full safety guidance</summary>
+        <ul>
+          <li><strong>Data loss:</strong> commands, clicks, overwrites, database changes, and exports can destroy work or modify files that are not backed up.</li>
+          <li><strong>Secret exposure:</strong> agents may access tokens, credentials, personal documents, browser data, or other app data and transmit them elsewhere.</li>
+          <li><strong>Prompt injection and malware:</strong> pages, repositories, messages, and packages can contain hostile instructions. Approved installations may execute malicious code.</li>
+          <li><strong>Real-world actions and cost:</strong> deployments, purchases, cloud resources, messages, pushes, and account changes can have lasting consequences and consume paid credits.</li>
+          <li><strong>Persistent permissions:</strong> allowing HeyClicky to control another app through a macOS dialog can grant ongoing access to that app's documents and data. Switching to Manual does not revoke an existing macOS grant.</li>
+          <li><strong>Repeated mistakes:</strong> continuation prompts can repeat a failing or harmful approach. Idle detection can mistake a pause for unfinished work; interruption recovery may restart work you intended to stop.</li>
+        </ul>
+        <p><strong>Ollama, label matching, blocklists, and rate limits are not security boundaries.</strong> Models can miss risks or misread context, and UI changes can break detection. There is no guarantee of safety, successful completion, or a spending cap.</p>
+        <p>Do not use unattended automation for irreversible or high-stakes work. Remove credentials and sensitive data from the agent's reach. Cruise Control is independent and not affiliated with HeyClicky, VS Code, or GitHub.</p>
+      </details>
       <a href="#stop">How to stop automation</a>
     </section>
 
@@ -123,9 +128,8 @@
 
     <section id="storage">
       <h2>read-only storage manager</h2>
-      <p>Settings → Storage in current source scans HeyClicky support/cache and the Agent folder configured in HeyClicky’s own Settings → Agents. Each scan reads that setting from the running HeyClicky instance; if HeyClicky is closed or the preference is missing or invalid, Cruise reports the problem rather than guessing a path. The inventory shows measured paths, sizes, last-modified ages, and task associations where known. Apparent file bytes and allocated disk bytes are labelled separately; overlapping roots and hard links count once, and interior symlinks are not followed.</p>
+      <p>Cruise Control’s Settings → Storage scans HeyClicky support/cache and the Agent folder configured in HeyClicky’s own Settings → Agents. Each scan reads that setting from the running HeyClicky instance; if HeyClicky is closed or the preference is missing or invalid, Cruise reports the problem rather than guessing a path. The inventory shows measured paths, sizes, last-modified ages, and task associations where known. Apparent file bytes and allocated disk bytes are labelled separately; overlapping roots and hard links count once, and interior symlinks are not followed.</p>
       <p>Sort rows by <strong>Largest first</strong>, <strong>Oldest first</strong>, or <strong>Name</strong>; filter to all paths, task caches, or workspaces, and search paths or task names. Missing or inaccessible roots are reported as incomplete lower-bound totals. The scan is read-only: Cruise does not change HeyClicky’s folder setting, move or delete files, or send storage notices. Scans can take time, and the filesystem may change while a scan is running.</p>
-      <p>This view is in the current source/local verification build, not the latest public 1.1.0 installer. See the version status above and the <a href="https://github.com/ilovespectra/CruiseControl/releases">release list</a> for what is publicly downloadable.</p>
     </section>
 
     <section id="vscode">
@@ -140,7 +144,7 @@
         <li><strong>Cheaper model preference:</strong> prefers MAI-Code Flash and can suggest escalation after evidenced failures. A pricier model requires explicit confirmation. UI model selection does not guarantee server-side routing or prices.</li>
         <li><strong>Usage guard:</strong> an optional cutoff reacts to accessible usage warnings, not live billing telemetry. It can disable automation but does not cancel running agents; warnings may be delayed or missed. It is not a guaranteed spending cap.</li>
       </ul>
-      <p>See the <a href="https://github.com/ilovespectra/CruiseControl#readme">repository README</a> for detailed controls and diagnostics. Review the <a href="#safety">warnings</a> before enabling approvals.</p>
+      <p>Review these <a href="#safety">safety notes</a> before enabling approvals. For local setup and contribution guidance, see the <a href="https://github.com/ilovespectra/CruiseControl/blob/main/CONTRIBUTING.md">contribution guide</a>.</p>
     </section>
 
     <section id="privacy">
@@ -169,7 +173,7 @@
     <section id="source">
       <h2>open source &amp; support</h2>
       <p><a href="https://github.com/ilovespectra/CruiseControl">Browse the source on GitHub</a>, inspect changes before installing, and use <a href="https://github.com/ilovespectra/CruiseControl/issues">project issues</a> for bug reports. Include your macOS and app versions and a redacted diagnostic excerpt. Never post credentials or private conversation content.</p>
-      <p>For implementation details and configuration keys, see the <a href="https://github.com/ilovespectra/CruiseControl#readme">README</a>. This is community software, not official support for HeyClicky or VS Code.</p>
+      <p>For build and contribution instructions, see <a href="https://github.com/ilovespectra/CruiseControl/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>. Maintainer-only release steps are in <a href="https://github.com/ilovespectra/CruiseControl/blob/main/DEVELOPER_CONSOLE.md">Publisher and release safeguards</a>. This is community software, not official support for HeyClicky or VS Code.</p>
     </section>
   </main>
 
@@ -183,5 +187,6 @@
     </nav>
     <p class="disclaimer">Independent open-source public beta. Not affiliated with, endorsed by, sponsored by, or connected to HeyClicky or its makers. Auto-approval removes human review. Use at your own risk; no guarantee of safety, completion, or spending limits.</p>
   </footer>
+  <script type="module" src="downloads.mjs"></script>
 </body>
 </html>

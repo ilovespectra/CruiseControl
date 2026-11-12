@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { countBinaryDownloads, fetchBinaryDownloads, showBinaryDownloads } from '../../site/downloads.mjs';
+import { applyLatestRelease, countBinaryDownloads, fetchBinaryDownloads, fetchLatestRelease, latestPublishedRelease, showBinaryDownloads } from '../../site/downloads.mjs';
 
 test('counts installer downloads, including updates, but not metadata or drafts', () => {
   assert.equal(countBinaryDownloads([
@@ -85,4 +85,47 @@ test('uses a five-minute cache and retains the last verified total on API errors
     if (priorDescriptor) Object.defineProperty(globalThis, 'localStorage', priorDescriptor);
     else delete globalThis.localStorage;
   }
+});
+
+test('reads the latest published GitHub release and links its matching installer asset', async () => {
+  const calls = [];
+  const release = await fetchLatestRelease(async (url, options) => {
+    calls.push({ url, options });
+    return { ok: true, json: async () => ({
+      tag_name: 'v1.2.3', draft: false, prerelease: false,
+      html_url: 'https://github.com/ilovespectra/CruiseControl/releases/tag/v1.2.3',
+      assets: [
+        { name: 'release.json', browser_download_url: 'https://github.com/ilovespectra/CruiseControl/releases/download/v1.2.3/release.json' },
+        { name: 'CruiseControl.pkg', browser_download_url: 'https://github.com/ilovespectra/CruiseControl/releases/download/v1.2.3/CruiseControl.pkg' },
+      ],
+    }) };
+  });
+  assert.equal(release.version, 'v1.2.3');
+  assert.equal(release.installerUrl, 'https://github.com/ilovespectra/CruiseControl/releases/download/v1.2.3/CruiseControl.pkg');
+  assert.match(calls[0].url, /repos\/ilovespectra\/CruiseControl\/releases\/latest$/);
+  assert.equal(calls[0].options.headers.Accept, 'application/vnd.github+json');
+});
+
+test('rejects a draft, prerelease, missing installer, or non-GitHub download URL', () => {
+  const base = {
+    tag_name: 'v1.2.3', html_url: 'https://github.com/ilovespectra/CruiseControl/releases/tag/v1.2.3',
+    assets: [{ name: 'CruiseControl.pkg', browser_download_url: 'https://github.com/ilovespectra/CruiseControl/releases/download/v1.2.3/CruiseControl.pkg' }],
+  };
+  assert.throws(() => latestPublishedRelease({ ...base, draft: true }));
+  assert.throws(() => latestPublishedRelease({ ...base, prerelease: true }));
+  assert.throws(() => latestPublishedRelease({ ...base, assets: [] }));
+  assert.throws(() => latestPublishedRelease({ ...base, assets: [{ name: 'CruiseControl.pkg', browser_download_url: 'https://example.com/pkg' }] }));
+});
+
+test('applies GitHub-derived version and release URLs to every matching page control', () => {
+  const makeElements = () => [{ textContent: '', href: '' }, { textContent: '', href: '' }];
+  const versions = makeElements();
+  const releaseLinks = makeElements();
+  const installers = makeElements();
+  applyLatestRelease({ version: 'v2.0.0', releaseUrl: 'https://github.com/ilovespectra/CruiseControl/releases/tag/v2.0.0', installerUrl: 'https://github.com/ilovespectra/CruiseControl/releases/download/v2.0.0/CruiseControl.pkg' }, {
+    querySelectorAll: (selector) => ({ '.latest-version': versions, '.latest-release-link': releaseLinks, '[data-latest-installer]': installers })[selector],
+  });
+  assert.deepEqual(versions.map((element) => element.textContent), ['v2.0.0', 'v2.0.0']);
+  assert.ok(releaseLinks.every((element) => element.href.endsWith('/v2.0.0')));
+  assert.ok(installers.every((element) => element.href.endsWith('/v2.0.0/CruiseControl.pkg')));
 });
