@@ -74,6 +74,7 @@ final class ClickyMonitor: ObservableObject {
     private var gate: ReportGate
     private var nudgeLimiter: NudgeLimiter
     private var lastNeedsYouSkipLog: [String: Date] = [:]
+    private var lastTaskNoticeDismissAt = Date.distantPast
     private let seenURL = ConfigStore.directory.appendingPathComponent("seen-reports.json")
     /// Rate-limit history survives restarts (launchd relaunches the app whenever it exits).
     private let budgetURL = ConfigStore.directory.appendingPathComponent("nudge-budget.json")
@@ -1183,6 +1184,7 @@ final class ClickyMonitor: ObservableObject {
 
         if await handleConsent(result, config: config) { return }
         guard drivingTaskName == nil else { return }
+        if await clearTaskNotice(result, config: config) { return }
         if pendingMessage != nil {
             await retryPendingMessage(config: config)
             return
@@ -1384,7 +1386,33 @@ final class ClickyMonitor: ObservableObject {
         }
     }
 
-    // MARK: "{task} Needs you" → close the card, draft a nudge with Ollama, send it
+    /// Clears only a scoped notification X, never the task's sidebar X or its pending request.
+    private func clearTaskNotice(_ result: ScanResult, config: Config) async -> Bool {
+        guard config.mode == .cruise, store.config.mode == .cruise,
+              drivingTaskName == nil, !safetyReviewInProgress,
+              Date().timeIntervalSince(lastTaskNoticeDismissAt) >= 3,
+              let notice = result.taskNotices.first else { return false }
+        lastTaskNoticeDismissAt = Date()
+        let close = notice.close
+        guard !Task.isCancelled,
+              await Worker.run({ AX.press(close, requiresUserPause: false) }) else {
+            record("Could not close HeyClicky's notification for “\(notice.task)” via Accessibility; no mouse takeover or task action attempted")
+            return true
+        }
+        for _ in 0..<5 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            guard !Task.isCancelled else { return true }
+            let fresh = await Worker.run { ClickyScanner(config: config).scan() }
+            if !fresh.taskNotices.contains(where: { CFEqual($0.close, close) }) {
+                record("Closed HeyClicky's notification for “\(notice.task)” to allow the next request; task state and Auto-bump unchanged")
+                return true
+            }
+        }
+        record("HeyClicky's notification for “\(notice.task)” is still visible after closing; will retry one card at a time")
+        return true
+    }
+
+    // MARK: Legacy needs-you continuation (not called by the monitoring loop)
 
     /// Returns true when it acted (so the rest of this cycle is skipped).
     private func handleNeedsYou(_ result: ScanResult, config: Config) async -> Bool {

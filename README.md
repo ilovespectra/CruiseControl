@@ -52,6 +52,8 @@ For plain folders, **Set up Git / GitHub in Terminal** optionally initializes lo
 
 Auto-bump works in Manual or Cruise and pauses in Rest. It follows current-report checks, user-stop holds, duplicate prevention and per-definition round limits, rather than generic nudge cooldowns. Follow-ups are tied to the exact task and verified against its transcript. Uncertain sends remain pending; set-aside messages appear in Activity → Diagnostics for seven days and are not resent from that archive.
 
+In Cruise mode, HeyClicky's task notification banners are closed one at a time through Accessibility so queued agents can show their next request. Closing a banner does not finish, retry, or continue its task, change Auto-bump, or approve its underlying request. Manual and Rest leave these banners alone; Cruise never uses a mouse takeover to close them.
+
 With no Auto-bump tasks enabled, automatic checkups do not switch VS Code threads, raise its approval windows, or hover HeyClicky's notch. Cruise still reads exposed approval controls and can press them through Accessibility without opening another thread.
 
 Choose **Settings → App & permissions → Appearance & startup → Color theme** for Red, Yellow, Blue (default), or Green. The saved theme updates mode icons, dashboard lights, driving illumination and shared interface accents immediately. Cruise and Rest use the supplied artwork with transparent rounded edges; Manual retains its themed button-press symbol. Mode buttons are icon-only with accessible names and tooltips. Warning/error colors and the Pride game's rainbow remain semantic rather than themed.

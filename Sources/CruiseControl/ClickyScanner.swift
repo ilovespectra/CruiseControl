@@ -238,7 +238,6 @@ struct ClickyScanner {
                     }
                 }
             }
-            if result.consent != nil { break }
         }
         return result
     }
