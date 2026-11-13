@@ -17,58 +17,44 @@ final class BinaryPublisher: ObservableObject {
         if panel.runModal() == .OK, let url = panel.url { repositoryPath = url.path }
     }
 
-    func build(preview: Bool) {
+    func openConsole() {
         guard !running else { return }
         let root = URL(fileURLWithPath: repositoryPath, isDirectory: true)
-        let script = root.appendingPathComponent("scripts/repackage-binaries.sh")
+        let script = root.appendingPathComponent("scripts/dev-console.py")
         guard FileManager.default.fileExists(atPath: script.path) else {
-            log = "Choose the CruiseControl source checkout containing scripts/repackage-binaries.sh."
+            log = "Choose the CruiseControl source checkout containing scripts/dev-console.py."
             return
-        }
-        if !preview {
-            let alert = NSAlert()
-            alert.messageText = "Create the next GitHub draft release?"
-            alert.informativeText = "This builds the latest clean, pushed production commit and creates an unpublished GitHub draft with locally generated Ollama release notes. It never publishes the release. GitHub CLI must confirm the official repository owner and admin permission; otherwise the build safely remains a local preview. macOS warnings are expected for unsigned packages."
-            alert.addButton(withTitle: "Cancel")
-            alert.addButton(withTitle: "Build draft")
-            guard alert.runModal() == .alertSecondButtonReturn else { return }
         }
         let child = Process()
         let pipe = Pipe()
-        child.executableURL = URL(fileURLWithPath: "/bin/bash")
-        child.arguments = [script.path] + (preview ? ["--preview"] : ["--draft"])
+        child.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        child.arguments = ["python3", script.path, "--start"]
         child.currentDirectoryURL = root
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         child.environment = environment
         child.standardOutput = pipe
         child.standardError = pipe
-        log = ""
         running = true
+        log = "Starting persistent local console…"
         process = child
-        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { handle.readabilityHandler = nil; return }
-            let text = String(decoding: data, as: UTF8.self)
-            Task { @MainActor in
-                guard let self else { return }
-                self.log = String((self.log + text).suffix(60000))
-            }
-        }
         child.terminationHandler = { [weak self] process in
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(decoding: data, as: UTF8.self)
             Task { @MainActor in
                 guard let self else { return }
                 self.running = false
-                self.log += "\n\(process.terminationStatus == 0 ? "Succeeded" : "Failed (exit \(process.terminationStatus))").\n"
+                self.log = process.terminationStatus == 0
+                    ? "Web console opened. Builds continue after closing this launcher or browser."
+                    : "Console failed (exit \(process.terminationStatus)):\n\(output)"
                 self.process = nil
             }
         }
         do { try child.run() }
         catch {
-            pipe.fileHandleForReading.readabilityHandler = nil
             running = false
             process = nil
-            log = "Could not start repackaging: \(error.localizedDescription)"
+            log = "Could not start developer console: \(error.localizedDescription)"
         }
     }
 }

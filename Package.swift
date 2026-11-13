@@ -17,7 +17,8 @@ let package = Package(
         .executableTarget(
             name: "CruiseControl",
             dependencies: ["CruiseCore", "CruiseAudioAtomics"],
-            path: "Sources/CruiseControl"
+            path: "Sources/CruiseControl",
+            resources: [.process("BrandIcons")]
         ),
         .testTarget(
             name: "CruiseCoreTests",

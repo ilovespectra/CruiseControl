@@ -288,6 +288,11 @@ struct ClickyScanner {
             if ctx.dismiss == nil, Matcher.isDismiss(title, config: config) || Matcher.isDismiss(desc, config: config) {
                 ctx.dismiss = e
             }
+            if let row = TaskRow.parse(label), TaskRecovery.isStopped(label),
+               let current = ctx.selectedTask ?? ctx.headerTask ?? ctx.lastCard?.task,
+               Matcher.normalize(row.name) == Matcher.normalize(current) {
+                ctx.latestTurnStatus = label
+            }
             if !label.isEmpty { ctx.buttons.append((e, label)) }
             if Matcher.normalize(help) == "show sidebar" { ctx.showSidebar = e }
             if [title, desc, help].contains(where: Matcher.isTaskDismissButton) {

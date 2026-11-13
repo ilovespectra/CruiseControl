@@ -1,6 +1,12 @@
 import AppKit
 import CruiseCore
 
+if CommandLine.arguments.contains("--validate-brand-icons") {
+    BrandIcons.validate()
+    print("All eight brand PNGs loaded successfully.")
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--scan-clicky-storage") {
     do {
         let directory = FileManager.default.homeDirectoryForCurrentUser
@@ -97,6 +103,37 @@ if let index = CommandLine.arguments.firstIndex(of: "--infer-task-project") {
 if CommandLine.arguments.contains("--inspect-vscode") {
     VSCodeScanner(config: Config()).diagnosticTree().forEach { print($0) }
     exit(0)
+}
+
+if CommandLine.arguments.contains("--scan-vscode-sessions") {
+    let config = MainActor.assumeIsolated { ConfigStore().config }
+    for session in VSCodeScanner(config: config).visibleTaskSessions() {
+        print("\(session.key) · \(session.title) · state: \(session.state) · workspace: \(session.workspaceTitle ?? "none") · window: \(session.windowTitle)\(session.ambiguous ? " · AMBIGUOUS" : "")")
+    }
+    exit(0)
+}
+
+if let index = CommandLine.arguments.firstIndex(of: "--vscode-key") {
+    let title = CommandLine.arguments.dropFirst(index + 1).first ?? ""
+    print(VSCodeChatIdentity.stableKey(bundleIdentifier: "com.microsoft.VSCode", taskTitle: title))
+    exit(0)
+}
+
+if let index = CommandLine.arguments.firstIndex(of: "--inspect-vscode-session") {
+    let config = MainActor.assumeIsolated { ConfigStore().config }
+    let key = CommandLine.arguments.dropFirst(index + 1).first ?? ""
+    guard let session = VSCodeScanner(config: config).visibleTaskSessions().first(where: { $0.key == key }) else {
+        print("session \(key) is not visible in any VS Code Sessions list")
+        exit(1)
+    }
+    do {
+        let chat = try VSCodeModels.inspect(config: config, session: session)
+        print("read \(chat.taskTitle) · model \(chat.model) · running \(chat.running) · \(chat.transcript.count) transcript characters · composer \(chat.draft.debugDescription)")
+        exit(0)
+    } catch {
+        print("unreadable: \(error.localizedDescription)")
+        exit(1)
+    }
 }
 
 if CommandLine.arguments.contains("--scan-vscode") {

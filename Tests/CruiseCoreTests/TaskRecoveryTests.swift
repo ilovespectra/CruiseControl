@@ -51,6 +51,15 @@ import Testing
         #expect(restored.isStopped(task: "Rippa Repair"))
     }
 
+    @Test func explicitUserStopSurvivesLaterWorkingStatus() {
+        var recovery = TaskRecovery()
+        recovery.stopByUser(task: "Rippa Repair")
+        recovery.observe(task: "Rippa Repair", status: "working", latestTurnStatus: "sent")
+        #expect(recovery.isStopped(task: "Rippa Repair"))
+        recovery.release(task: "Rippa Repair")
+        #expect(!recovery.isStopped(task: "Rippa Repair"))
+    }
+
     @Test func explicitlyResumedTurnClearsStopButStaleWorkingBadgeDoesNot() {
         var recovery = TaskRecovery()
         recovery.observe(task: "Rippa Repair", status: "working", latestTurnStatus: "Stopped by you")

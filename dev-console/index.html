@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cruise Developer Console</title><link rel="stylesheet" href="/console.css"><script defer src="/console.js"></script></head>
+<body><main>
+<header><div><span class="eyebrow">LOCAL DEVELOPER TOOLS</span><h1>Cruise Control</h1></div><span id="connection">Connecting…</span></header>
+<section><h2>Prepare a clean branch</h2>
+<p>Stage the files you intend to commit in your editor first. This commits all staged changes only; unstaged files remain untouched. Commit hooks and signing stay enabled.</p>
+<label for="message">Commit message (leave blank for local Ollama)</label>
+<textarea id="message" rows="2" maxlength="4000" placeholder="Summarize your staged changes, or let Ollama draft the message"></textarea>
+<button id="commit">Commit staged changes…</button>
+<p class="muted">Ollama receives the staged diff locally at 127.0.0.1:11434. Review what you staged before confirming. Push your commit to main before repackaging.</p></section>
+<section><h2>Repackage binaries</h2><p id="repository"></p>
+<p>Build the latest clean, pushed production commit. Version advances automatically using the existing release policy. Builds and logs survive closing this page or restarting the console.</p>
+<div class="actions"><button id="preview">Repackage local preview</button><button id="draft">Repackage GitHub draft…</button></div>
+<p class="muted">Local builds work for everyone. Only the authenticated official repository owner with admin access can create a GitHub draft. Other accounts produce local previews. Nothing here publishes a release.</p>
+<p id="error" role="alert"></p></section>
+<div class="workspace"><section><h2>Build history</h2><div id="jobs"></div></section>
+<section><h2 id="build-title">Compilation logs</h2><p id="build-detail">Select a build to view its complete persistent log.</p>
+<p id="version"></p>
+<label><input id="follow" type="checkbox" checked> Follow output</label><pre id="log" tabindex="0"></pre></section></div>
+</main></body></html>

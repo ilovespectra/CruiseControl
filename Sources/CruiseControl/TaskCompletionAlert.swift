@@ -43,13 +43,12 @@ final class TaskCompletionAlertController {
             return
         }
         let visible = screen.visibleFrame
-        // The Cruise light (16pt inset, 96pt tall, drawn above this panel) tucks into the notice's bottom-right corner when shown.
+        // Stack the status light immediately below the notice so it never covers the notice's actions.
         let lightShown = store.config.mode != .manual
-        let tuck: CGFloat = lightShown ? 36 : 0
-        let height: CGFloat = 164 + tuck
-        let y = lightShown ? visible.minY + 16 + 96 - tuck : visible.minY + 16
+        let height: CGFloat = 200
+        let y = visible.minY + 16 + (lightShown ? 96 : 0)
         panel.setFrame(NSRect(x: visible.maxX - 416, y: y, width: 400, height: height), display: true)
-        panel.contentView = NSHostingView(rootView: TaskCompletionAlertView(notice: notice, bottomInset: tuck) { [weak self] open in
+        panel.contentView = NSHostingView(rootView: TaskCompletionAlertView(notice: notice) { [weak self] open in
             guard let self else { return }
             guard self.tasks.acknowledgeCompletion(notice) else {
                 NSLog("Cruise completion acknowledgement failed: %@", self.tasks.loadError ?? "saved notice changed")
@@ -66,7 +65,6 @@ final class TaskCompletionAlertController {
 
 private struct TaskCompletionAlertView: View {
     let notice: TaskCompletionNotice
-    var bottomInset: CGFloat = 0
     let action: (Bool) -> Void
 
     var body: some View {
@@ -87,7 +85,6 @@ private struct TaskCompletionAlertView: View {
             }
         }
         .padding(16)
-        .padding(.bottom, bottomInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
         .preferredColorScheme(.dark)

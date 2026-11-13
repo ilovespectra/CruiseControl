@@ -3,6 +3,26 @@ import Testing
 @testable import CruiseCore
 
 @Suite struct PendingMessageTests {
+    private func readyPlan() -> TaskPlan {
+        var plan = TaskPlan()
+        plan.buildLocation = .localWorkspace
+        plan.deliveryStyle = .commit
+        plan.branchStrategy = .main
+        plan.workBranch = "main"
+        plan.finishMergeTarget = .doNotMerge
+        return plan
+    }
+
+    @Test func cruiseModeNeverAuthorizesUnboundMessages() {
+        var config = Config()
+        config.mode = .cruise
+        config.autoContinueReports = true
+        for approved in [nil, true, false] as [Bool?] {
+            let message = PendingMessage(task: "Unconfigured", text: "Continue", transcript: [],
+                                         userApprovedOneShot: approved)
+            #expect(!message.automationAllowed(config: config))
+        }
+    }
     @Test func chatOnlyDeliveryRequiresExplicitPolicyTaskGoalAndStableReportBinding() throws {
         let target = PendingMessage.CompletionTarget(taskID: "job", definition: "Tests pass", reportFingerprint: "report")
         let message = PendingMessage(task: "Task", text: "Continue the tests.", transcript: [],
@@ -14,11 +34,13 @@ import Testing
         config.autoAnswerSystemDialogs = false
         config.continueUntilDefinedDone = false
         config.backgroundTaskReview = true
-        config.taskPlans["job"] = TaskPlan()
+        config.taskPlans["job"] = readyPlan()
         config.taskPlans["job"]?.enabled = true
         config.clickyDefinitionsOfDone["job"] = "Tests pass"
         #expect(!message.automationAllowed(config: config), "API-only must not leak into UI delivery.")
         config.backgroundTaskDelivery = .chatOnly
+        #expect(!message.automationAllowed(config: config), "Background review alone cannot authorize sending.")
+        config.taskPlans["job"]?.autoBump = true
         #expect(message.automationAllowed(config: config))
         let restored = try JSONDecoder().decode(PendingMessage.self, from: JSONEncoder().encode(message))
         #expect(restored.chatOnly == true)
@@ -72,6 +94,8 @@ import Testing
         config.continueUntilDefinedDone = true
         config.taskPlans["job"] = TaskPlan()
         config.clickyDefinitionsOfDone["job"] = "Tests pass"
+        #expect(!message.automationAllowed(config: config), "Manual Send still requires workflow choices.")
+        config.taskPlans["job"] = readyPlan()
         #expect(message.automationAllowed(config: config))
         config.continueUntilDefinedDone = false
         #expect(message.automationAllowed(config: config), "An explicit manual Send is independent of automatic gates.")
@@ -86,6 +110,13 @@ import Testing
         config.taskPlans["job"]?.autoBump = true
         let automatic = PendingMessage(task: "Task", text: message.text, transcript: message.transcript,
             completionTarget: .init(taskID: "job", definition: "Tests pass", reportFingerprint: "report-1"))
+        config.taskPlans["job"]?.buildLocation = nil
+        #expect(!automatic.automationAllowed(config: config), "Old queued automatic bumps need complete workflow choices.")
+        config.taskPlans["job"]?.buildLocation = .localWorkspace
+        config.taskPlans["job"]?.deliveryStyle = .commit
+        config.taskPlans["job"]?.branchStrategy = .main
+        config.taskPlans["job"]?.workBranch = "main"
+        config.taskPlans["job"]?.finishMergeTarget = .doNotMerge
         #expect(automatic.automationAllowed(config: config))
     }
 
@@ -141,6 +172,22 @@ import Testing
         #expect(restored.holdReason == "Conversation moved on")
         #expect(restored.delivery(selectedTask: message.task, input: message.text, transcript: [message.text, "report"]) == .held)
         #expect(restored.delivery(selectedTask: message.task, input: "", transcript: ["report", message.text]) == .delivered)
+    }
+
+    @Test func unsubmittedAutoBumpCanRefreshItsConversationContextSafely() {
+        let target = PendingMessage.CompletionTarget(taskID: "job", definition: "Tests pass", reportFingerprint: "report")
+        var pending = PendingMessage(task: "Task", text: "Verify the current implementation.", transcript: ["old report"],
+                                     completionTarget: target)
+        pending.hold(PendingMessage.conversationChangedHoldReason)
+        #expect(pending.canRetryAfterConversationChange(input: ""))
+        #expect(!pending.canRetryAfterConversationChange(input: pending.text))
+        #expect(!pending.canRetryAfterConversationChange(input: "User draft"))
+        pending.rebaseAfterConversationChange(transcript: ["latest report"])
+        #expect(pending.holdReason == nil)
+        #expect(pending.delivery(selectedTask: "Task", input: "", transcript: ["latest report"]) == .ready)
+
+        pending.submissionAttempted = true
+        #expect(!pending.canRetryAfterConversationChange(input: ""))
     }
 
     @Test func oldDeliveryRecordWithoutHoldFieldRemainsReadable() throws {

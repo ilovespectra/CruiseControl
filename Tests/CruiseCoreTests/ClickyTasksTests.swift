@@ -271,10 +271,83 @@ import Testing
         #expect(message.contains("Round 2 of 5"))
     }
 
-    @Test func normalizesDefinitions() {
+    @Test func normalizesDefinitionsAtTheFiveThousandCharacterLimit() {
+        #expect(DefinitionOfDone.maxDefinitionLength == 5000)
         #expect(DefinitionOfDone.normalized(nil) == nil)
         #expect(DefinitionOfDone.normalized(" \n ") == nil)
-        #expect(DefinitionOfDone.normalized(String(repeating: "a", count: 5000))?.count == DefinitionOfDone.maxDefinitionLength)
+        #expect(DefinitionOfDone.normalized(String(repeating: "a", count: 5000))?.count == 5000)
+        #expect(DefinitionOfDone.normalized(String(repeating: "a", count: 6000))?.count == 5000)
+    }
+
+    @Test func importsMarkdownDocumentTextAndAddsItToTheDefinition() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("done-definition-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("acceptance.md")
+        let markdown = "# Release\n\n- Build passes\n- Notes are published"
+        try Data(markdown.utf8).write(to: url)
+
+        let extracted = try DoneDefinitionDocument.readText(from: url)
+        #expect(extracted == markdown)
+        let combined = try DoneDefinitionDocument.appending(extracted, filename: url.lastPathComponent, to: "## Goal")
+        #expect(combined.contains("## Goal"))
+        #expect(combined.contains("### Imported document: acceptance.md"))
+        #expect(combined.contains("> - Build passes"))
+        let bump = DoneDefinitionDocument.appendingImportedDocuments(to: "Please finish the remaining work.", from: combined)
+        #expect(bump.hasPrefix("Please finish the remaining work."))
+        #expect(bump.contains("Imported document acceptance.md (parsed text, verbatim):"))
+        #expect(bump.contains(markdown))
+    }
+
+    @Test func bumpIncludesMultipleAndLegacyImportedDocuments() {
+        let definition = """
+        Verify the release.
+
+        ### Imported document: first.md
+
+        > First line
+        >
+        > Second line
+
+        ### Imported document: legacy.txt
+
+        Older imported text.
+        """
+        let bump = DoneDefinitionDocument.appendingImportedDocuments(to: "Please verify the release.", from: definition)
+        #expect(bump.contains("Imported document first.md (parsed text, verbatim):\nFirst line\n\nSecond line"))
+        #expect(bump.contains("Imported document legacy.txt (parsed text, verbatim):\nOlder imported text."))
+    }
+
+    @Test func leavesBumpUnchangedWhenNoDocumentWasImported() {
+        #expect(DoneDefinitionDocument.appendingImportedDocuments(to: "Draft", from: "Only plain criteria") == "Draft")
+    }
+
+    @Test func importsReadableRTFDocumentText() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("done-definition-rtf-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("acceptance.rtf")
+        try Data(#"{\rtf1\ansi\deff0 Done means \b built\b0 and verified.}"#.utf8).write(to: url)
+
+        let extracted = try DoneDefinitionDocument.readText(from: url)
+        #expect(extracted.contains("Done means"))
+        #expect(extracted.contains("built"))
+        #expect(extracted.contains("verified"))
+    }
+
+    @Test func documentImportRejectsTextOverTheDefinitionLimit() throws {
+        do {
+            _ = try DoneDefinitionDocument.appending(String(repeating: "x", count: 30), filename: "large.txt",
+                                                     to: "Goal", maximum: 20)
+            Issue.record("Expected the oversized imported document to be rejected.")
+        } catch let error as DoneDefinitionDocument.ImportError {
+            if case .exceedsCharacterLimit(let required, let maximum) = error {
+                #expect(required > maximum)
+                #expect(maximum == 20)
+            } else {
+                Issue.record("Unexpected import error: \(error.localizedDescription)")
+            }
+        }
     }
 
     @Test func confidentDoneWithoutEvidenceIsUnprovenAndFullReportIsReviewed() throws {
@@ -456,6 +529,24 @@ import Testing
         #expect(!DefinitionOfDone.hasNoProgress(review, progress: progress))
         progress.definition = definition
         #expect(DefinitionOfDone.hasNoProgress(review, progress: progress))
+    }
+
+    @Test func newerReportWithoutProofCanReceiveAnotherAutoBump() {
+        let definition = "The requested controls are implemented and verified."
+        let previous = Self.task("The controls are not yet verified.")
+        let latest = Self.task("I still cannot provide evidence that the controls are verified.")
+        var assessment = ClickyTaskAssessment(state: .unfinished, reason: "No supporting evidence in the current report.",
+                                               meetsDefinition: false, missing: [definition], definition: definition,
+                                               fingerprint: latest.fingerprint, source: "ollama (fixture)", assessedAt: Date())
+        assessment.criteria = [CriterionReview(criterion: definition, status: .unknown, evidence: "")]
+        var progress = DoneProgress()
+        progress.definition = definition
+        progress.rounds = 1
+        progress.lastFingerprint = previous.fingerprint
+        progress.lastMissing = [definition]
+        progress.lastReport = previous.lastMessage
+        #expect(DefinitionOfDone.shouldContinue(latest, definition: definition, assessment: assessment,
+                                                progress: progress))
     }
 
     @Test func taskXLabelsAreRecognizedWithoutMatchingUnrelatedActions() {

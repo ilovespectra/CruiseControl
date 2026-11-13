@@ -31,4 +31,20 @@ import Testing
         config.mode = .manual
         #expect(!config.shouldShowNotch(clickyRunning: false))
     }
+
+    @Test func notchPillNestsBesideHeyClickyOnNotchedDisplays() {
+        let right = NotchPlacement.pillX(screenMinX: 0, screenMaxX: 1440, pillWidth: 96,
+                                         notchLeftWidth: 520, notchRightWidth: 520, sideIsRight: true)
+        let left = NotchPlacement.pillX(screenMinX: 0, screenMaxX: 1440, pillWidth: 96,
+                                        notchLeftWidth: 520, notchRightWidth: 520, sideIsRight: false)
+        #expect(right > 720)
+        #expect(left < 720 - 96)
+    }
+
+    @Test func notchPillUsesScreenEdgeWhenDisplayHasNoNotchGeometry() {
+        #expect(NotchPlacement.pillX(screenMinX: 0, screenMaxX: 1920, pillWidth: 96,
+                                     notchLeftWidth: nil, notchRightWidth: nil, sideIsRight: true) == 1824)
+        #expect(NotchPlacement.pillX(screenMinX: -1920, screenMaxX: 0, pillWidth: 96,
+                                     notchLeftWidth: nil, notchRightWidth: nil, sideIsRight: false) == -1920)
+    }
 }

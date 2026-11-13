@@ -1,4 +1,6 @@
 import importlib.util
+import io
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -14,6 +16,12 @@ draft_spec.loader.exec_module(draft)
 
 
 class VersionTests(unittest.TestCase):
+    def test_public_metadata_works_without_github_cli_auth(self):
+        response = io.BytesIO(json.dumps([{"tag_name": "v1.0.9", "draft": False}]).encode())
+        with mock.patch.object(release, "run", side_effect=FileNotFoundError("gh")), mock.patch.object(
+                release, "urlopen", return_value=response):
+            self.assertEqual(release.get_release_metadata()[0]["tag_name"], "v1.0.9")
+
     def test_rollover_boundaries(self):
         self.assertEqual(release.next_version([], "1.0.8"), "1.0.9")
         self.assertEqual(release.next_version([], "1.0.9"), "1.1.0")

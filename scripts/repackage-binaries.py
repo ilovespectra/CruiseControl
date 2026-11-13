@@ -10,6 +10,7 @@ import re
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
+from urllib.request import Request, urlopen
 
 from release_draft import (
     find_draft_record,
@@ -91,8 +92,24 @@ def stable_release(releases):
 
 
 def get_release_metadata():
-    pages = json.loads(run("gh", "api", "--paginate", "--slurp",
-                           f"repos/{REPO}/releases?per_page=100", capture=True))
+    try:
+        pages = json.loads(run("gh", "api", "--paginate", "--slurp",
+                               f"repos/{REPO}/releases?per_page=100", capture=True))
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        print("GitHub CLI metadata unavailable; reading public release metadata without credentials.", flush=True)
+        pages = []
+        page = 1
+        while True:
+            request = Request(f"https://api.github.com/repos/{REPO}/releases?per_page=100&page={page}",
+                              headers={"Accept": "application/vnd.github+json", "User-Agent": "CruiseControl-LocalConsole"})
+            with urlopen(request, timeout=30) as response:
+                batch = json.load(response)
+            if not isinstance(batch, list):
+                raise RuntimeError("GitHub returned invalid public release metadata.")
+            pages.append(batch)
+            if len(batch) < 100:
+                break
+            page += 1
     if not isinstance(pages, list):
         raise RuntimeError("GitHub returned invalid release metadata.")
     releases = [release for page in pages for release in page]
@@ -175,7 +192,11 @@ def main():
     elif owner_error:
         print(f"Owner-only draft unavailable ({owner_error}); continuing as a local preview only.", flush=True)
 
-    branch = json.loads(run("gh", "repo", "view", REPO, "--json", "defaultBranchRef", capture=True))["defaultBranchRef"]["name"]
+    remote_head = run("git", "ls-remote", "--symref", "origin", "HEAD", capture=True)
+    match = re.search(r"^ref: refs/heads/([^\s]+)\s+HEAD$", remote_head, re.MULTILINE)
+    if not match:
+        raise RuntimeError("Could not determine origin's production branch.")
+    branch = match.group(1)
     run("git", "fetch", "origin", branch)
     commit = run("git", "rev-parse", f"origin/{branch}", capture=True)
     if run("git", "rev-parse", "HEAD", capture=True) != commit:
@@ -188,6 +209,7 @@ def main():
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise RuntimeError("Invalid release version.")
     tag = f"v{version}"
+    print(f"Selected next version: {tag} · source commit: {commit} · mode: {mode}", flush=True)
     if any(release.get("tag_name") == tag for release in releases):
         raise RuntimeError(f"{tag} already exists as a draft or prerelease. Resolve it before retrying; versions are not skipped.")
 
@@ -217,6 +239,7 @@ def main():
         app = workspace / "build" / "Cruise Control.app"
         run("codesign", "--verify", "--deep", "--strict", str(app))
         binary = app / "Contents" / "MacOS" / "CruiseControl"
+        run(str(binary), "--validate-brand-icons")
         architectures = set(run("lipo", "-archs", str(binary), capture=True).split())
         if not {"arm64", "x86_64"}.issubset(architectures):
             raise RuntimeError(f"The installer is not universal; found architectures: {sorted(architectures)}")

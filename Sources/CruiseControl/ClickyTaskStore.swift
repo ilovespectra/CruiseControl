@@ -51,7 +51,11 @@ final class ClickyTaskStore: ObservableObject {
         var sizes: [String: SizeRecord] = [:]
     }
 
-    @Published private(set) var tasks: [ClickyAgentTask] = []
+    @Published private(set) var tasks: [ClickyAgentTask] = [] {
+        didSet { taskIndex = Dictionary(tasks.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first }) }
+    }
+    /// Settings filters and sorts look tasks up many times per render.
+    private var taskIndex: [String: Int] = [:]
     @Published private(set) var records: [String: Record] = [:]
     @Published private(set) var loading = false
     @Published private(set) var measuring = false
@@ -72,8 +76,7 @@ final class ClickyTaskStore: ObservableObject {
     private let fileURL: URL
 
     init(root: URL = ClickyTaskLibrary.defaultRoot,
-         fileURL: URL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/CruiseControl/clicky-tasks.json")) {
+         fileURL: URL = ConfigStore.directory.appendingPathComponent("clicky-tasks.json")) {
         self.root = root
         self.fileURL = fileURL
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
@@ -89,7 +92,9 @@ final class ClickyTaskStore: ObservableObject {
 
     var canPersist: Bool { persistenceError == nil }
 
-    func task(_ id: String) -> ClickyAgentTask? { tasks.first { $0.id == id } }
+    func task(_ id: String) -> ClickyAgentTask? { taskIndex[id].map { tasks[$0] } }
+
+    func updatedAt(_ id: String) -> Date? { taskIndex[id].flatMap { tasks[$0].updatedAt } }
 
     func record(_ id: String) -> Record { records[id] ?? Record() }
 
@@ -209,7 +214,8 @@ final class ClickyTaskStore: ObservableObject {
         case .success(let loaded):
             let liveIDs = Set(loaded.map(\.id))
             userAttentionCache = userAttentionCache.filter { liveIDs.contains($0.key) }
-            tasks = loaded.map(applySizes)
+            let refreshed = loaded.map(applySizes)
+            if tasks != refreshed { tasks = refreshed }
             loadedAt = readStarted
             loadError = nil
         case .failure(let error):
@@ -300,6 +306,14 @@ final class ClickyTaskStore: ObservableObject {
                 await assess(current, config: config)
             }
         }
+    }
+
+    /// Drops the saved review so the next examination reads the report afresh.
+    func clearAssessment(for id: String) {
+        guard var record = records[id], record.assessment != nil else { return }
+        record.assessment = nil
+        records[id] = record
+        save()
     }
 
     /// Reserves a follow-up round on disk. Returns false (and changes nothing) unless the reservation is durable.

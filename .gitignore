@@ -1,7 +1,6 @@
-.build/
-.build-arm64/
-.build-x86_64/
-build/
+/.build/
+/.build-*/
+/build/
 .DS_Store
 .swiftpm/
 .vercel/
@@ -9,6 +8,17 @@ build/
 # Release Publisher source and scripts are tracked; generated app bundles remain under build/.
 scripts/open-publisher.sh
 __pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+node_modules/
+
+# Local artwork experiments and task evidence are not release inputs.
+/generated-image-*.png
+/marketing/*.png
+/marketing/follow-up-evidence/
+/marketing/logos/all/*
+!/marketing/logos/all/generated-image-c7ed7adea134.png
 
 # Local credentials, signing identities, and maintainer-only state
 .env

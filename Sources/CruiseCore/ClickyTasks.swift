@@ -127,12 +127,16 @@ public enum ClickyTaskLibrary {
         try JSONDecoder().decode([ClickyJob].self, from: data)
     }
 
+    nonisolated(unsafe) private static let isoFormatter = ISO8601DateFormatter()
+    nonisolated(unsafe) private static let fractionalISOFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
     public static func date(_ string: String?) -> Date? {
         guard let string, !string.isEmpty else { return nil }
-        let formatter = ISO8601DateFormatter()
-        if let date = formatter.date(from: string) { return date }
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: string)
+        return isoFormatter.date(from: string) ?? fractionalISOFormatter.date(from: string)
     }
 
     /// `HomeSpaceCache/thread-history.json`: the last update time of each thread.
@@ -147,12 +151,24 @@ public enum ClickyTaskLibrary {
     }
 
     /// Reads every turn file of one thread's journal.
+    private static let activityCacheLock = NSLock()
+    nonisolated(unsafe) private static var activityCache: [String: (stamp: String, activity: ClickyThreadActivity)] = [:]
+
     public static func threadActivity(journal directory: URL) -> ClickyThreadActivity? {
         guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return nil }
         var activity = ClickyThreadActivity()
         for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) where file.pathExtension == "json" {
             guard file.resolvingSymlinksInPath().standardizedFileURL
                     == directory.resolvingSymlinksInPath().appendingPathComponent(file.lastPathComponent).standardizedFileURL else { continue }
+            let attributes = try? FileManager.default.attributesOfItem(atPath: file.path)
+            let stamp = "\((attributes?[.modificationDate] as? Date)?.timeIntervalSinceReferenceDate ?? -1)|\((attributes?[.size] as? NSNumber)?.int64Value ?? -1)"
+            activityCacheLock.lock()
+            let cached = activityCache[file.path]
+            activityCacheLock.unlock()
+            if let cached, cached.stamp == stamp {
+                activity.merge(cached.activity)
+                continue
+            }
             guard let data = try? Data(contentsOf: file),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let turn = json["turn"] as? [String: Any] else { continue }
@@ -171,6 +187,9 @@ public enum ClickyTaskLibrary {
                 one.latestAt = at ?? .distantPast
                 one.suggestedNext = (turn["suggestedNextActions"] as? [String]) ?? []
             }
+            activityCacheLock.lock()
+            activityCache[file.path] = (stamp, one)
+            activityCacheLock.unlock()
             activity.merge(one)
         }
         return activity.turns > 0 ? activity : nil
@@ -452,16 +471,42 @@ public struct TaskCompletionNotice: Codable, Equatable, Sendable, Identifiable {
 public enum DefinitionOfDone {
     public static let reviewVersion = 5
     public static let maxRounds = 8
-    public static let maxDefinitionLength = 1200
+    public static let maxDefinitionLength = 5000
 
     public static func criteriaFollowUp(task: String, missing: [String]) -> String {
         TaskBumpCoverage.appendingCriteria(missing,
-            to: "Cruise Control follow-up: \(task): Cruise compared your latest report with the saved Done definition and it is not met yet. Please complete and verify the remaining work, then report the evidence.")
+            to: """
+            Cruise Control follow-up: \(task): Cruise compared your latest report with the saved Done definition, but it does not contain enough evidence to confirm every requirement. Before asking the user to clarify requirements that are already stated, inspect the current project/workspace and report the current state of each item below with concrete evidence (for example, relevant files, test/build results, or the exact implementation found). If an item is not implemented or verified, continue the work and verify it; if you are genuinely blocked on a user decision, ask only the specific question needed.
+            """)
     }
 
     public static func normalized(_ definition: String?) -> String? {
         guard let text = definition?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
         return String(text.prefix(maxDefinitionLength))
+    }
+
+    private static let fillerWords: Set<String> = [
+        "about", "also", "been", "being", "does", "doesnt", "dont", "each", "every", "from", "going", "have",
+        "into", "just", "like", "looks", "make", "more", "most", "only", "other", "should", "some", "such",
+        "than", "that", "their", "them", "then", "there", "they", "this", "very", "want", "were", "what",
+        "when", "which", "while", "will", "with", "would", "your",
+    ]
+
+    /// The distinctive words of a Done definition (lowercased, 4+ letters, filler removed).
+    public static func keyTerms(_ definition: String?) -> Set<String> {
+        guard let text = normalized(definition)?.lowercased() else { return [] }
+        let words = text.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        return Set(words.filter { $0.count >= 4 && !fillerWords.contains($0) })
+    }
+
+    /// Deterministic guard against a model calling a task done when the report never even mentions the goal:
+    /// true when fewer than half of the definition's key terms appear anywhere in the report.
+    public static func reportLacksEvidence(definition: String?, report: String) -> Bool {
+        let terms = keyTerms(definition)
+        guard !terms.isEmpty else { return false }
+        let haystack = report.lowercased()
+        let found = terms.filter { haystack.contains($0) }.count
+        return found * 2 < terms.count
     }
 
     public static func userCriteria(_ definition: String?) -> [String] {

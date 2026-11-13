@@ -1,191 +1,186 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#fbfbfb" />
-  <title>documentation &amp; safety · cruise control</title>
-  <meta name="description" content="Cruise Control documentation: current version, installation, modes, task review, read-only storage inventory, agent auto-approval risks, permissions, privacy, and how to stop automation." />
-  <link rel="icon" href="icon.svg" type="image/svg+xml" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css" />
+  <meta name="theme-color" content="#f5f7fc" />
+  <title>Guide · Cruise Control</title>
+  <meta name="description" content="Get started with Cruise Control: task goals, Auto-bump, HeyClicky and VS Code controls, local Ollama review, storage cleanup, themes and updates." />
+  <link rel="icon" href="assets/brand/blue-gauge.jpg" type="image/jpeg" />
+  <script src="theme.js"></script>
+  <link rel="stylesheet" href="brand.css" />
 </head>
 <body>
-  <div class="unofficial-bar">independent open-source public beta · not affiliated with or endorsed by heyclicky</div>
-  <nav class="nav" aria-label="main navigation">
-    <a class="brand" href="index.html"><img src="icon.svg" alt="" width="28" height="28" />cruise control</a>
-    <div class="links">
-      <a href="#safety">warnings</a>
-      <a href="#start">get started</a>
-      <a href="https://github.com/ilovespectra/CruiseControl">github</a>
-    </div>
-    <a class="pill pill-secondary small" href="index.html">home</a>
+  <a class="skip-link" href="#content">Skip to documentation</a>
+  <div class="unofficial-bar">Independent open-source companion for macOS</div>
+  <nav class="nav" aria-label="Main navigation">
+    <a class="brand" href="index.html"><img data-brand-art="gauge" src="assets/brand/blue-gauge.jpg" alt="" width="44" height="44" />Cruise Control</a>
+    <div class="links"><a href="#start">Get started</a><a href="#tasks">Tasks</a><a href="https://github.com/ilovespectra/CruiseControl">GitHub</a></div>
+    <a class="pill" href="index.html">Home</a>
   </nav>
-
-  <main class="docs">
+  <div class="theme-controls" role="group" aria-label="Page appearance">
+    <label>Accent <select data-theme-palette><option value="blue">Blue</option><option value="green">Green</option><option value="red">Red</option><option value="yellow">Yellow</option></select></label>
+    <label>Appearance <select data-theme-appearance><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+  </div>
+  <main class="docs" id="content">
     <header>
-      <p class="eyebrow">documentation</p>
-      <h1>your controls.<br />your responsibility.</h1>
-      <p class="lede">Modes for automation, a workspace for task goals, and a read-only view of local storage. VS Code options are separate.</p>
+      <div class="docs-masthead">
+        <div><p class="eyebrow">The Cruise Control guide</p><h1>A clear goal.<br />A steady workflow.</h1></div>
+        <img data-brand-art="rest" src="assets/brand/blue-rest.jpg" alt="" width="100" height="100" />
+      </div>
+      <p class="lede">Bring your HeyClicky and VS Code tasks into one dashboard. Define the finish line, review progress, and choose what happens next.</p>
       <aside class="release-note" aria-label="Release information">
-        <p><strong>Latest published:</strong> <span class="latest-version" aria-live="polite">Checking GitHub…</span> · <a class="latest-release-link" href="https://github.com/ilovespectra/CruiseControl/releases/latest">release notes</a> · <a data-latest-installer href="https://github.com/ilovespectra/CruiseControl/releases/latest/download/CruiseControl.pkg">download installer</a></p>
-        <p class="release-caveat">Docs describe current source; some features may not be in this installer. Auto-bump delivery is unverified for this release; inaccessible roots can make Storage totals incomplete.</p>
+        <p><strong>Latest release:</strong> <span class="latest-version" aria-live="polite">Checking GitHub…</span> · <a class="latest-release-link" href="https://github.com/ilovespectra/CruiseControl/releases/latest">Release notes</a> · <a data-latest-installer href="https://github.com/ilovespectra/CruiseControl/releases/latest/download/CruiseControl.pkg">Download for Mac</a></p>
+        <p class="release-caveat">This guide covers current source. Check release notes for your installed build.</p>
       </aside>
-      <nav class="docs-toc" aria-label="documentation contents">
-        <a href="#safety">safety warnings</a>
-        <a href="#stop">stop automation</a>
-        <a href="#start">installation</a>
-        <a href="#modes">modes &amp; recovery</a>
-        <a href="#tasks">task workspace</a>
-        <a href="#storage">storage manager</a>
-        <a href="#vscode">VS Code</a>
-        <a href="#privacy">permissions &amp; privacy</a>
-        <a href="#troubleshooting">troubleshooting</a>
-        <a href="#source">source &amp; support</a>
+      <nav class="docs-toc" aria-label="Guide contents">
+        <a href="#start">Installation</a><a href="#modes">Drive modes</a><a href="#tasks">Task workspace</a><a href="#ollama">Ollama</a><a href="#vscode">VS Code</a><a href="#storage">Storage</a><a href="#appearance">Notch &amp; themes</a><a href="#updates">Updates</a><a href="#safety">Automation essentials</a><a href="#stop">Pause &amp; quit</a><a href="#privacy">Privacy</a><a href="#troubleshooting">Troubleshooting</a><a href="#source">Build &amp; contribute</a>
       </nav>
     </header>
 
-    <section id="safety" class="safety-warning" aria-labelledby="safety-heading">
-      <h2 id="safety-heading">Before you automate</h2>
-      <p><strong>Cruise mode removes the human checkpoint on drive prompts.</strong> Agents may change or delete files, access sensitive data, take real-world actions, or spend money. Start in Manual, use backups and a restricted test environment, and supervise important work.</p>
-      <details class="safety-details">
-        <summary>Read the full safety guidance</summary>
-        <ul>
-          <li><strong>Data loss:</strong> commands, clicks, overwrites, database changes, and exports can destroy work or modify files that are not backed up.</li>
-          <li><strong>Secret exposure:</strong> agents may access tokens, credentials, personal documents, browser data, or other app data and transmit them elsewhere.</li>
-          <li><strong>Prompt injection and malware:</strong> pages, repositories, messages, and packages can contain hostile instructions. Approved installations may execute malicious code.</li>
-          <li><strong>Real-world actions and cost:</strong> deployments, purchases, cloud resources, messages, pushes, and account changes can have lasting consequences and consume paid credits.</li>
-          <li><strong>Persistent permissions:</strong> allowing HeyClicky to control another app through a macOS dialog can grant ongoing access to that app's documents and data. Switching to Manual does not revoke an existing macOS grant.</li>
-          <li><strong>Repeated mistakes:</strong> continuation prompts can repeat a failing or harmful approach. Idle detection can mistake a pause for unfinished work; interruption recovery may restart work you intended to stop.</li>
-        </ul>
-        <p><strong>Ollama, label matching, blocklists, and rate limits are not security boundaries.</strong> Models can miss risks or misread context, and UI changes can break detection. There is no guarantee of safety, successful completion, or a spending cap.</p>
-        <p>Do not use unattended automation for irreversible or high-stakes work. Remove credentials and sensitive data from the agent's reach. Cruise Control is independent and not affiliated with HeyClicky, VS Code, or GitHub.</p>
-      </details>
-      <a href="#stop">How to stop automation</a>
-    </section>
-
-    <section id="stop">
-      <h2>stop means stop</h2>
-      <ol>
-        <li>Select <strong>Manual</strong> to stop ordinary HeyClicky prompt responses and recovery. This does not disable separately opted-in task review or per-task Auto-bump; turn those off in their own settings too.</li>
-        <li>In <strong>Settings → Automation</strong>, disable the separate VS Code approval and model switches. Manual alone does not disable every independently enabled VS Code feature.</li>
-        <li>Turn off <strong>keep heyclicky updated</strong> if you also want to prevent automatic HeyClicky updates.</li>
-        <li>Stop any already-running agent in its own app. HeyClicky tasks showing Stopped or Stopped by you stay stopped, even with recovery enabled. Resume the task yourself in HeyClicky when ready. Switching Cruise Control modes does not cancel existing work.</li>
-      </ol>
-      <p><strong>Hide only hides the notch.</strong> Automation keeps running, and the login agent restarts Cruise Control after it exits. The green dashboard light indicates Cruise mode, not that permissions are granted or that a task is safe or complete.</p>
-      <p>In Cruise mode, the notch stays visible even when HeyClicky is closed, so VS Code automation controls remain accessible. The HeyClicky-only visibility setting applies to Manual and Rest modes. Explicit hiding and temporary hiding during synthetic clicks still work.</p>
-      <p>To uninstall the app and its login agent, run this from a checked-out copy of the repository:</p>
-      <pre><code>./scripts/build-app.sh --uninstall</code></pre>
-      <p>Configuration remains in <code>~/Library/Application Support/CruiseControl/</code>. Review and revoke any persistent Automation, Accessibility, or Screen Recording permissions in macOS System Settings → Privacy &amp; Security as needed.</p>
-    </section>
-
     <section id="start">
-      <h2>get started on mac</h2>
+      <h2>Get started on Mac</h2>
       <ol>
-        <li>Use <strong>macOS Sonoma 14 or later</strong>. Download the installer from <a href="https://github.com/ilovespectra/CruiseControl/releases">GitHub releases</a>, or inspect and build the source yourself.</li>
-        <li>Review macOS installation warnings. Unsigned or unnotarized packages may be blocked. A checksum verifies download integrity, not that the publisher or software is trustworthy. Do not disable system protections to install it.</li>
-        <li>Grant <strong>Accessibility</strong> for reading controls and pressing buttons. <strong>Screen Recording</strong> is an optional fallback for HeyClicky's notch prompts.</li>
-        <li>Open the notch dropdown, select <strong>Manual</strong>, and open <strong>Settings</strong>. Review Automation and App &amp; permissions before trying Cruise mode.</li>
+        <li><a data-latest-installer href="https://github.com/ilovespectra/CruiseControl/releases/latest/download/CruiseControl.pkg">Download the installer</a> for <strong>macOS 14 or later</strong> and open it.</li>
+        <li>Grant <strong>Accessibility</strong> in System Settings → Privacy &amp; Security. Optional <strong>Screen Recording</strong> enables visual detection of HeyClicky notch prompts.</li>
+        <li>Open the Cruise notch dropdown and Settings. Start in <strong>Manual</strong>, add a task goal, and choose the automation options you want.</li>
       </ol>
-      <p>For source builds, install the Swift toolchain / Command Line Tools and run from the repository:</p>
-      <pre><code>swift test
-./scripts/build-app.sh --install</code></pre>
-      <p>The installer places the app in <code>/Applications</code> and registers a login agent that keeps it running. By default, the notch appears while HeyClicky is open. Installing or restarting preserves existing settings, so previously enabled automation can resume.</p>
-      <p><a href="https://ollama.com">Ollama</a> can draft context-specific HeyClicky replies. The notch dropdown has a small Ollama status icon: it warns when attention is needed and stays quiet when ready. Click it to open Ollama Settings, where you can check health, open the official installer, start the app, pull a model and retry without Terminal. HeyClicky nudges use fallback text when Ollama is disabled or unavailable. Enabled VS Code approval reviews, model-progress checks, and chat follow-ups depend on a usable response: failed reviews leave requests for you, and failed checks do not automatically escalate or send follow-ups. This affects which response-handling features can run; no measured night-and-day speed improvement is claimed.</p>
-      <p>Cruise Control does not bundle the Ollama runtime or model weights. They update and license separately, and model downloads can be large; install and model pulls are explicit so you can choose what to add.</p>
+      <p>The installer places Cruise Control in <code>/Applications</code> and registers a login agent. Packages are currently unsigned and not notarized; review any macOS warning rather than disabling system protections.</p>
     </section>
 
     <section id="modes">
-      <h2>modes &amp; recovery</h2>
-      <ul>
-        <li><strong>Manual:</strong> you answer HeyClicky's prompts yourself.</li>
-        <li><strong>Rest area:</strong> drive requests receive Not now. Enabled continuation flows may still send chat messages; Rest is not a full automation-off switch.</li>
-        <li><strong>Cruise control:</strong> drive requests receive Go ahead / Let HeyClicky drive. When system-dialog handling is enabled, HeyClicky-named macOS control requests may also receive Allow.</li>
-      </ul>
-      <p>Enabled recovery handles Needs-you cards, unfinished reports, quiet chats, and interrupted tasks. It can reveal the relevant chat, send a continuation message, or use Retry when appropriate. Task audits inspect recent or explicitly tracked tasks; uncertain task identity, draft composers, or failed assessments can prevent a follow-up.</p>
-      <p>In Cruise mode, timeout/error cards saying <strong>Didn't finish</strong> are also recoverable. Cruise prefers Retry on the verified task and only spends continuation budget after the prompt clears or a recovery message is sent. Failed attempts are retried, not suppressed for half an hour. Opening another chat still waits for idle input.</p>
-      <p><strong>A user stop overrides ordinary recovery.</strong> Stopped, Stopped by you, paused and cancelled tasks receive no automatic continuation, audit follow-up or Retry. Stops are remembered across Cruise Control restarts and HeyClicky updates. For definition-based follow-ups only, an explicit Auto-bump opt-in or Generate request can release an old remembered stop when HeyClicky no longer reports the task as stopped; a currently stopped task remains held. An Interrupted badge alone does not override a Stopped by you footer. Retry is skipped if the task's chat cannot be verified.</p>
-      <p>Automatic notch inspection occurs while idle. Quiet-time thresholds shorten when the user appears away. Idle time is only a heuristic, not proof of absence or consent. Manual stops ordinary HeyClicky prompt handling and recovery; separately opted-in task review and per-task Auto-bump have their own controls and can still run in Manual. Disable those settings too if you want them paused.</p>
-      <p>Default nudge budgets are <strong>6 per task per hour</strong>, sharing a <strong>10-continuation hourly budget</strong> with at least <strong>90 seconds</strong> between continuations. Budgets persist across restarts; exhausting one intentionally leaves work for you. More retries are not a substitute for diagnosing a loop.</p>
-      <p><strong>HeyClicky updates</strong> are separately configurable and can run in any mode. Cruise Control can press Update app, wait for a relaunch, and resume interrupted tasks where permitted. Cruise Control's own Updates tab checks public GitHub releases and offers available downloads.</p>
+      <h2>Your pace, three modes</h2>
+      <div class="mode-cluster" aria-label="HeyClicky drive-prompt modes">
+        <span class="mode"><i aria-hidden="true"></i><b>Manual</b><small>You answer drive prompts</small></span>
+        <span class="mode mode-rest"><i aria-hidden="true"></i><b>Rest area</b><small>Decline drive prompts</small></span>
+        <span class="mode mode-cruise"><i aria-hidden="true"></i><b>Cruise</b><small>Approve drive prompts</small></span>
+      </div>
+      <p><strong>Manual</strong> leaves HeyClicky drive requests to you. <strong>Rest area</strong> answers “Not now” and pauses Done-based sending. <strong>Cruise</strong> answers “Go ahead” / “Let HeyClicky drive” when HeyClicky driving is enabled. Optional system-dialog handling also responds to macOS control requests that name HeyClicky.</p>
+      <p>Drive approvals, task follow-ups and VS Code options have separate controls. For example, you can review tasks and use per-task Auto-bump in Manual without enabling auto-drive.</p>
+      <p>Timeout and “Didn't finish” cards can be retried on the matching task in Cruise. Tasks marked Stopped or Stopped by you remain paused until you resume them.</p>
     </section>
 
     <section id="tasks">
-      <h2>HeyClicky task workspace</h2>
-      <p>Settings → Tasks is a companion view of the HeyClicky jobs on this Mac, not a second queue. Cruise groups jobs by project, an optional per-task workspace folder, and stable task identity; local priorities sort Cruise’s review list only. If a conversation does not identify a working directory, choose that task’s folder yourself. Workspace paths are labels for grouping, not permission to move or edit files. Search and filters help you find the task that needs attention. Manual project corrections and saved definitions of done remain attached to their task IDs.</p>
+      <h2>One workspace for your agent tasks</h2>
+      <p>Open <strong>Settings → Tasks</strong> or the task shortcut in the notch dropdown. HeyClicky jobs and VS Code sessions have their own sections, with shared controls for Done, review and follow-ups.</p>
+      <h3>Organize by project</h3>
+      <p>View all tasks individually or group them into project cards. Search, filter and sort by status, priority, saved goal and opt-ins. Local Ollama can suggest projects from thread-linked chats, repository links and paths; correct a project name yourself or leave it unspecified. Set High, Normal or Low priority at project level, with per-task overrides.</p>
+      <h3>Define Done, then keep moving</h3>
       <ol>
-        <li><strong>Organize:</strong> group jobs by project, then search, filter, and sort the list. Filters include status, priority, definition, review opt-in, per-task Auto-bump opt-in, and unassigned work. The Auto-bump filter shows saved task opt-ins; the global switch or Rest can still pause sending. Unmatched or ambiguous records stay visible rather than attaching to a lookalike task.</li>
-        <li><strong>Define done:</strong> write the task-specific result you expect. Cruise shows the latest actual HeyClicky response next to the saved criteria.</li>
-        <li><strong>Compare:</strong> local Ollama can assess the report and list supported gaps. “Reported done” describes what HeyClicky said; “criteria appear met” is an assessment of that report, not a build, test, or independent proof.</li>
-        <li><strong>Generate and send:</strong> Generate response refreshes and reviews the latest report before drafting. With Auto-bump off, sending the proposed continuation remains user-controlled; explicit Send is available in Manual. Per-task Auto-bump is a separate opt-in that can review and send eligible follow-ups in Manual or Cruise while input is idle; Rest pauses definition-based sending. It does not grant drive or tool permissions, and user stops, stale reports, repeated gaps, safety gates, and usage limits still block sending.</li>
+        <li><strong>Confirm the workspace.</strong> Review the suggested project folder or choose the correct one.</li>
+        <li><strong>Define Done.</strong> Save a task-specific goal using the editor, Markdown preview or document import.</li>
+        <li><strong>Review progress.</strong> Compare the latest response with your goal. Ollama highlights supporting evidence and remaining work; Examine/Review holds its assessment for you to read.</li>
+        <li><strong>Set the workflow.</strong> Complete <strong>Build, branches &amp; finishing</strong>: delivery, branch organization, selected work branch and whether to merge into it. HeyClicky also has a build-location choice; VS Code uses its confirmed workspace. “Choose later” keeps drafting and sending on hold.</li>
+        <li><strong>Respond.</strong> Generate and send a reviewed draft yourself, or enable <strong>Auto-bump</strong> on that task to review fresh reports and send the next eligible follow-up automatically.</li>
       </ol>
-      <p>Cruise reads HeyClicky’s local task/job records and thread history; it does not use or claim a private HeyClicky API. Where a message is explicitly opted in, Cruise uses the visible HeyClicky interface rather than writing into private caches. Messages remain bound to a stable task ID and report fingerprint, and are held if the task, report, goal, or delivery state changes. A draft, click, or empty report is not proof of delivery; check the matching task transcript for a receipt.</p>
-      <p>Task priorities and definitions organize Cruise’s own review. They do not change HeyClicky’s order, grant permissions, approve requests, publish releases, or bypass a decision you need to make. A task dismissed in HeyClicky is still shown as dismissed here; dismissal is not independent proof that its Done criteria were met. Start with manual review; leave Auto-bump off until you have checked the results of a few one-time bumps.</p>
-      <p>A changed task state can trigger a local review notice when a saved Done definition is present. Its “appears to meet” verdict is based on the report, not an independent test, and only you can mark a task finished. Unmet criteria on an Auto-bump task use that separately opted-in follow-up flow rather than a duplicate shortfall alert.</p>
+      <p>Tasks with saved Done criteria are checked automatically; VS Code checkups run on launch and every five minutes. Auto-bump is a separate per-task opt-in with configurable round limits. It works in Manual or Cruise and pauses in Rest. A completed assessment shows the report’s evidence for your final review.</p>
+      <p>Task continuation settings also let you choose whether to continue after time, credit or message limits, with per-task overrides. Explicit user decisions stay held for your input.</p>
+      <h3>Background review, without auto-drive</h3>
+      <p>Enable independent task review to let local Ollama assess opted-in tasks while drive and approval automation are off. Review-only delivery keeps drafts for you. Chat-only delivery uses the app’s chat interface; sending still requires per-task Auto-bump and a complete workflow.</p>
+      <p>Follow-ups stay linked to the exact task, goal and current report. Cruise checks the matching transcript for delivery, keeps uncertain sends pending, and avoids sending the same follow-up twice. Activity shows delivery status; set-aside messages live in Diagnostics for seven days and are not resent from there.</p>
+      <details>
+        <summary>Task identity and delivery details</summary>
+        <p>HeyClicky tasks use stable job IDs joined to their thread history. Ambiguous names, an existing composer draft, a changed report or a stopped task hold delivery. Cruise reads local HeyClicky records and sends through the visible interface, not a private messaging API. Legacy generic stall, relaunch and interruption nudges are not sent; follow-ups use saved Done criteria and explicit task settings.</p>
+        <p>Project priorities order Cruise’s review queue. Build, branch and finishing preferences are included in the agent’s instructions; the agent performs the project work. An assessment evaluates the response against your criteria, while final acceptance stays with you.</p>
+      </details>
     </section>
 
-    <section id="storage">
-      <h2>read-only storage manager</h2>
-      <p>Cruise Control’s Settings → Storage scans HeyClicky support/cache and the Agent folder configured in HeyClicky’s own Settings → Agents. Each scan reads that setting from the running HeyClicky instance; if HeyClicky is closed or the preference is missing or invalid, Cruise reports the problem rather than guessing a path. The inventory shows measured paths, sizes, last-modified ages, and task associations where known. Apparent file bytes and allocated disk bytes are labelled separately; overlapping roots and hard links count once, and interior symlinks are not followed.</p>
-      <p>Sort rows by <strong>Largest first</strong>, <strong>Oldest first</strong>, or <strong>Name</strong>; filter to all paths, task caches, or workspaces, and search paths or task names. Missing or inaccessible roots are reported as incomplete lower-bound totals. The scan is read-only: Cruise does not change HeyClicky’s folder setting, move or delete files, or send storage notices. Scans can take time, and the filesystem may change while a scan is running.</p>
+    <section id="ollama">
+      <h2>Local intelligence with Ollama</h2>
+      <p>Ollama powers project suggestions, task assessments, follow-up drafts and optional VS Code approval reviews. In <strong>Settings → Ollama</strong>, check service health, open the official installer, start Ollama, download a model and retry setup.</p>
+      <p>The notch status icon opens Ollama settings when attention is needed. The default endpoint is local to your Mac. Ollama and its models install separately, so you choose the runtime, model and download size. If a review cannot run, Cruise keeps the request or draft waiting and shows its status.</p>
     </section>
 
     <section id="vscode">
-      <h2>optional VS Code features</h2>
-      <p>These options start off and must be enabled separately in Settings → Automation.</p>
+      <h2>VS Code, on your terms</h2>
+      <p>Configure these options in <strong>Settings → Automation → VS Code</strong>. Approval and model automation start off; approvals operate in Cruise mode.</p>
       <ul>
-        <li><strong>Approval review:</strong> a fixed filter and configured Ollama model review tool requests before pressing Allow Once. Flagged, ambiguous, or failed reviews leave the request pending. Even a successful review can approve something dangerous.</li>
-        <li><strong>Multiple windows and carousels:</strong> live structured dialog inputs take priority over stale conversation descriptions. Failed approvals rotate behind other requests. Cruise handles Allow All as separate reviewed requests, never a blanket permission. Sidebar approvals stay background-only; an idle-only dialog click fallback verifies the owning window and hit-tests the reviewed button.</li>
-        <li><strong>Write/create-file approvals:</strong> Settings → Automation → VS Code includes <strong>Allow file edits without a readable diff</strong>, off by default. Some Write file and Create file dialogs expose only filenames and change counts. Enable this separate opt-in to let Ollama review that metadata, including edits or creations whose full paths or contents are unavailable; files can be outside the workspace. Disabled policy and model rejections are reported in the activity log and Settings approval status, not silently skipped. This switch does not override rejected command reviews.</li>
-        <li><strong>Tool/provider permissions:</strong> <strong>Allow tool permissions (including session grants)</strong> is a separate persistent opt-in, off by default, for Pylance and other providers. Ollama reviews exposed identity and scope, not hidden inputs. Allow in this Session can authorize later calls without individual confirmation. Disabling the switch stops new Cruise grants but does not revoke existing VS Code permissions. Permanent/always-allow and workspace-wide tool grants are not pressed. The main approval switch and usage cutoff still apply.</li>
-        <li><strong>Keep tasks going:</strong> idle unfinished conversations may receive a labelled text follow-up. Drafts and running tools are not intended to be interrupted; this is a model judgement, not a completion guarantee.</li>
-        <li><strong>Cheaper model preference:</strong> prefers MAI-Code Flash and can suggest escalation after evidenced failures. A pricier model requires explicit confirmation. UI model selection does not guarantee server-side routing or prices.</li>
-        <li><strong>Usage guard:</strong> an optional cutoff reacts to accessible usage warnings, not live billing telemetry. It can disable automation but does not cancel running agents; warnings may be delayed or missed. It is not a guaranteed spending cap.</li>
+        <li><strong>Tool approvals:</strong> review requests with Ollama before Allow Once. Multiple windows and approval carousels are handled individually, including requests displayed as Allow All.</li>
+        <li><strong>File edits:</strong> separately opt into approving Write/Create requests when VS Code exposes only file metadata rather than a full diff.</li>
+        <li><strong>Pylance and other providers:</strong> choose whether Cruise may approve tool permissions, including session grants. Session grants cover later calls in that session; permanent and workspace-wide tool grants stay with you.</li>
+        <li><strong>Fetch URL:</strong> choose <strong>Review each URL with Ollama</strong>, <strong>Allow all URL fetches</strong>, or <strong>Leave URL fetches for me</strong>.</li>
+        <li><strong>Task follow-ups:</strong> save Done and Auto-bump settings per chat across open windows. Cruise restores the previous chat after reading; drafts and active work hold sending.</li>
+        <li><strong>Model preference:</strong> prefer the configured economy model, monitor progress, and suggest escalation after repeated failures. Switching to a pricier model asks for confirmation.</li>
+        <li><strong>Waiting-session alerts:</strong> show a notice when a session needs your input, with an optional gentle sound.</li>
+        <li><strong>Usage cutoff:</strong> pause automation at your configured usage threshold, using the usage information VS Code exposes. This is a workflow guard, not a billing cap.</li>
       </ul>
-      <p>Review these <a href="#safety">safety notes</a> before enabling approvals. For local setup and contribution guidance, see the <a href="https://github.com/ilovespectra/CruiseControl/blob/main/CONTRIBUTING.md">contribution guide</a>.</p>
+      <p>Rejected or unreadable approvals stay pending with a status in Activity. Turning off tool permission approvals stops new grants; existing permissions are managed in VS Code.</p>
+    </section>
+
+    <section id="storage">
+      <h2>Know where the space goes</h2>
+      <p><strong>Settings → Storage</strong> inventories HeyClicky support data, task caches and Agent workspaces. Search by path or task, filter by category, and sort by size, age or name. Unavailable locations are marked so you can see which totals are incomplete.</p>
+      <p>Scanning is read-only. For cleanup, confirm deletion of an exact agent-thread build folder or a recognized disposable <code>.build</code> / <code>node_modules</code> subfolder in a workspace. Cruise preserves workspace source, shared HeyClicky history, journals and transcripts; deleted build outputs and dependencies can be regenerated.</p>
+    </section>
+
+    <section id="appearance">
+      <h2>A dashboard that feels like yours</h2>
+      <p>Choose the app’s blue, green, red or yellow color theme. The gauge marks Cruise; the coffee cup marks Rest. Position the notch pill on either side, hide it when you want, or show it only with HeyClicky in Manual and Rest. Cruise mode keeps the controls available even when HeyClicky is closed.</p>
+      <p>When Cruise selects a chat or sends input, a blue screen-edge glow and banner announce control. Automatic VS Code chat switches give 1.5 seconds’ notice and defer if you start typing. Reading the already selected chat stays quiet.</p>
+      <p>Settings also provides independent HeyClicky and VS Code audio controls. This guide and the landing page have their own four accent choices and System, Light or Dark appearance, saved in your browser.</p>
+      <p>Taking a break? Open <strong>Play Pride Pong…</strong> from the app menu for a quick game.</p>
+    </section>
+
+    <section id="updates">
+      <h2>Stay current</h2>
+      <p>The <strong>Updates</strong> tab checks public Cruise Control releases and offers available downloads. <strong>Keep HeyClicky updated</strong> is a separate option that handles its update-and-relaunch prompt. Saved task settings and delivery state persist across restarts.</p>
+      <p>For maintainers, the separate <a href="https://github.com/ilovespectra/CruiseControl/blob/main/DEVELOPER_CONSOLE.md">Publisher console</a> builds previews and owner-reviewed GitHub draft releases.</p>
+    </section>
+
+    <section id="safety" class="safety-warning" aria-labelledby="safety-heading">
+      <h2 id="safety-heading">A few automation essentials</h2>
+      <p>Auto-approval lets agents act without asking each time, including changing files, accessing data and using paid services. Start in Manual, keep backups, and enable only the controls you want. Supervise sensitive or irreversible work.</p>
+      <p>Ollama reviews and usage guards help manage the workflow; they are not a security sandbox or a spending limit. Persistent app permissions remain until you revoke them in macOS or VS Code.</p>
+      <a href="#stop">How to pause or quit</a>
+    </section>
+
+    <section id="stop">
+      <h2>Pause, quit or uninstall</h2>
+      <ul>
+        <li><strong>Pause driving:</strong> select Manual. Use Rest to decline HeyClicky drive requests and pause Done-based sending.</li>
+        <li><strong>Pause task work:</strong> disable independent review and task Auto-bump in Tasks. Review the separate VS Code and HeyClicky-update switches as needed.</li>
+        <li><strong>Stop Cruise entirely:</strong> choose <strong>Quit</strong> in the dropdown or press <strong>Cmd+Q</strong>. This also unloads its restart service for the current login session. Hiding the notch or closing Settings leaves Cruise running.</li>
+        <li><strong>Stop work already underway:</strong> stop that agent in HeyClicky or VS Code.</li>
+      </ul>
+      <p>To remove the app and login agent from a source checkout:</p>
+      <pre><code>./scripts/build-app.sh --uninstall</code></pre>
+      <p>Saved configuration remains in <code>~/Library/Application Support/CruiseControl/</code>.</p>
     </section>
 
     <section id="privacy">
-      <h2>permissions &amp; privacy</h2>
-      <p>Accessibility reads app labels, controls, and conversation text and can trigger actions. The optional Screen Recording fallback captures screen content to locate HeyClicky prompts. These are powerful permissions; grant them only if you trust the software.</p>
-      <p>Conversation text and tool requests are sent to your configured Ollama endpoint, <strong>localhost by default</strong>. Choosing a remote endpoint sends that content to that service; inspect its privacy and security practices. Cruise Control does not automatically attach screenshots to chat replies.</p>
-      <p>Local settings, budgets, stopped-task history, task audit history, model state, and activity logs are stored on your Mac. Logs can include task names, commands, and reply excerpts; review and redact them before sharing. The app checks public update feeds. These webpages load fonts from Google, and the landing page queries GitHub release-download counts.</p>
-      <p>HeyClicky-named system-dialog matching limits which alerts are handled, but it does not evaluate the safety of the requested access. Review existing macOS Automation grants separately.</p>
+      <h2>Your Mac, your settings</h2>
+      <p>Accessibility reads app controls and conversation text and can press buttons. Optional Screen Recording supports visual prompt detection. Settings, task history, delivery state and activity logs are saved locally.</p>
+      <p>Task text and tool requests go to your configured Ollama endpoint, local by default. A remote endpoint sends that content to the selected service. Cruise does not automatically attach screenshots to chat replies.</p>
+      <p>The app checks public update feeds. These pages use system fonts, store appearance preferences locally, and request public GitHub release information and download counts. Redact task text, commands and credentials before sharing logs.</p>
+      <p>Cruise Control is independent open-source software, not affiliated with HeyClicky, VS Code or GitHub.</p>
     </section>
 
     <section id="troubleshooting">
-      <h2>when it gets stuck</h2>
+      <h2>When something needs attention</h2>
       <ul>
-        <li><strong>Needs you stays visible:</strong> check Settings → Activity and the log for budget exhaustion, missing permissions, uncertain task identity, or a missing composer. Keep the normal recovery flow; do not assume every wait should be bypassed.</li>
-        <li><strong>Repeated follow-ups, no progress:</strong> switch to Manual, inspect the task, and provide the missing input or change approach yourself. Automatic nudges cannot guarantee that the agent can complete a task.</li>
-        <li><strong>Prompt not detected:</strong> check Accessibility and optional OCR permissions. HeyClicky and VS Code UI changes may require a Cruise Control update.</li>
-        <li><strong>Ollama unavailable:</strong> verify that the service is running and the configured model exists. Some HeyClicky flows send fallback text; VS Code reviews leave approvals pending on failure.</li>
-        <li><strong>Intentional stop resumes:</strong> check that HeyClicky exposes Stopped or Stopped by you to Accessibility and inspect the activity log. Recognized stops block recovery until you resume the task; unreadable stopped-task history disables automatic HeyClicky recovery. Use Manual if the app no longer exposes a recognizable stop state.</li>
+        <li><strong>A prompt stays open:</strong> check the relevant automation switch, Accessibility permission, Ollama health and the approval status in Activity.</li>
+        <li><strong>A follow-up is held:</strong> check the task’s Done, confirmed folder, workflow choices, Auto-bump, round limit and latest delivery status. Resume a stopped task in its own app.</li>
+        <li><strong>A review needs a model:</strong> open Ollama settings, start the service, choose an installed model and retry.</li>
+        <li><strong>Repeated work:</strong> pause Auto-bump, read the latest report and refine the goal or give the agent the missing decision.</li>
+        <li><strong>Storage totals look incomplete:</strong> inspect the unavailable roots and confirm access to the configured Agent folder.</li>
       </ul>
-      <p>Open <strong>Settings → Activity → Open activity log</strong> or <strong>App &amp; permissions → config</strong>. Settings are stored in <code>~/Library/Application Support/CruiseControl/config.json</code>; the log is <code>~/Library/Logs/CruiseControl.log</code>.</p>
-      <p>A source-build read-only diagnostic prints the current HeyClicky scan without pressing buttons:</p>
-      <pre><code>swift build
-.build/debug/CruiseControl --scan</code></pre>
+      <p>Use <strong>Settings → Activity → Open activity log</strong> for details. Configuration: <code>~/Library/Application Support/CruiseControl/config.json</code>. Log: <code>~/Library/Logs/CruiseControl.log</code>.</p>
+      <details><summary>Read-only source diagnostics</summary><pre><code>swift build
+.build/debug/CruiseControl --scan</code></pre></details>
     </section>
 
     <section id="source">
-      <h2>open source &amp; support</h2>
-      <p><a href="https://github.com/ilovespectra/CruiseControl">Browse the source on GitHub</a>, inspect changes before installing, and use <a href="https://github.com/ilovespectra/CruiseControl/issues">project issues</a> for bug reports. Include your macOS and app versions and a redacted diagnostic excerpt. Never post credentials or private conversation content.</p>
-      <p>For build and contribution instructions, see <a href="https://github.com/ilovespectra/CruiseControl/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>. Maintainer-only release steps are in <a href="https://github.com/ilovespectra/CruiseControl/blob/main/DEVELOPER_CONSOLE.md">Publisher and release safeguards</a>. This is community software, not official support for HeyClicky or VS Code.</p>
+      <h2>Build, contribute, make it yours</h2>
+      <p>With Xcode Command Line Tools installed, run from a checkout:</p>
+      <pre><code>swift test
+./scripts/run-local.sh</code></pre>
+      <p>The local testing app uses a separate identity and settings; your installed app stays unchanged. For an installable bundle, use <code>./scripts/build-app.sh</code>. Add <code>--install</code> to replace a user-owned installation and register its login agent; use the packaged installer for administrator-owned apps.</p>
+      <p><a href="https://github.com/ilovespectra/CruiseControl">Browse the source</a>, read the <a href="https://github.com/ilovespectra/CruiseControl/blob/main/CONTRIBUTING.md">contribution guide</a>, or <a href="https://github.com/ilovespectra/CruiseControl/issues">report an issue</a> with your app/macOS version and a redacted diagnostic excerpt.</p>
     </section>
   </main>
-
   <footer class="footer">
-    <div class="foot-brand"><img src="icon.svg" alt="" width="22" height="22" /> cruise control</div>
-    <nav class="footer-links" aria-label="project links">
-      <a href="index.html">home</a>
-      <a href="#safety">safety warnings</a>
-      <a href="https://github.com/ilovespectra/CruiseControl">github · source code</a>
-      <a href="https://x.com/_cruisectrl_" target="_blank" rel="noopener noreferrer">X · @_cruisectrl_</a>
-    </nav>
-    <p class="disclaimer">Independent open-source public beta. Not affiliated with, endorsed by, sponsored by, or connected to HeyClicky or its makers. Auto-approval removes human review. Use at your own risk; no guarantee of safety, completion, or spending limits.</p>
+    <div class="foot-brand"><img data-brand-art="gauge" src="assets/brand/blue-gauge.jpg" alt="" width="44" height="44" />Cruise Control</div>
+    <nav aria-label="Project links"><a href="index.html">Home</a><a href="#safety">Automation essentials</a><a href="https://github.com/ilovespectra/CruiseControl">GitHub</a></nav>
   </footer>
   <script type="module" src="downloads.mjs"></script>
 </body>

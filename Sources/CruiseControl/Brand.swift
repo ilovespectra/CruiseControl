@@ -1,6 +1,13 @@
 import SwiftUI
 import CoreText
 import CruiseCore
+import Observation
+
+@Observable
+final class BrandPalette {
+    static let shared = BrandPalette()
+    var theme: ColorTheme = .blue
+}
 
 /// Same open-license families heyclicky.com uses: Inter (UI), Instrument Serif (display), Geist Mono (logs).
 enum BrandFont {
@@ -26,29 +33,31 @@ enum BrandFont {
 }
 
 enum Brand {
-    // Sampled from HeyClicky's notch prompt: lavender glyph tile, navy face, periwinkle primary button.
-    static let lavender = Color(red: 0.86, green: 0.89, blue: 1.0)
-    static let periwinkle = Color(red: 0.71, green: 0.78, blue: 1.0)
-    static let navy = Color(red: 0.16, green: 0.21, blue: 0.55)
-    static let royal = Color(red: 0.24, green: 0.29, blue: 0.86)
+    static func color(_ rgb: UInt32) -> Color {
+        Color(.sRGB, red: Double((rgb >> 16) & 255) / 255,
+              green: Double((rgb >> 8) & 255) / 255, blue: Double(rgb & 255) / 255, opacity: 1)
+    }
+
+    static var tint: Color { color(BrandPalette.shared.theme.accentRGB) }
+    static var lavender: Color { color(BrandPalette.shared.theme.glyphRGB) }
+    static var periwinkle: Color { tint }
+    static var navy: Color { color(BrandPalette.shared.theme.shadowRGB) }
+    static var royal: Color { tint }
+    static var onAccent: Color { BrandPalette.shared.theme == .yellow ? .black : .white }
     static let card = Color(red: 0.07, green: 0.07, blue: 0.09)
     static let youBadge = Color(red: 0.89, green: 0.66, blue: 0.27)
 
-    static let primaryFill = LinearGradient(
-        colors: [Color(red: 0.80, green: 0.85, blue: 1.0), Color(red: 0.64, green: 0.72, blue: 1.0)],
+    static var primaryFill: LinearGradient { LinearGradient(
+        colors: [tint, navy],
         startPoint: .top, endPoint: .bottom
-    )
+    ) }
     static let secondaryFill = LinearGradient(
         colors: [Color.white, Color(red: 0.86, green: 0.86, blue: 0.88)],
         startPoint: .top, endPoint: .bottom
     )
 
     static func accent(for mode: DriveMode) -> Color {
-        switch mode {
-        case .manual: return Color.white.opacity(0.7)
-        case .rest: return youBadge
-        case .cruise: return Color(red: 0.36, green: 0.88, blue: 0.56)
-        }
+        tint
     }
 
     static func symbol(for mode: DriveMode) -> String {
@@ -97,18 +106,64 @@ struct CruiseGlyph: View {
     var size: CGFloat
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: size * 0.225, style: .continuous)
-                .fill(LinearGradient(colors: [Color(red: 0.05, green: 0.08, blue: 0.27),
-                                              Color(red: 0.16, green: 0.25, blue: 0.84),
-                                              Color(red: 0.43, green: 0.55, blue: 1.0)],
-                                     startPoint: .topLeading, endPoint: .bottom))
-            let line = StrokeStyle(lineWidth: size * 0.0625, lineCap: .round)
-            CruiseGauge(part: .travelled).stroke(Color.white, style: line)
-            CruiseGauge(part: .remaining).stroke(Color.white.opacity(0.3), style: line)
-            CruiseGauge(part: .needle).fill(Color.white)
+        ModeGlyph(mode: .cruise, size: size)
+    }
+}
+
+struct ModeGlyph: View {
+    var mode: DriveMode
+    var size: CGFloat
+
+    var body: some View {
+        Group {
+            if mode == .manual {
+                Image(systemName: Brand.symbol(for: mode))
+                    .resizable().scaledToFit()
+                    .foregroundStyle(Brand.tint)
+                    .padding(size * 0.16)
+            } else {
+                Image(nsImage: BrandIcons.image(theme: BrandPalette.shared.theme, mode: mode))
+                    .resizable().scaledToFit()
+            }
         }
         .frame(width: size, height: size)
+        .accessibilityLabel(mode.title)
+    }
+}
+
+enum BrandIcons {
+    private static let images: [String: NSImage] = {
+        let packaged = Bundle.main.resourceURL?
+            .appendingPathComponent("CruiseControl_CruiseControl.bundle", isDirectory: true)
+        let bundle: Bundle
+        if let packaged, let installed = Bundle(url: packaged) {
+            bundle = installed
+        } else {
+            bundle = .module
+        }
+        var images: [String: NSImage] = [:]
+        for theme in ColorTheme.allCases {
+            for mode in ["cruise", "rest"] {
+                let name = "\(theme.rawValue)-\(mode)"
+                guard let url = bundle.url(forResource: name, withExtension: "png"),
+                      let image = NSImage(contentsOf: url), image.isValid else {
+                    preconditionFailure("Missing or invalid brand icon: \(name).png in \(bundle.bundlePath)")
+                }
+                image.isTemplate = false
+                images[name] = image
+            }
+        }
+        return images
+    }()
+
+    static func image(theme: ColorTheme, mode: DriveMode) -> NSImage {
+        let name = "\(theme.rawValue)-\(mode == .rest ? "rest" : "cruise")"
+        guard let image = images[name] else { preconditionFailure("Unknown brand icon: \(name)") }
+        return image
+    }
+
+    static func validate() {
+        _ = images
     }
 }
 
@@ -117,17 +172,28 @@ struct ClickyPillButtonStyle: ButtonStyle {
     var primary: Bool
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(BrandFont.inter(11.5, .semibold))
-            .foregroundStyle(Color.black.opacity(0.85))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-            .background(
-                Capsule().fill(primary ? Brand.primaryFill : Brand.secondaryFill)
-            )
-            .overlay(
-                Capsule().strokeBorder(primary ? Brand.royal : Color.black.opacity(0.25), lineWidth: 1.5)
-            )
-            .opacity(configuration.isPressed ? 0.75 : 1)
+        PillBody(configuration: configuration, primary: primary)
+    }
+
+    private struct PillBody: View {
+        let configuration: ButtonStyleConfiguration
+        let primary: Bool
+        @Environment(\.isEnabled) private var isEnabled
+
+        var body: some View {
+            configuration.label
+                .font(BrandFont.inter(11.5, .semibold))
+                .foregroundStyle(primary && isEnabled ? Brand.onAccent : Color.black.opacity(isEnabled ? 0.85 : 0.35))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .background(
+                    Capsule().fill(primary && isEnabled ? Brand.primaryFill : Brand.secondaryFill)
+                )
+                .overlay(
+                    Capsule().strokeBorder(primary && isEnabled ? Brand.royal : Color.black.opacity(isEnabled ? 0.25 : 0.12), lineWidth: 1.5)
+                )
+                .saturation(isEnabled ? 1 : 0)
+                .opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.55)
+        }
     }
 }

@@ -11,12 +11,31 @@ private final class CruiseIndicatorPanel: NSPanel {
 @MainActor
 final class CruiseDrivingController {
     private var taskName: String?
+    private var inputAction: String?
+    private var hideWork: DispatchWorkItem?
+    private var visibilityGeneration = 0
     private var panels: [NSPanel] = []
     private var cancellables: Set<AnyCancellable> = []
 
     init(monitor: ClickyMonitor) {
         taskName = monitor.drivingTaskName
         rebuildPanels()
+        NotificationCenter.default.publisher(for: ScreenControlActivity.notification)
+            .sink { [weak self] notification in
+                guard let self, let action = notification.object as? String else { return }
+                self.hideWork?.cancel()
+                let changed = self.inputAction != action
+                self.inputAction = action
+                if changed { self.update() }
+                let work = DispatchWorkItem { [weak self] in
+                    self?.inputAction = nil
+                    self?.update()
+                }
+                self.hideWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+            }
+            .store(in: &cancellables)
+        ScreenControlActivity.enable()
         monitor.$drivingTaskName.combineLatest(monitor.$preparingFinish)
             .sink { [weak self] task, preparing in
                 self?.taskName = preparing ? nil : task
@@ -33,7 +52,7 @@ final class CruiseDrivingController {
         panels = NSScreen.screens.map { screen in
             let panel = CruiseIndicatorPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
                                              backing: .buffered, defer: false)
-            panel.title = "Cruise Control driving HeyClicky"
+            panel.title = "Cruise Control is controlling the screen"
             panel.isOpaque = false
             panel.backgroundColor = .clear
             panel.hasShadow = false
@@ -47,15 +66,30 @@ final class CruiseDrivingController {
     }
 
     private func update() {
+        visibilityGeneration += 1
+        let generation = visibilityGeneration
         for panel in panels {
-            guard let task = taskName else {
-                panel.orderOut(nil)
+            guard let task = taskName.map({ "HeyClicky: \($0)" }) ?? inputAction else {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.7
+                    panel.animator().alphaValue = 0
+                } completionHandler: { [weak self, weak panel] in
+                    guard self?.visibilityGeneration == generation else { return }
+                    panel?.orderOut(nil)
+                }
                 continue
             }
             let host = NSHostingView(rootView: CruiseDrivingView(task: task))
             host.sizingOptions = []
             panel.contentView = host
+            let wasVisible = panel.isVisible
+            if !wasVisible { panel.alphaValue = 0 }
             panel.orderFrontRegardless()
+            panel.displayIfNeeded()
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.7
+                panel.animator().alphaValue = 1
+            }
         }
     }
 }
@@ -63,21 +97,46 @@ final class CruiseDrivingController {
 private struct CruiseDrivingView: View {
     let task: String
 
+    private var title: String {
+        let app = task.contains("VS Code") ? "VS Code" : task.contains("HeyClicky") ? "HeyClicky" : "app controls"
+        return task.hasPrefix("Preparing") ? "Cruise preparing · \(app)" : "Cruise is driving \(app)"
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Brand.periwinkle.opacity(0.85), lineWidth: 24)
-                .blur(radius: 22)
-                .padding(-6)
-            Text("Cruise is driving HeyClicky: \(task) · Esc stops")
+            GeometryReader { geometry in
+                let depth = min(90.0, min(geometry.size.width, geometry.size.height) * 0.12)
+                ZStack {
+                    LinearGradient(colors: [Brand.tint.opacity(0.65), Brand.tint.opacity(0.18), .clear],
+                                   startPoint: .leading, endPoint: .trailing)
+                        .frame(width: depth).frame(maxWidth: .infinity, alignment: .leading)
+                    LinearGradient(colors: [Brand.tint.opacity(0.65), Brand.tint.opacity(0.18), .clear],
+                                   startPoint: .trailing, endPoint: .leading)
+                        .frame(width: depth).frame(maxWidth: .infinity, alignment: .trailing)
+                    LinearGradient(colors: [Brand.tint.opacity(0.65), Brand.tint.opacity(0.18), .clear],
+                                   startPoint: .top, endPoint: .bottom)
+                        .frame(height: depth).frame(maxHeight: .infinity, alignment: .top)
+                    LinearGradient(colors: [Brand.tint.opacity(0.65), Brand.tint.opacity(0.18), .clear],
+                                   startPoint: .bottom, endPoint: .top)
+                        .frame(height: depth).frame(maxHeight: .infinity, alignment: .bottom)
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Brand.tint.opacity(0.9), lineWidth: 3)
+                }
+            }
+            HStack(spacing: 8) {
+                ModeGlyph(mode: .cruise, size: 24)
+                Text(title)
+            }
                 .font(BrandFont.inter(13, .semibold))
-                .foregroundStyle(Brand.lavender)
-                .padding(12)
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
                 .background(Brand.card, in: Capsule())
-                .padding(.top, 114)
+                .padding(.top, 36)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Cruise is driving HeyClicky to finish \(task). Escape or any input stops before the X is clicked.")
+        .accessibilityLabel("Cruise Control is controlling the screen. \(task).")
         .allowsHitTesting(false)
     }
 
@@ -173,18 +232,6 @@ private struct CruiseIndicatorView: View {
     }
 
     @ViewBuilder private var mark: some View {
-        if mode == .rest {
-            Image(systemName: Brand.symbol(for: .rest))
-                .resizable().scaledToFit()
-                .fontWeight(.medium)
-                .padding(6)
-        } else {
-            ZStack {
-                let stroke = StrokeStyle(lineWidth: 3, lineCap: .round)
-                CruiseGauge(part: .remaining).stroke(accent.opacity(0.25), style: stroke)
-                CruiseGauge(part: .travelled).stroke(style: stroke)
-                CruiseGauge(part: .needle)
-            }
-        }
+        ModeGlyph(mode: mode, size: 52)
     }
 }

@@ -37,19 +37,13 @@ struct CollapsedPill: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            CruiseGlyph(size: min(17, height - 12))
+            ModeGlyph(mode: mode, size: min(20, height - 8))
                 .scaleEffect(pulse ? 1.18 : 1)
             Circle()
                 .fill(Brand.accent(for: mode))
                 .frame(width: 6, height: 6)
                 .shadow(color: Brand.accent(for: mode).opacity(0.9), radius: 3)
                 .opacity(mode == .cruise || monitor.clickyRunning ? 1 : 0.35)
-            Text(mode.shortTitle)
-                .font(BrandFont.inter(10.5, .heavy))
-                .tracking(0.8)
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .fixedSize()
             Image(systemName: "chevron.down")
                 .font(BrandFont.inter(8, .bold))
                 .foregroundStyle(.white.opacity(0.55))
@@ -88,9 +82,11 @@ struct ExpandedPanel: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            ForEach(DriveMode.allCases) { mode in
-                ModeRow(mode: mode, selected: store.config.mode == mode) {
-                    store.config.mode = mode
+            HStack(spacing: 10) {
+                ForEach(DriveMode.allCases) { mode in
+                    ModeRow(mode: mode, selected: store.config.mode == mode) {
+                        store.config.mode = mode
+                    }
                 }
             }
             Button {
@@ -186,6 +182,7 @@ struct SettingsContent: View {
     @ObservedObject var ollama: OllamaSetupController
     @State private var selectedTab = 0
     @State private var scrollTarget: String?
+    @State private var logsCopied = false
 
     var body: some View {
         VStack(spacing: 12) {
@@ -208,6 +205,9 @@ struct SettingsContent: View {
         .onReceive(NotificationCenter.default.publisher(for: SettingsController.focusTasksNotification)) { _ in
             selectedTab = 4
         }
+        .onReceive(NotificationCenter.default.publisher(for: SettingsController.focusSectionNotification)) { note in
+            if let tab = note.object as? Int { selectedTab = tab }
+        }
         .padding(16)
         .frame(minWidth: 980, minHeight: 640)
         .preferredColorScheme(.dark)
@@ -218,10 +218,12 @@ struct SettingsContent: View {
     private var selectedPage: some View {
         if selectedTab == 0 {
             settingsPage {
-                settingsSection("Cruise Control updates", detail: "Installed: \(updates.installedVersion). Public GitHub releases are checked on launch and every six hours.") {
+                settingsSection("Cruise Control updates", detail: "Installed: \(updates.versionDescription). " + (updates.isLocalTesting
+                    ? "This checkout is local only; it does not check or install public releases."
+                    : "Public GitHub releases are checked on launch and every six hours.")) {
                     Text(updates.status).textSelection(.enabled)
                     HStack {
-                        Button("Check for updates") { Task { await updates.check() } }.disabled(updates.busy)
+                        Button("Check for updates") { Task { await updates.check() } }.disabled(updates.busy || updates.isLocalTesting)
                         if updates.available != nil {
                             Button("Download update…") { Task { await updates.install() } }.disabled(updates.busy)
                         }
@@ -346,8 +348,29 @@ struct SettingsContent: View {
                     stats
                 }
                 settingsSection("Recent activity", detail: "The complete history is available in the activity log.") {
+                    HStack {
+                        Button(logsCopied ? "Copied recent logs" : "Copy recent logs") { copyRecentLogs() }
+                            .accessibilityIdentifier("copy-activity-logs")
+                        Button("Open full activity log") { NSWorkspace.shared.open(monitor.logFileURL) }
+                    }
                     activity
-                    Button("Open activity log") { NSWorkspace.shared.open(monitor.logFileURL) }
+                }
+                if !monitor.heldMessages.isEmpty {
+                    DisclosureGroup("Diagnostics · set-aside messages (\(monitor.heldMessages.count))") {
+                        Text("No action required. Automatically removed after seven days; never retried from this archive.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        ForEach(Array(monitor.heldMessages.prefix(10).enumerated()), id: \.offset) { _, message in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("\(message.task) · \(message.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                                    .font(.caption.weight(.semibold))
+                                Text(message.holdReason ?? "Delivery wasn't confirmed in time.")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                Text(message.text.prefix(400)).font(.caption2).textSelection(.enabled)
+                            }
+                        }
+                        Button("Clear set-aside messages") { monitor.clearHeldMessages() }
+                    }
+                    .font(.caption)
                 }
             }
         } else if selectedTab == 4 {
@@ -374,6 +397,18 @@ struct SettingsContent: View {
                     Toggle("Screen OCR fallback", isOn: $store.config.ocrFallback)
                 }
                 settingsSection("Appearance & startup", detail: "The dashboard light remains visible in Cruise mode. Hiding the notch does not disable automation.") {
+                    Picker("Color theme", selection: $store.config.colorTheme) {
+                        ForEach(ColorTheme.allCases) { theme in
+                            Text(theme.title).tag(theme)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    HStack(spacing: 12) {
+                        ForEach(DriveMode.allCases) { mode in
+                            ModeGlyph(mode: mode, size: 40)
+                        }
+                    }
+                    .accessibilityLabel("Selected theme mode icons")
                     Picker("Notch side", selection: $store.config.pillSide) {
                         Text("Left").tag(PillSide.left)
                         Text("Right").tag(PillSide.right)
@@ -574,6 +609,14 @@ struct SettingsContent: View {
         .padding(.horizontal, 4)
     }
 
+    private func copyRecentLogs() {
+        let text = monitor.log.suffix(100).map { "\($0.date.formatted(date: .abbreviated, time: .standard))  \($0.text)" }.joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        logsCopied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { logsCopied = false }
+    }
+
     private var activity: some View {
         VStack(alignment: .leading, spacing: 3) {
             ForEach(monitor.log.suffix(30).reversed()) { line in
@@ -609,6 +652,9 @@ struct SettingsContent: View {
             Button("hide") { NotificationCenter.default.post(name: LaunchAgent.hideNotification, object: nil) }
                 .buttonStyle(ClickyPillButtonStyle(primary: true))
                 .help("hides the pill until heyclicky launches again (or you open cruise control). your mode keeps working in the background.")
+            Button("Quit") { LaunchAgent.quit() }
+                .buttonStyle(ClickyPillButtonStyle(primary: false))
+                .help("Stops Cruise Control and unloads its restart agent for this login session. Saved settings are preserved.")
         }
         .padding(.top, 2)
     }
@@ -722,32 +768,22 @@ struct ModeRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: Brand.symbol(for: mode))
-                    .font(BrandFont.inter(13, .semibold))
-                    .foregroundStyle(selected ? Brand.navy : Brand.accent(for: mode))
-                    .frame(width: 28, height: 28)
-                    .background(Circle().fill(selected ? Color.white.opacity(0.7) : Color.white.opacity(0.08)))
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(mode.title)
-                        .font(BrandFont.inter(13, .bold))
-                    Text(mode.subtitle)
-                        .font(BrandFont.inter(10.5))
-                        .opacity(0.65)
-                }
-                .foregroundStyle(selected ? Color.black.opacity(0.85) : .white)
-                Spacer()
+            VStack(spacing: 4) {
+                ModeGlyph(mode: mode, size: 48)
                 if selected {
                     Image(systemName: "checkmark")
-                        .font(BrandFont.inter(11, .heavy))
-                        .foregroundStyle(Brand.navy)
+                        .font(BrandFont.inter(10, .heavy))
+                        .foregroundStyle(Brand.tint)
+                } else {
+                    Color.clear.frame(height: 12)
                 }
             }
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
             .background(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(selected ? AnyShapeStyle(Brand.primaryFill) : AnyShapeStyle(Color.white.opacity(hovering ? 0.10 : 0.05)))
+                    .fill(selected ? Brand.tint.opacity(0.16) : Color.white.opacity(hovering ? 0.10 : 0.05))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -756,6 +792,10 @@ struct ModeRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help("\(mode.title) · \(mode.subtitle)")
+        .accessibilityLabel(mode.title)
+        .accessibilityValue(selected ? "Selected" : "Not selected")
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
         .onHover { hovering = $0 }
     }
 }

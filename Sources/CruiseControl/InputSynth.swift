@@ -92,11 +92,13 @@ enum InputSynth {
     }
 
     static func move(to point: CGPoint) {
+        ScreenControlActivity.announce("Moving the pointer")
         CGWarpMouseCursorPosition(point)
         post(.mouseMoved, at: point)
     }
 
     static func scroll(at point: CGPoint, pixels: Int32) {
+        ScreenControlActivity.announce("Scrolling an app")
         let event = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 1,
                             wheel1: pixels, wheel2: 0, wheel3: 0)
         event?.location = point
@@ -104,6 +106,7 @@ enum InputSynth {
     }
 
     static func key(_ code: CGKeyCode, flags: CGEventFlags = []) {
+        ScreenControlActivity.announce("Sending keyboard input")
         let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true)
         let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)
         down?.flags = flags
@@ -119,6 +122,7 @@ enum InputSynth {
     static let keyReturn: CGKeyCode = 36
 
     private static func post(_ type: CGEventType, at point: CGPoint) {
+        ScreenControlActivity.announce("Controlling the pointer")
         CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .left)?
             .post(tap: .cghidEventTap)
     }

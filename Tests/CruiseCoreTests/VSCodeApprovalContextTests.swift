@@ -26,6 +26,21 @@ import Testing
         #expect(restored.vscodeRequestAlertSound)
     }
 
+    @Test func perChatDoneAndAutoBumpSettingsPersistAndDefaultOff() throws {
+        let legacy = try JSONDecoder().decode(Config.self, from: Data(#"{"vscodeTaskBumps":true}"#.utf8))
+        #expect(legacy.vscodeDefinitionsOfDone.isEmpty)
+        #expect(legacy.vscodeAutoBumpChatKeys.isEmpty)
+        #expect(legacy.vscodeAutoBumpRounds.isEmpty)
+        var config = Config()
+        config.vscodeDefinitionsOfDone["vscode|window|session"] = "Build and test"
+        config.vscodeAutoBumpChatKeys.insert("vscode|window|session")
+        config.vscodeAutoBumpRounds["vscode|window|session"] = 2
+        let restored = try JSONDecoder().decode(Config.self, from: JSONEncoder().encode(config))
+        #expect(restored.vscodeDefinitionsOfDone == config.vscodeDefinitionsOfDone)
+        #expect(restored.vscodeAutoBumpChatKeys == config.vscodeAutoBumpChatKeys)
+        #expect(restored.vscodeAutoBumpRounds == config.vscodeAutoBumpRounds)
+    }
+
     @Test func attentionStatusIsExplicitAndDoesNotConfuseWorkingOrTerminalStates() {
         for status in ["Attention Needed", "Needs Input", "Waiting for your input", "Approval Required"] {
             #expect(VSCodeApprovalContext.needsAttention("Task, State: \(status)"))

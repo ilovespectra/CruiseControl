@@ -165,6 +165,9 @@ struct CacheManagerSettingsView: View {
     @State private var sort: CacheInventorySort = .largest
     @State private var showing: CacheInventoryKind?
     @State private var search = ""
+    @State private var cacheDeleteCandidate: CacheInventoryItem?
+    @State private var disposableCandidate: (path: String, workspace: String)?
+    @State private var cacheDeleteStatus: String?
 
     private var visibleItems: [CacheInventoryItem] {
         CacheInventory.filteredAndSorted(inventory.items, kind: showing, query: search, sort: sort)
@@ -233,7 +236,7 @@ struct CacheManagerSettingsView: View {
                     .font(BrandFont.inter(10.5)).foregroundStyle(.secondary).textSelection(.enabled)
                 Text("The Agent folder is read directly from the running HeyClicky instance’s Settings › Agents preference on every scan, never guessed or overridden in Cruise. Change it in HeyClicky, then Scan now. Root totals count apparent file bytes and allocated disk bytes separately; overlapping roots and resolved aliases count once in the headline.")
                     .font(BrandFont.inter(10.5)).foregroundStyle(.secondary)
-                Text("Delete, move, edit, and automatic task-notice actions remain disabled.")
+                Text("Delete is available only for an exact agent-thread build folder; the main HeyClicky cache, journals, transcripts, and workspaces are never deletion targets.")
                     .font(BrandFont.inter(10.5, .semibold)).foregroundStyle(Brand.periwinkle)
                 if let roots = inventory.displayedReport?.storageRoots {
                     ForEach(roots) { root in
@@ -329,6 +332,12 @@ struct CacheManagerSettingsView: View {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(BrandFont.inter(11)).foregroundStyle(Brand.youBadge)
             }
+            if let cacheDeleteStatus {
+                Label(cacheDeleteStatus, systemImage: cacheDeleteStatus.hasPrefix("Deleted") ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(BrandFont.inter(10.5)).foregroundStyle(cacheDeleteStatus.hasPrefix("Deleted") ? Brand.periwinkle : Brand.youBadge)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("storage-delete-status")
+            }
             ScrollView {
                 LazyVStack(spacing: 7) {
                     ForEach(visibleItems) { item in
@@ -359,6 +368,36 @@ struct CacheManagerSettingsView: View {
         .task {
             if inventory.scannedAt == nil { await refreshAndScan() }
         }
+        .confirmationDialog("Delete this agent-thread build folder?", isPresented: Binding(
+            get: { cacheDeleteCandidate != nil },
+            set: { if !$0 { cacheDeleteCandidate = nil } }
+        ), titleVisibility: .visible) {
+            Button("Delete build folder", role: .destructive) { deleteSelectedAgentCache() }
+            Button("Cancel", role: .cancel) { cacheDeleteCandidate = nil }
+        } message: {
+            if let item = cacheDeleteCandidate {
+                Text("Only this task-specific folder will be removed:\n\(item.path)\nThe main HeyClicky cache, history, transcripts, and workspace files are excluded.")
+            }
+        }
+        .confirmationDialog("Delete disposable build/dependency cache?", isPresented: Binding(
+                get: { disposableCandidate != nil },
+                set: { if !$0 { disposableCandidate = nil } }
+            ), titleVisibility: .visible) {
+                Button("Delete cache", role: .destructive) {
+                    guard let candidate = disposableCandidate else { return }
+                    do {
+                        try TaskThreadBuildCacheDeletion.deleteDisposable(path: candidate.path, workspace: candidate.workspace)
+                        cacheDeleteStatus = "Deleted disposable cache: \(candidate.path). Dependencies/build outputs must be regenerated."
+                        Task { await refreshAndScan() }
+                    } catch {
+                        cacheDeleteStatus = "Cache deletion failed: \(error.localizedDescription)"
+                    }
+                    disposableCandidate = nil
+                }
+                Button("Cancel", role: .cancel) { disposableCandidate = nil }
+            } message: {
+                Text("Remove only \(disposableCandidate?.path ?? ""). Source files and the workspace remain. Cached dependencies or build outputs will need to be restored.")
+            }
     }
 
     private func metric(_ title: String, _ value: String, detail: String, icon: String, accent: Color) -> some View {
@@ -428,10 +467,56 @@ struct CacheManagerSettingsView: View {
             .accessibilityLabel("Show in Finder")
             .help("Show this path in Finder")
             .disabled(item.error == "Path does not exist")
+            if item.kind == .workspace {
+                ForEach([".build", "node_modules"], id: \.self) { name in
+                    let path = URL(fileURLWithPath: item.path).appendingPathComponent(name).path
+                    if TaskThreadBuildCacheDeletion.disposableDirectory(path: path, workspace: item.path) != nil {
+                        Button {
+                            disposableCandidate = (path, item.path)
+                        } label: {
+                            Label("Delete \(name)…", systemImage: "trash")
+                        }
+                        .buttonStyle(ClickyPillButtonStyle(primary: false))
+                        .help("Remove only this disposable subfolder after confirmation; preserve the workspace.")
+                    }
+                }
+            }
+            if item.kind == .cache,
+               TaskThreadBuildCacheDeletion.allowedDirectory(path: item.path) != nil {
+                Button(role: .destructive) { cacheDeleteCandidate = item } label: {
+                    Label("Delete…", systemImage: "trash")
+                }
+                .buttonStyle(ClickyPillButtonStyle(primary: false))
+                .accessibilityLabel("Delete agent-thread build folder")
+                .accessibilityIdentifier("delete-thread-build-cache-\(item.id)")
+                .help("Delete only this exact agent-thread build folder after confirmation. The main HeyClicky cache is excluded.")
+            } else if item.kind == .cache {
+                Text("History · protected")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .help("Only agent-thread build folders can be deleted here. Journals, transcripts and the main cache are protected.")
+            }
         }
         .padding(11)
         .background(Brand.card, in: RoundedRectangle(cornerRadius: 10))
         .accessibilityIdentifier("storage-path-\(item.id)")
+    }
+
+    private func deleteSelectedAgentCache() {
+        guard let item = cacheDeleteCandidate, item.kind == .cache,
+              TaskThreadBuildCacheDeletion.allowedDirectory(path: item.path) != nil else {
+            cacheDeleteStatus = "Delete blocked: this path is not an allowed agent-thread build folder."
+            cacheDeleteCandidate = nil
+            return
+        }
+        do {
+            let removed = try TaskThreadBuildCacheDeletion.delete(path: item.path)
+            cacheDeleteStatus = "Deleted agent-thread build folder: \(removed.path). Task history and the main HeyClicky cache were not changed."
+            cacheDeleteCandidate = nil
+            Task { await refreshAndScan() }
+        } catch {
+            cacheDeleteStatus = "Could not delete the agent-thread build folder: \(error.localizedDescription)"
+            cacheDeleteCandidate = nil
+        }
     }
 
     private func refreshAndScan() async {

@@ -33,10 +33,22 @@ public struct TaskPlan: Codable, Equatable, Sendable {
     public var persistCreditLimit = false
     public var persistMessageLimit = false
     public var priority: TaskPriority?
+    public var buildLocation: TaskBuildLocation?
+    public var deliveryStyle: TaskDeliveryStyle?
+    public var branchStrategy: TaskBranchStrategy?
+    public var workBranch = ""
+    public var finishMergeTarget: TaskMergeTarget?
+    public var finishMergeBranch = ""
+    /// When enabled, Mark as Finished first asks the selected agent to commit remaining work to `workBranch`.
+    public var commitPendingOnFinish = false
+    /// Fingerprint of the task report and exact workflow settings used for a pre-finish commit request.
+    public var finishCommitRequestFingerprint: String?
+    public var finishCommitRequestKey: String?
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
         case enabled, autoBump, priority, persistTimeLimit, persistCreditLimit, persistMessageLimit
+        case buildLocation, deliveryStyle, branchStrategy, workBranch, finishMergeTarget, finishMergeBranch, commitPendingOnFinish, finishCommitRequestFingerprint, finishCommitRequestKey
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -46,6 +58,16 @@ public struct TaskPlan: Codable, Equatable, Sendable {
         persistCreditLimit = try values.decodeIfPresent(Bool.self, forKey: .persistCreditLimit) ?? false
         persistMessageLimit = try values.decodeIfPresent(Bool.self, forKey: .persistMessageLimit) ?? false
         priority = try values.decodeIfPresent(TaskPriority.self, forKey: .priority)
+        buildLocation = try values.decodeIfPresent(TaskBuildLocation.self, forKey: .buildLocation)
+        deliveryStyle = try values.decodeIfPresent(TaskDeliveryStyle.self, forKey: .deliveryStyle)
+        branchStrategy = try values.decodeIfPresent(TaskBranchStrategy.self, forKey: .branchStrategy)
+        workBranch = try values.decodeIfPresent(String.self, forKey: .workBranch) ?? ""
+        finishMergeTarget = try values.decodeIfPresent(TaskMergeTarget.self, forKey: .finishMergeTarget)
+        if finishMergeTarget == .main { finishMergeTarget = .selectedBranch }
+        finishMergeBranch = try values.decodeIfPresent(String.self, forKey: .finishMergeBranch) ?? ""
+        commitPendingOnFinish = try values.decodeIfPresent(Bool.self, forKey: .commitPendingOnFinish) ?? false
+        finishCommitRequestFingerprint = try values.decodeIfPresent(String.self, forKey: .finishCommitRequestFingerprint)
+        finishCommitRequestKey = try values.decodeIfPresent(String.self, forKey: .finishCommitRequestKey)
     }
     public func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
@@ -55,6 +77,186 @@ public struct TaskPlan: Codable, Equatable, Sendable {
         try values.encode(persistCreditLimit, forKey: .persistCreditLimit)
         try values.encode(persistMessageLimit, forKey: .persistMessageLimit)
         try values.encodeIfPresent(priority, forKey: .priority)
+        try values.encodeIfPresent(buildLocation, forKey: .buildLocation)
+        try values.encodeIfPresent(deliveryStyle, forKey: .deliveryStyle)
+        try values.encodeIfPresent(branchStrategy, forKey: .branchStrategy)
+        try values.encode(workBranch, forKey: .workBranch)
+        try values.encodeIfPresent(finishMergeTarget, forKey: .finishMergeTarget)
+        try values.encode(finishMergeBranch, forKey: .finishMergeBranch)
+        try values.encode(commitPendingOnFinish, forKey: .commitPendingOnFinish)
+        try values.encodeIfPresent(finishCommitRequestFingerprint, forKey: .finishCommitRequestFingerprint)
+        try values.encodeIfPresent(finishCommitRequestKey, forKey: .finishCommitRequestKey)
+    }
+}
+
+public enum TaskBuildLocation: String, Codable, CaseIterable, Identifiable, Sendable {
+    case heyClickyCache, localWorkspace
+    public var id: String { rawValue }
+    public var title: String {
+        switch self {
+        case .heyClickyCache: "Build in HeyClicky cache"
+        case .localWorkspace: "Build locally in project workspace"
+        }
+    }
+}
+
+public enum TaskDeliveryStyle: String, Codable, CaseIterable, Identifiable, Sendable {
+    case commit, pullRequest
+    public var id: String { rawValue }
+    public var title: String { self == .commit ? "Commit changes and push to the selected branch" : "Submit a pull request from the selected branch" }
+}
+
+public enum TaskBranchStrategy: String, Codable, CaseIterable, Identifiable, Sendable {
+    case main, featureBranch
+    public var id: String { rawValue }
+    public var title: String {
+        self == .main ? "Consolidate related work on one branch" : "Create a testing/feature branch for each task"
+    }
+}
+
+public enum TaskMergeTarget: String, Codable, CaseIterable, Identifiable, Sendable {
+    case doNotMerge, main, selectedBranch
+    public static let allCases: [TaskMergeTarget] = [.doNotMerge, .selectedBranch]
+    public var id: String { rawValue }
+    public var title: String {
+        switch self {
+        case .doNotMerge: "Do not merge"
+        case .main: "Check conflicts, then merge to main"
+        case .selectedBranch: "Merge to selected branch"
+        }
+    }
+}
+
+public enum TaskWorkflow {
+    public static func autoBumpBlocker(plan: TaskPlan, requiresBuildLocation: Bool = true) -> String? {
+        var missing: [String] = []
+        if requiresBuildLocation && plan.buildLocation == nil { missing.append("build location") }
+        if plan.deliveryStyle == nil { missing.append("delivery (commit/push or pull request)") }
+        if plan.branchStrategy == nil { missing.append("branch organization") }
+        if plan.workBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { missing.append("work branch") }
+        if plan.finishMergeTarget == nil { missing.append("finish/merge policy") }
+        return missing.isEmpty ? nil : "Choose \(missing.joined(separator: ", ")) in Build, branches & finishing before drafting or sending."
+    }
+
+    public static func messageBlocker(project: TaskProject, plan: TaskPlan, requiresBuildLocation: Bool = true) -> String? {
+        guard project.directoryPath != nil else { return "Confirm a project folder before drafting or sending." }
+        return autoBumpBlocker(plan: plan, requiresBuildLocation: requiresBuildLocation)
+    }
+
+    public static func instructions(project: TaskProject, plan: TaskPlan, agentName: String = "HeyClicky",
+                                   clickyCacheLocations: [String] = []) -> String? {
+        let confirmedPath = project.directoryPath
+        let workspace = confirmedPath.map { "Confirmed project directory: \($0)" }
+            ?? "Confirmed project directory: none; do not guess one or perform local repository work until confirmed."
+        let build: String
+        switch agentName == "VS Code" ? TaskBuildLocation.localWorkspace : plan.buildLocation {
+        case .localWorkspace:
+            build = confirmedPath.map { "Build location: local workspace at \($0)." }
+                ?? "Build location: user selected local workspace, but no directory is confirmed; ask before building."
+        case .heyClickyCache:
+            let paths = clickyCacheLocations.isEmpty ? "No task-specific cache path was discovered; ask HeyClicky for the active cache location." : clickyCacheLocations.joined(separator: ", ")
+            build = "Build location: Build in HeyClicky cache (ClickyCache); task-linked cache paths: \(paths). Use only the active task's cache; do not substitute the local workspace."
+        case nil:
+            build = "Build location: not selected; ask before choosing between HeyClicky ClickyCache and the local workspace."
+        }
+        let delivery = plan.deliveryStyle?.title ?? "Ask before choosing commit/push versus pull request."
+        let branchTitle = plan.branchStrategy?.title ?? "Ask before choosing one shared branch versus a dedicated branch per task."
+        let workBranch = plan.workBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let branch = workBranch.isEmpty ? branchTitle : "\(branchTitle) Selected work branch: \(workBranch)."
+        let merge: String
+        switch plan.finishMergeTarget {
+        case nil:
+            merge = "Ask whether branches should be merged when the user marks this task finished; do not merge until confirmed."
+        case .doNotMerge:
+            merge = "When the user marks this task finished, do not merge any branch."
+        case .main, .selectedBranch:
+            let target = workBranch
+            merge = target.isEmpty
+                ? "When the user marks this task finished, ask which destination branch to merge into; do not merge until specified."
+                : "When the user marks this task finished, check for conflicts and merge associated task branches to \(target) only if clean."
+        }
+        let pendingCommit: String
+        if plan.commitPendingOnFinish {
+            pendingCommit = workBranch.isEmpty
+                ? "Mark as Finished requests an inspection/commit of task-related pending work, but no selected branch is saved; ask for the branch and leave the task open."
+                : "Mark as Finished requests \(agentName) to inspect pending task work and, if needed, commit it to \(workBranch). Preserve unrelated changes and leave the task open until the verified result is reported."
+        } else {
+            pendingCommit = "Mark as Finished must not request an additional commit of pending work."
+        }
+        return """
+        \(workspace)
+        \(build)
+        Delivery: \(delivery)
+        Branch organization: \(branch)
+        Finish/merge policy: \(merge)
+        Pending-work commit policy: \(pendingCommit)
+        These are instructions for \(agentName); Cruise does not itself switch branches, build, commit, push, create pull requests, or merge. Do not claim any such action unless the agent's report provides concrete evidence and the result is verified.
+        """
+    }
+
+    /// Constructs the actual first/manual/automatic message sent to an agent. The saved goal and all
+    /// currently selected workflow preferences are repeated in the payload, not merely kept in UI state.
+    public static func taskBumpMessage(baseMessage: String, taskName: String, definition: String,
+                                       project: TaskProject, plan: TaskPlan,
+                                       clickyCacheLocations: [String] = [], agentName: String = "HeyClicky") -> String {
+        let workflow = instructions(project: project, plan: plan, agentName: agentName,
+                                    clickyCacheLocations: clickyCacheLocations) ?? ""
+        let payload = """
+        Target \(agentName) task: \(taskName)
+
+        \(baseMessage)
+
+        Saved Done definition (full user text, verbatim):
+        \(definition)
+
+        Current user-selected task configuration:
+        \(workflow)
+        """
+        return DoneDefinitionDocument.appendingImportedDocuments(to: payload, from: definition)
+    }
+
+    public static func finishRequestKey(project: TaskProject, plan: TaskPlan, definition: String? = nil) -> String {
+        ClickyTaskLibrary.hash([project.directoryPath ?? "",
+                                DefinitionOfDone.normalized(definition) ?? "",
+                                plan.workBranch,
+                                plan.deliveryStyle?.rawValue ?? "ask", plan.branchStrategy?.rawValue ?? "ask",
+                                plan.finishMergeTarget == nil ? "ask" : (plan.finishMergeTarget == .doNotMerge ? "doNotMerge" : "selectedBranch"),
+                                instructions(project: project, plan: plan) ?? ""].joined(separator: "\u{1F}"))
+    }
+
+    public static func commitResultIsVerified(_ report: String, branch: String) -> Bool {
+        let normalized = Matcher.normalize(report)
+        let target = Matcher.normalize(branch)
+        guard !target.isEmpty, normalized.contains(target),
+              !["could not commit", "couldn't commit", "unable to commit", "not committed", "commit failed"]
+                .contains(where: normalized.contains) else { return false }
+        let committed = ["committed", "commit created", "commit hash", "commit sha", "commit id"]
+            .contains(where: normalized.contains)
+        let clean = ["no pending changes", "nothing to commit", "working tree clean", "no changes to commit"]
+            .contains(where: normalized.contains)
+        return committed || clean
+    }
+
+    public static func finishCommitMessage(taskName: String, project: TaskProject, plan: TaskPlan,
+                                           definition: String? = nil, clickyCacheLocations: [String] = [],
+                                           agentName: String = "HeyClicky") -> String? {
+        guard plan.commitPendingOnFinish,
+              project.directoryPath != nil,
+              !plan.workBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let base = """
+        Before Cruise marks \(taskName) finished, inspect for pending changes in the confirmed workspace and selected branch.
+        Commit only task-related pending work to \(plan.workBranch). Preserve unrelated user changes; do not stage or commit unrelated files. Follow the saved build, push-versus-PR, branch and merge preferences below. Report exactly what you inspected and the verified commit/branch/result. Do not close or dismiss this task in this response; leave it open until the result is reviewed.
+        """
+        if let definition = DefinitionOfDone.normalized(definition) {
+            return taskBumpMessage(baseMessage: base, taskName: taskName, definition: definition, project: project,
+                                   plan: plan, clickyCacheLocations: clickyCacheLocations, agentName: agentName)
+        }
+        return "\(base)\n\nCurrent user-selected task configuration:\n\(instructions(project: project, plan: plan, agentName: agentName, clickyCacheLocations: clickyCacheLocations) ?? "")"
+    }
+
+    public static func followUp(_ message: String, project: TaskProject, plan: TaskPlan) -> String {
+        guard let instructions = instructions(project: project, plan: plan) else { return message }
+        return "\(message)\n\nProject workflow preferences:\n\(instructions)"
     }
 }
 
@@ -70,6 +272,12 @@ public enum TaskDeliveryMode: String, Codable, CaseIterable, Identifiable, Senda
 }
 
 public enum TaskPlanning {
+    public static func vscodeAutoBumpEnabled(chatKey: String, config: Config) -> Bool {
+        config.continueUntilDefinedDone && config.vscodeAutoBumpChatKeys.contains(chatKey)
+            && DefinitionOfDone.normalized(config.vscodeDefinitionsOfDone[chatKey]) != nil
+            && TaskWorkflow.autoBumpBlocker(plan: config.vscodeTaskPlans[chatKey] ?? TaskPlan(), requiresBuildLocation: false) == nil
+    }
+
     public static func finishBlocker(taskID: String, tasks: [ClickyAgentTask]) -> String? {
         guard let task = tasks.first(where: { $0.id == taskID }) else {
             return "Close blocked: this HeyClicky job is no longer available. Refresh the task list."
@@ -83,8 +291,9 @@ public enum TaskPlanning {
         return nil
     }
 
-    public static func continuationAllowed(_ task: ClickyAgentTask, config: Config, manual: Bool) -> Bool {
-        guard !task.dismissed, !task.isWorking, !task.isStopped,
+    public static func continuationAllowed(_ task: ClickyAgentTask, config: Config, manual: Bool,
+                                           ignoringStop: Bool = false) -> Bool {
+        guard !task.dismissed, !task.isWorking, ignoringStop || !task.isStopped,
               !TaskAudit.requiresUser(task.lastMessage) else { return false }
         guard !manual else { return true }
         let sentences = (task.outcome + "\n" + task.lastMessage)
@@ -118,6 +327,7 @@ public enum TaskPlanning {
     public static func autoBumpEnabled(_ task: ClickyAgentTask, config: Config) -> Bool {
         config.continueUntilDefinedDone && config.taskPlans[task.id]?.autoBump == true
             && DefinitionOfDone.normalized(config.clickyDefinitionsOfDone[task.id]) != nil
+            && TaskWorkflow.autoBumpBlocker(plan: config.taskPlans[task.id] ?? TaskPlan()) == nil
     }
 
     /// A user-initiated one-shot bump does not require persistent per-task Auto-bump opt-in.
@@ -131,7 +341,7 @@ public enum TaskPlanning {
         return true
     }
 
-    private static func usesLocalOllama(_ config: Config) -> Bool {
+    public static func usesLocalOllama(_ config: Config) -> Bool {
         guard let url = URL(string: config.ollamaURL) else { return false }
         return ["127.0.0.1", "localhost", "::1", "[::1]"].contains(url.host?.lowercased() ?? "")
             && ["http", "https"].contains(url.scheme?.lowercased() ?? "")

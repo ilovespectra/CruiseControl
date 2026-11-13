@@ -309,6 +309,42 @@ import Testing
                 + Int64(sparseInfo.st_blocks) * 512)
     }
 
+    @Test func taskBuildCacheDeletionAllowsOnlyExactAgentThreadDirectories() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let allowed = root.appendingPathComponent("AgentHarness/h1-local/thread_123", isDirectory: true)
+        let mainCache = root.appendingPathComponent("HomeSpaceCache/thread_123", isDirectory: true)
+        let workspace = root.appendingPathComponent("AgentHarness/h1-local/thread_123/workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: allowed, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: mainCache, withIntermediateDirectories: true)
+        try Data("build data".utf8).write(to: allowed.appendingPathComponent("build.log"))
+        try Data("history".utf8).write(to: mainCache.appendingPathComponent("transcript.json"))
+
+        #expect(TaskThreadBuildCacheDeletion.allowedDirectory(path: allowed.path, root: root) == allowed)
+        #expect(TaskThreadBuildCacheDeletion.allowedDirectory(path: mainCache.path, root: root) == nil)
+        #expect(TaskThreadBuildCacheDeletion.allowedDirectory(path: workspace.path, root: root) == nil)
+        #expect(TaskThreadBuildCacheDeletion.allowedDirectory(path: root.path, root: root) == nil)
+        #expect(TaskThreadBuildCacheDeletion.allowedDirectory(path: root.appendingPathComponent("AgentHarness/h1-local/../thread_123").path, root: root) == nil)
+
+        try TaskThreadBuildCacheDeletion.delete(path: allowed.path, root: root)
+        #expect(!FileManager.default.fileExists(atPath: allowed.path))
+        #expect(try String(contentsOf: mainCache.appendingPathComponent("transcript.json"), encoding: .utf8) == "history")
+    }
+
+    @Test func taskBuildCacheDeletionRejectsSymlinkedAgentDirectories() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let real = root.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        let harness = root.appendingPathComponent("AgentHarness", isDirectory: true)
+        try FileManager.default.createDirectory(at: harness, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: harness.appendingPathComponent("h1-local").path,
+                                                   withDestinationPath: real.path)
+        #expect(TaskThreadBuildCacheDeletion.allowedDirectory(
+            path: harness.appendingPathComponent("h1-local/thread_123").path, root: root
+        ) == nil)
+    }
+
     @Test func cancelledScanDoesNotReportAnUntouchedRootAsComplete() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }

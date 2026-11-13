@@ -25,7 +25,7 @@ final class NotchController {
     private var hiddenByUser = false
     private var menuBarHeight: CGFloat = 32
 
-    private let pillWidth: CGFloat = 128
+    private let pillWidth: CGFloat = 76
     private let expandedWidth: CGFloat = 330
 
     init(store: ConfigStore, monitor: ClickyMonitor, ollama: OllamaSetupController) {
@@ -152,11 +152,6 @@ final class NotchController {
         let frame = screen.frame
         menuBarHeight = max(screen.safeAreaInsets.top, NSStatusBar.system.thickness, frame.maxY - screen.visibleFrame.maxY)
         let side = store.config.pillSide
-        // Keep Cruise's dropdown visibly separated from HeyClicky's notch menu on either side.
-        // Both placements use the same outward gap; the final frame is clamped to the active display below.
-        // HeyClicky's expanded dropdown is centered on the notch and about 2.75× its width; the pill nests flush against its edge.
-        let heyClickyWidthRatio: CGFloat = 2.75
-
         // Reassigning rootView re-renders synchronously, so fittingSize below is accurate.
         host.rootView = NotchRootView(
             store: store,
@@ -171,16 +166,11 @@ final class NotchController {
             }
         )
 
-        let pillX: CGFloat
-        if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
-            let notchMinX = frame.minX + left.width
-            let notchMaxX = frame.maxX - right.width
-            let halfDropdown = (notchMaxX - notchMinX) * heyClickyWidthRatio / 2
-            let notchMidX = (notchMinX + notchMaxX) / 2
-            pillX = side == .right ? notchMidX + halfDropdown : notchMidX - halfDropdown - pillWidth
-        } else {
-            pillX = frame.midX - pillWidth / 2
-        }
+        let left = screen.auxiliaryTopLeftArea.map { Double($0.width) }
+        let right = screen.auxiliaryTopRightArea.map { Double($0.width) }
+        let pillX = CGFloat(NotchPlacement.pillX(screenMinX: Double(frame.minX), screenMaxX: Double(frame.maxX),
+                                                pillWidth: Double(pillWidth), notchLeftWidth: left, notchRightWidth: right,
+                                                sideIsRight: side == .right))
 
         var size = CGSize(width: pillWidth, height: menuBarHeight)
         var x = pillX

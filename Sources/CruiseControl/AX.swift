@@ -32,18 +32,28 @@ enum AX {
     }
 
     @discardableResult
-    static func press(_ e: AXUIElement) -> Bool {
-        AXUIElementPerformAction(e, kAXPressAction as CFString) == .success
+    static func press(_ e: AXUIElement, requiresUserPause: Bool = true) -> Bool {
+        if requiresUserPause { announceControl(e) }
+        return AXUIElementPerformAction(e, kAXPressAction as CFString) == .success
     }
 
     @discardableResult
     static func setFocused(_ e: AXUIElement) -> Bool {
-        AXUIElementSetAttributeValue(e, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success
+        announceControl(e)
+        return AXUIElementSetAttributeValue(e, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success
     }
 
     @discardableResult
     static func setValue(_ e: AXUIElement, _ text: String) -> Bool {
-        AXUIElementSetAttributeValue(e, kAXValueAttribute as CFString, text as CFString) == .success
+        announceControl(e)
+        return AXUIElementSetAttributeValue(e, kAXValueAttribute as CFString, text as CFString) == .success
+    }
+
+    private static func announceControl(_ element: AXUIElement) {
+        var pid: pid_t = 0
+        AXUIElementGetPid(element, &pid)
+        let app = NSRunningApplication(processIdentifier: pid)?.localizedName ?? "another app"
+        ScreenControlActivity.announce("Controlling \(app)")
     }
 
     static func stringValue(_ e: AXUIElement) -> String? {

@@ -11,6 +11,8 @@ final class AppUpdates: ObservableObject {
     @Published private(set) var busy = false
     private var timer: Timer?
     var installedVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0" }
+    var isLocalTesting: Bool { Bundle.main.object(forInfoDictionaryKey: "CruiseControlLocalTesting") as? Bool == true }
+    var versionDescription: String { isLocalTesting ? "\(installedVersion) (local testing)" : installedVersion }
 
     struct Asset: Decodable {
         let name: String
@@ -31,6 +33,10 @@ final class AppUpdates: ObservableObject {
     }
 
     func start() {
+        guard !isLocalTesting else {
+            status = "Local testing build. GitHub release checks and installation are disabled."
+            return
+        }
         Task { await check() }
         timer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { _ in
             Task { @MainActor in await self.check() }
@@ -49,6 +55,11 @@ final class AppUpdates: ObservableObject {
     }
 
     func check() async {
+        guard !isLocalTesting else {
+            available = nil
+            status = "Local testing build. GitHub release checks and installation are disabled."
+            return
+        }
         guard !busy else { return }
         busy = true
         defer { busy = false }
@@ -77,6 +88,10 @@ final class AppUpdates: ObservableObject {
     }
 
     func install() async {
+        guard !isLocalTesting else {
+            status = "Local testing builds cannot install public releases. Rebuild the checkout instead."
+            return
+        }
         guard !busy, let release = available else { return }
         let alert = NSAlert()
         alert.messageText = "Download and install \(release.tag_name)?"

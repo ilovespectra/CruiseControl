@@ -4,6 +4,63 @@ import Testing
 @testable import CruiseCore
 
 struct ClickyThreadEvidenceTests {
+    @Test func changedConversationFileIsReReadInsteadOfServedFromCache() throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = "AgentHarness/h1-mac/cached-thread/turns.json"
+        try write(["1": ["text": "Build in /projects/Old"]], path, root: root)
+        let first = try #require(ClickyThreadEvidence.load(threadIDs: ["cached-thread"], root: root)["cached-thread"])
+        #expect(first.references.map(\.text).joined().contains("/projects/Old"))
+        try write(["1": ["text": "Build in /projects/NewerName"]], path, root: root)
+        let second = try #require(ClickyThreadEvidence.load(threadIDs: ["cached-thread"], root: root)["cached-thread"])
+        #expect(second.references.map(\.text).joined().contains("/projects/NewerName"))
+        #expect(!second.references.map(\.text).joined().contains("/projects/Old"))
+    }
+
+    @Test func intelHarnessEvidenceIsReadWithoutDependingOnCodexMetadata() throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write(["1": ["text": "Build in /projects/Intel"]],
+                  "AgentHarness/h1-mac/intel-thread/turns.json", root: root)
+        try write(["cfg": ["workspace": "/projects/Intel"]],
+                  "AgentHarness/h1-mac/intel-thread/job.json", root: root)
+        let result = try #require(ClickyThreadEvidence.load(threadIDs: ["intel-thread"], root: root)["intel-thread"])
+        #expect(result.references.count == 2)
+        #expect(result.references.allSatisfy { $0.source.contains("h1-mac/intel-thread/") })
+        #expect(result.errors.isEmpty)
+    }
+
+    @Test func unavailableWALSidecarRetriesQueryAndReportsCheckpointOnlyMetadata() throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("CodexHome/sqlite")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent("state_5.sqlite")
+        var db: OpaquePointer?
+        #expect(sqlite3_open(url.path, &db) == SQLITE_OK)
+        #expect(sqlite3_exec(db, """
+        PRAGMA journal_mode=WAL;
+        CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT, git_origin_url TEXT);
+        INSERT INTO threads VALUES ('owned', '/projects/Intel', NULL);
+        PRAGMA wal_checkpoint(TRUNCATE);
+        """, nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+        // A directory at SQLite's shared-memory path deterministically denies sidecar access,
+        // including on test runners that can bypass POSIX read-only permissions.
+        let shm = URL(fileURLWithPath: url.path + "-shm")
+        if FileManager.default.fileExists(atPath: shm.path) { try FileManager.default.removeItem(at: shm) }
+        try FileManager.default.createDirectory(at: shm, withIntermediateDirectories: false)
+        try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: url.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: folder.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path) }
+        let before = try Data(contentsOf: url)
+        let result = try #require(ClickyThreadEvidence.load(threadIDs: ["owned"], root: root)["owned"])
+        #expect(result.references.contains { $0.text.contains("/projects/Intel") })
+        #expect(result.errors.contains { $0.contains("Partial thread metadata") && $0.contains("checkpointed") })
+        #expect(try Data(contentsOf: url) == before)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: shm.path).isEmpty)
+    }
+
     private func root() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("clicky-evidence-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

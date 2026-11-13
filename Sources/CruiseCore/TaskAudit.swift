@@ -19,6 +19,7 @@ public enum TaskAudit {
     /// `implicitYes` ignores generic question openers ("can you…?"), which Cruise answers with yes.
     /// A future, conditional OS permission note is not evidence that the task currently needs the user.
     public static func requiresUser(_ text: String, implicitYes: Bool = false) -> Bool {
+        if hasUnresolvedWorkflowChoice(text) { return true }
         let relevantText = text
             .components(separatedBy: CharacterSet(charactersIn: ".!?\n"))
             .filter { !isConditionalSystemPermissionNote($0) && !isPermissionExplanation($0)
@@ -60,6 +61,19 @@ public enum TaskAudit {
         }
 
         return relevantText.components(separatedBy: CharacterSet(charactersIn: ".!?\n")).contains(where: isActiveRequest)
+    }
+
+    /// An agent cannot infer a choice that the task configuration explicitly leaves to the user.
+    public static func hasUnresolvedWorkflowChoice(_ text: String) -> Bool {
+        let topics = #"(build location|build and test|clickycache|local workspace|which branch|branch organization|dedicated branch|shared branch|pull request|commit and push|merge policy)"#
+        return text.components(separatedBy: CharacterSet(charactersIn: ".!?\n")).contains { part in
+            let sentence = Matcher.normalize(part)
+            let question = sentence.range(of: #"\b(which|where|should i|should we|would you|do you prefer|do you want)\b"#,
+                                  options: .regularExpression) != nil
+            let waiting = sentence.range(of: #"\b(waiting on|waiting for|need your|choose|select)\b.{0,100}\b(choice|location|branch|workspace|clickycache|pull request)\b"#,
+                                         options: .regularExpression) != nil
+            return (question || waiting) && sentence.range(of: topics, options: .regularExpression) != nil
+        }
     }
 
     private static func isConditionalSystemPermissionNote(_ sentence: String) -> Bool {

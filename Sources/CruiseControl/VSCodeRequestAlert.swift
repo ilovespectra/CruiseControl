@@ -150,6 +150,10 @@ final class VSCodeRequestAlertController {
     }
 
     private func navigate(to notice: VSCodePendingRequestNotice) {
+        guard !monitor.safetyReviewInProgress else {
+            monitor.record("safety guide: finish the current held request before opening another request")
+            return
+        }
         acknowledge(notice)
         guard let app = NSRunningApplication(processIdentifier: notice.appPID), !app.isTerminated else { return }
         app.activate(options: [.activateAllWindows])

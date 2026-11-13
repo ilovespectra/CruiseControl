@@ -4,12 +4,14 @@ import Foundation
 public struct PendingMessage: Codable, Equatable {
     public let task: String
     public let text: String
-    public let transcript: [String]
+    public var transcript: [String]
     public var createdAt = Date()
     public var submissionAttempted = false
     public private(set) var holdReason: String?
     public var completionTarget: CompletionTarget?
     public var chatOnly: Bool?
+    /// Direct one-shot message the user explicitly requested (for example, pre-finish commit review).
+    public var userApprovedOneShot: Bool?
 
     public struct CompletionTarget: Codable, Equatable, Sendable {
         public let taskID: String
@@ -17,12 +19,15 @@ public struct PendingMessage: Codable, Equatable {
         public let reportFingerprint: String?
         /// Explicit user-requested one-shot bump; absent/false requires the task's persistent Auto-bump opt-in.
         public let oneShot: Bool?
+        public let workflowKey: String?
 
-        public init(taskID: String, definition: String, reportFingerprint: String? = nil, oneShot: Bool = false) {
+        public init(taskID: String, definition: String, reportFingerprint: String? = nil, oneShot: Bool = false,
+                    workflowKey: String? = nil) {
             self.taskID = taskID
             self.definition = definition
             self.reportFingerprint = reportFingerprint
             self.oneShot = oneShot
+            self.workflowKey = workflowKey
         }
 
         public func matches(definition current: String?, enabled: Bool) -> Bool {
@@ -33,33 +38,38 @@ public struct PendingMessage: Codable, Equatable {
 
     /// Old messages require review; they remain on disk until delivered or explicitly discarded.
     public static let maxAge: TimeInterval = 30 * 60
+    public static let conversationChangedHoldReason =
+        "Conversation has moved on. Review the saved message; it will not be sent into a changed conversation."
     private static let contextLength = 24
 
     public init(task: String, text: String, transcript: [String], createdAt: Date = Date(), completionTarget: CompletionTarget? = nil,
-                chatOnly: Bool? = nil) {
+                chatOnly: Bool? = nil, userApprovedOneShot: Bool? = nil) {
         self.task = task
         self.text = text
         self.transcript = transcript
         self.createdAt = createdAt
         self.completionTarget = completionTarget
         self.chatOnly = chatOnly
+        self.userApprovedOneShot = userApprovedOneShot
     }
 
     public func automationAllowed(config: Config) -> Bool {
         guard !config.usageCutoffReached else { return false }
+        guard let target = completionTarget,
+              target.reportFingerprint != nil,
+              TaskWorkflow.autoBumpBlocker(plan: config.taskPlans[target.taskID] ?? TaskPlan()) == nil else { return false }
         if chatOnly != true {
-            guard let target = completionTarget else {
-                return config.mode == .cruise && config.autoContinueReports
-            }
             let oneShot = target.oneShot == true
             guard TaskPlanning.definitionDeliveryAllowed(config: config, oneShot: oneShot) else { return false }
             return target.matches(definition: config.clickyDefinitionsOfDone[target.taskID],
                                   enabled: oneShot || config.continueUntilDefinedDone)
-                && (oneShot || config.taskPlans[target.taskID]?.autoBump == true)
+                && (oneShot || (config.taskPlans[target.taskID]?.autoBump == true
+                    && TaskWorkflow.autoBumpBlocker(plan: config.taskPlans[target.taskID] ?? TaskPlan()) == nil))
         }
         guard let target = completionTarget, target.reportFingerprint != nil else { return false }
         return config.backgroundTaskReview && config.backgroundTaskDelivery == .chatOnly && config.ollamaEnabled
             && config.taskPlans[target.taskID]?.enabled == true
+            && config.taskPlans[target.taskID]?.autoBump == true
             && target.matches(definition: config.clickyDefinitionsOfDone[target.taskID], enabled: true)
     }
 
@@ -73,6 +83,15 @@ public struct PendingMessage: Codable, Equatable {
 
     public mutating func hold(_ reason: String) {
         holdReason = reason
+    }
+
+    public func canRetryAfterConversationChange(input: String?) -> Bool {
+        completionTarget != nil && chatOnly != true && !submissionAttempted && input == ""
+    }
+
+    public mutating func rebaseAfterConversationChange(transcript: [String]) {
+        self.transcript = transcript
+        holdReason = nil
     }
 
     public func delivery(selectedTask: String?, input: String?, transcript current: [String]) -> Delivery {

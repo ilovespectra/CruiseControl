@@ -3,6 +3,185 @@ import Testing
 @testable import CruiseCore
 
 struct TaskPlanningTests {
+    @Test func finishRequestKeyChangesWhenDoneChanges() {
+        var project = TaskProject()
+        project.directory = "/tmp/project"
+        var plan = TaskPlan()
+        plan.deliveryStyle = .commit
+
+        let one = TaskWorkflow.finishRequestKey(project: project, plan: plan, definition: "Ship tests")
+        let two = TaskWorkflow.finishRequestKey(project: project, plan: plan, definition: "Ship a release")
+        let same = TaskWorkflow.finishRequestKey(project: project, plan: plan, definition: "Ship tests")
+
+        #expect(one != two)
+        #expect(one == same)
+    }
+
+    @Test func bothProvidersCarryEveryCurrentPolicyInTheFirstMessage() throws {
+        var project = TaskProject()
+        project.directory = "/tmp/confirmed-workspace"
+        let definition = "Verify tests.\n### Imported document: acceptance.md\n\n> Verify persistence after relaunch."
+        for agent in ["HeyClicky", "VS Code"] {
+            for build in TaskBuildLocation.allCases {
+                for delivery in TaskDeliveryStyle.allCases {
+                    for branch in TaskBranchStrategy.allCases {
+                        for merge in TaskMergeTarget.allCases {
+                            for pendingCommit in [true, false] {
+                                var plan = TaskPlan()
+                                plan.buildLocation = build
+                                plan.deliveryStyle = delivery
+                                plan.branchStrategy = branch
+                                plan.workBranch = "feature/exact-task"
+                                plan.finishMergeTarget = merge
+                                plan.finishMergeBranch = "release/verified"
+                                plan.commitPendingOnFinish = pendingCommit
+                                let message = TaskWorkflow.taskBumpMessage(
+                                    baseMessage: "Verify the remaining work.", taskName: "Exact task",
+                                    definition: definition, project: project, plan: plan,
+                                    clickyCacheLocations: ["/tmp/task-owned-cache"], agentName: agent)
+                                #expect(message.contains("Target \(agent) task: Exact task"))
+                                #expect(message.contains(definition))
+                                #expect(message.contains("/tmp/confirmed-workspace"))
+                                #expect(message.contains("feature/exact-task"))
+                                #expect(message.contains(delivery.title))
+                                #expect(message.contains("Imported document acceptance.md (parsed text, verbatim):\nVerify persistence after relaunch."))
+                                #expect(message.contains(pendingCommit ? "Mark as Finished requests \(agent)" : "must not request an additional commit"))
+                                if agent == "HeyClicky", build == .heyClickyCache {
+                                    #expect(message.contains("/tmp/task-owned-cache"))
+                                }
+                                if agent == "VS Code" {
+                                    #expect(message.contains("Build location: local workspace at /tmp/confirmed-workspace"))
+                                    #expect(!message.contains("ClickyCache"))
+                                }
+                                if merge == .selectedBranch { #expect(message.contains("merge associated task branches to feature/exact-task")) }
+                                var config = Config()
+                                config.vscodeTaskPlans["exact-session"] = plan
+                                config.vscodeTaskProjects["exact-session"] = project
+                                config.vscodeDefinitionsOfDone["exact-session"] = definition
+                                let restored = try JSONDecoder().decode(Config.self, from: JSONEncoder().encode(config))
+                                #expect(restored.vscodeTaskProjects["exact-session"]?.directoryPath == project.directoryPath)
+                                #expect(restored.vscodeTaskPlans["exact-session"] == plan)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test func perTaskWorkflowPreferencesSurviveMigrationAndGuideHeyClicky() throws {
+        let legacy = try JSONDecoder().decode(TaskPlan.self, from: Data("{}".utf8))
+        #expect(legacy.buildLocation == nil)
+        #expect(legacy.deliveryStyle == nil)
+        #expect(legacy.branchStrategy == nil)
+        #expect(legacy.finishMergeTarget == nil)
+
+        var plan = TaskPlan()
+        plan.buildLocation = .localWorkspace
+        plan.deliveryStyle = .pullRequest
+        plan.branchStrategy = .featureBranch
+        plan.workBranch = "testing/cruise"
+        plan.finishMergeTarget = .selectedBranch
+        plan.finishMergeBranch = "release/testing"
+        let restored = try JSONDecoder().decode(TaskPlan.self, from: JSONEncoder().encode(plan))
+        #expect(restored == plan)
+
+        var project = TaskProject()
+        project.directory = "/tmp/project"
+        let instructions = TaskWorkflow.instructions(project: project, plan: plan)
+        #expect(instructions?.contains("Submit a pull request") == true)
+        #expect(instructions?.contains("merge associated task branches to testing/cruise") == true)
+        #expect(instructions?.contains("testing/cruise") == true)
+        #expect(instructions?.contains("testing/feature branch") == true)
+        #expect(instructions?.contains("Do not claim") == true)
+        project.directory = ""
+        #expect(TaskWorkflow.instructions(project: project, plan: plan)?.contains("none; do not guess") == true)
+    }
+
+    @Test func initialTaskBumpCarriesFullDefinitionImportedTextAndEverySavedPolicy() {
+        var project = TaskProject()
+        project.directory = "/tmp/project"
+        var plan = TaskPlan()
+        plan.buildLocation = .heyClickyCache
+        plan.deliveryStyle = .pullRequest
+        plan.branchStrategy = .featureBranch
+        plan.workBranch = "testing/cruise"
+        plan.finishMergeTarget = .selectedBranch
+        plan.finishMergeBranch = "release/testing"
+        plan.commitPendingOnFinish = true
+        let definition = "Ship the feature.\n### Imported document: release-notes.md\n\n> Include tested migration steps."
+        let message = TaskWorkflow.taskBumpMessage(
+            baseMessage: "Continue by verifying the remaining acceptance criteria.",
+            taskName: "Cruise task", definition: definition, project: project, plan: plan,
+            clickyCacheLocations: ["/Users/test/Library/Application Support/Clicky/AgentHarness/h1-local/thread-1"])
+
+        #expect(message.contains("Saved Done definition (full user text, verbatim):\n\(definition)"))
+        #expect(message.contains("Imported document release-notes.md (parsed text, verbatim):\nInclude tested migration steps."))
+        #expect(message.contains("Confirmed project directory: /tmp/project"))
+        #expect(message.contains("HeyClicky cache (ClickyCache)"))
+        #expect(message.contains("h1-local/thread-1"))
+        #expect(message.contains("pull request"))
+        #expect(message.contains("feature branch for each task"))
+        #expect(message.contains("testing/cruise"))
+        #expect(message.contains("merge associated task branches to testing/cruise"))
+        #expect(message.contains("Mark as Finished requests HeyClicky"))
+        #expect(message.contains("Cruise does not itself switch branches, build, commit, push, create pull requests, or merge"))
+    }
+
+    @Test func unconfirmedWorkspaceStillTransmitsSelectedPoliciesWithoutGuessingAPath() {
+        var plan = TaskPlan()
+        plan.buildLocation = .localWorkspace
+        plan.deliveryStyle = .commit
+        plan.commitPendingOnFinish = false
+        let message = TaskWorkflow.taskBumpMessage(baseMessage: "Continue.", taskName: "T",
+                                                   definition: "Pass tests.", project: TaskProject(), plan: plan)
+        #expect(message.contains("Confirmed project directory: none; do not guess"))
+        #expect(message.contains("user selected local workspace, but no directory is confirmed"))
+        #expect(message.contains("Commit changes and push"))
+        #expect(message.contains("must not request an additional commit of pending work"))
+    }
+
+    @Test func workflowChoicesDescribeBuildCommitBranchAndFinishPolicy() {
+        var project = TaskProject()
+        project.directory = "/tmp/project"
+        var plan = TaskPlan()
+        plan.buildLocation = .heyClickyCache
+        plan.deliveryStyle = .commit
+        plan.branchStrategy = .main
+        plan.finishMergeTarget = .doNotMerge
+        let instructions = TaskWorkflow.instructions(project: project, plan: plan)
+        #expect(instructions?.contains("Build in HeyClicky cache") == true)
+        #expect(instructions?.contains("Commit changes") == true)
+        #expect(instructions?.contains("Consolidate related work on one branch") == true)
+        #expect(instructions?.contains("do not merge") == true)
+    }
+
+    @Test func confirmedWorkspaceGitBranchesCanBeListedAndCreated() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try runGit(["init", root.path])
+        try runGit(["-C", root.path, "config", "user.email", "test@example.invalid"])
+        try runGit(["-C", root.path, "config", "user.name", "Cruise tests"])
+        let file = root.appendingPathComponent("README")
+        try Data("test".utf8).write(to: file)
+        try runGit(["-C", root.path, "add", "README"])
+        try runGit(["-C", root.path, "commit", "-m", "initial"])
+        try TaskWorkspaceGit.createBranch("testing/feature", in: root.path)
+        #expect(try TaskWorkspaceGit.branches(in: root.path).contains("testing/feature"))
+    }
+
+    private func runGit(_ arguments: [String]) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = arguments
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try process.run()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+    }
+
     @Test func driveApprovalsDefaultToHeyClickyOnlyAndVSCodeRequiresCruise() throws {
         var config = try JSONDecoder().decode(Config.self, from: Data("{}".utf8))
         #expect(config.heyClickyDriveEnabled)
@@ -206,6 +385,12 @@ struct TaskPlanningTests {
         config.clickyDefinitionsOfDone[task.id] = "Tests pass"
         config.taskPlans[task.id] = TaskPlan()
         config.taskPlans[task.id]?.autoBump = true
+        #expect(!TaskPlanning.autoBumpEnabled(task, config: config))
+        config.taskPlans[task.id]?.buildLocation = .localWorkspace
+        config.taskPlans[task.id]?.deliveryStyle = .commit
+        config.taskPlans[task.id]?.branchStrategy = .main
+        config.taskPlans[task.id]?.workBranch = "main"
+        config.taskPlans[task.id]?.finishMergeTarget = .doNotMerge
         #expect(TaskPlanning.autoBumpEnabled(task, config: config))
         config.taskPlans[task.id]?.enabled = true
         config.taskPlans[task.id]?.autoBump = false

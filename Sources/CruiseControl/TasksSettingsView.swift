@@ -102,7 +102,7 @@ private struct TaskCodeBlockView: View {
     }
 }
 
-private struct TaskReportContent: View {
+struct TaskReportContent: View {
     let text: String
 
     var body: some View {
@@ -123,6 +123,43 @@ private struct TaskReportContent: View {
             }
         }
     }
+}
+
+private enum TaskProviderFilter: String, CaseIterable, Identifiable {
+    case all, heyClicky, vsCode
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .all: "All"
+        case .heyClicky: "HeyClicky"
+        case .vsCode: "VS Code"
+        }
+    }
+}
+
+private enum AgentTaskEntry: Identifiable {
+    case clicky(CatalogTask)
+    case vscode(VSCodeVisibleSession)
+
+    var id: String {
+        switch self {
+        case .clicky(let task): "clicky:\(task.id)"
+        case .vscode(let session): "vscode:\(session.key)"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .clicky(let task): task.name
+        case .vscode(let session): session.title
+        }
+    }
+}
+
+private struct AgentTaskGroup: Identifiable {
+    let id: String
+    let title: String
+    var entries: [AgentTaskEntry]
 }
 
 private enum TaskListFilter: String, CaseIterable, Identifiable {
@@ -151,12 +188,17 @@ struct TasksSettingsView: View {
     @ObservedObject private var tasks = ClickyTaskStore.shared
     @State private var search = ""
     @State private var filter: TaskListFilter = .all
+    @State private var providerFilter: TaskProviderFilter = .all
     @State private var priorityFilter: TaskPriorityFilter = .all
     @State private var projectFilter = "all"
+    @State private var vscodeSessions: [VSCodeVisibleSession] = []
+    @State private var selectedVSCodeSessionKey: String?
     @State private var collapsedGroups: Set<String> = []
     @State private var initializedGroupState = false
     @State private var refreshing = false
     @State private var selectedTaskID: String?
+    @State private var showingProjectWizard = false
+    @State private var workspaceWizardAutoPresented = false
 
     private let visibleSorts: [TaskSort] = [.priority, .updated, .newest, .name]
 
@@ -179,26 +221,60 @@ struct TasksSettingsView: View {
         let grouping: TaskGrouping = groupedByWorkspace ? .directory : groupedByProject ? .project : .none
         let catalogSort: TaskSort = selectedSort == .priority ? .name : selectedSort
         let candidates = monitor.taskCatalog.groups(by: grouping, sort: catalogSort, query: search)
-        let included = candidates.filter { group in
-            (projectFilter == "all" || !groupedByProject || group.id == projectFilter)
-                && !visibleTasks(in: group, matching: listFilter).isEmpty
+        guard providerFilter != .vsCode else { return [] }
+        guard selectedSort == .priority else {
+            return candidates.filter { group in group.tasks.contains { isVisible($0, matching: listFilter) } }
         }
-        guard selectedSort == .priority else { return included }
-        return included.sorted { left, right in
-            if left.id == "unassigned" { return false }
-            if right.id == "unassigned" { return true }
-            let leftPriority = projectPriority(for: left).rank
-            let rightPriority = projectPriority(for: right).rank
-            if leftPriority != rightPriority { return leftPriority < rightPriority }
-            let leftUpdate = latestUpdate(in: left)
-            let rightUpdate = latestUpdate(in: right)
-            if leftUpdate != rightUpdate { return leftUpdate > rightUpdate }
-            return left.title.localizedStandardCompare(right.title) == .orderedAscending
+        // Compute each group's sort key once; sort comparators must not re-filter tasks.
+        let keyed = candidates.compactMap { group -> (TaskCatalog.Group, rank: Int, updated: Date)? in
+            let matches = group.tasks.filter { isVisible($0, matching: listFilter) }
+            guard !matches.isEmpty else { return nil }
+            return (group, matches.map { priority(for: $0).rank }.min() ?? TaskPriority.normal.rank,
+                    matches.map(lastUpdate(for:)).max() ?? .distantPast)
         }
+        return keyed.sorted { left, right in
+            if left.0.id == "unassigned" { return false }
+            if right.0.id == "unassigned" { return true }
+            if left.rank != right.rank { return left.rank < right.rank }
+            if left.updated != right.updated { return left.updated > right.updated }
+            return left.0.title.localizedStandardCompare(right.0.title) == .orderedAscending
+        }.map(\.0)
     }
 
     private var visibleTaskCount: Int {
-        visibleGroups.reduce(0) { $0 + visibleTasks(in: $1).count }
+        visibleGroups.reduce(0) { $0 + visibleTasks(in: $1).count } + visibleVSCodeSessions.count
+    }
+
+    private var visibleVSCodeSessions: [VSCodeVisibleSession] {
+        guard providerFilter != .heyClicky, filter != .closed else { return [] }
+        let query = Matcher.normalize(search)
+        return vscodeSessions.filter { session in
+            let workspace = session.workspaceTitle ?? session.discoveredDirectory.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Unassigned workspace"
+            guard query.isEmpty || Matcher.normalize("\(session.title) \(workspace) \(session.discoveredDirectory ?? "")").contains(query) else { return false }
+            if projectFilter != "all", projectKey(vscodeProject(session)) != projectFilter { return false }
+            let definition = DefinitionOfDone.normalized(store.config.vscodeDefinitionsOfDone[session.key])
+            let optedIn = store.config.vscodeAutoBumpChatKeys.contains(session.key)
+            let state = Matcher.normalize(session.state)
+            switch filter {
+            case .all: break
+            case .needsDefinition: guard definition == nil else { return false }
+            case .defined: guard definition != nil else { return false }
+            case .attention: guard state.contains("wait") || state.contains("need") || state.contains("fail") || state.contains("error") else { return false }
+            case .working: guard state.contains("work") || state.contains("run") else { return false }
+            case .reportedDone: guard state.contains("done") || state.contains("complete") else { return false }
+            case .unassigned: guard store.config.vscodeTaskProjects[session.key]?.directoryPath == nil else { return false }
+            case .reviewEnabled: guard store.config.vscodeTaskPlans[session.key]?.enabled == true else { return false }
+            case .autoBumpEnabled: guard optedIn else { return false }
+            case .closed: return false
+            }
+            let priority = store.config.vscodeTaskPlans[session.key]?.priority ?? .normal
+            return priorityFilter.includes(priority)
+        }
+    }
+
+    private var selectedVSCodeSession: VSCodeVisibleSession? {
+        guard let selectedVSCodeSessionKey else { return nil }
+        return visibleVSCodeSessions.first { $0.key == selectedVSCodeSessionKey }
     }
 
     private var attentionTaskCount: Int {
@@ -206,18 +282,22 @@ struct TasksSettingsView: View {
     }
 
     private func visibleTasks(in group: TaskCatalog.Group, matching listFilter: TaskListFilter? = nil) -> [CatalogTask] {
-        let matches = group.tasks.filter { matchesFilter($0, matching: listFilter ?? filter) && priorityFilter.includes(priority(for: $0)) }
+        let matches = group.tasks.filter { isVisible($0, matching: listFilter ?? filter) }
         guard selectedSort == .priority else { return matches }
-        return matches.sorted { left, right in
-            let leftPriority = priority(for: left).rank
-            let rightPriority = priority(for: right).rank
-            if leftPriority != rightPriority { return leftPriority < rightPriority }
-            let leftUpdate = lastUpdate(for: left)
-            let rightUpdate = lastUpdate(for: right)
-            if leftUpdate != rightUpdate { return leftUpdate > rightUpdate }
-            let comparison = left.name.localizedStandardCompare(right.name)
-            return comparison == .orderedSame ? left.id < right.id : comparison == .orderedAscending
-        }
+        return matches.map { ($0, rank: priority(for: $0).rank, updated: lastUpdate(for: $0)) }
+            .sorted { left, right in
+                if left.rank != right.rank { return left.rank < right.rank }
+                if left.updated != right.updated { return left.updated > right.updated }
+                let comparison = left.0.name.localizedStandardCompare(right.0.name)
+                return comparison == .orderedSame ? left.0.id < right.0.id : comparison == .orderedAscending
+            }
+            .map(\.0)
+    }
+
+    private func isVisible(_ item: CatalogTask, matching listFilter: TaskListFilter) -> Bool {
+        (projectFilter == "all" || projectKey(item.project) == projectFilter)
+            && priorityFilter.includes(priority(for: item))
+            && matchesFilter(item, matching: listFilter)
     }
 
     private func matchesFilter(_ item: CatalogTask, matching listFilter: TaskListFilter) -> Bool {
@@ -266,7 +346,7 @@ struct TasksSettingsView: View {
     }
 
     private func lastUpdate(for item: CatalogTask) -> Date {
-        tasks.task(item.id)?.updatedAt ?? item.updatedAt
+        tasks.updatedAt(item.id) ?? item.updatedAt
     }
 
     private func latestUpdate(in group: TaskCatalog.Group) -> Date {
@@ -274,22 +354,128 @@ struct TasksSettingsView: View {
     }
 
     private var projectFilterTitle: String {
-        projectGroups.first(where: { $0.id == projectFilter })?.title ?? "All projects"
+        if projectFilter == "all" { return "All projects & workspaces" }
+        return projectChoices.first { $0.id == projectFilter }?.title ?? "All projects & workspaces"
+    }
+
+    private func projectKey(_ project: TaskProject) -> String {
+        project.directoryPath.map { "dir:\($0)" } ?? project.priorityKey
+    }
+
+    private func vscodeProject(_ session: VSCodeVisibleSession) -> TaskProject {
+        if let confirmed = store.config.vscodeTaskProjects[session.key] { return confirmed }
+        var suggestion = TaskProject()
+        suggestion.name = session.workspaceTitle ?? ""
+        suggestion.directory = session.discoveredDirectory ?? ""
+        return suggestion
+    }
+
+    private var projectChoices: [AgentTaskGroup] {
+        let projects = monitor.taskCatalog.tasks.map(\.project) + vscodeSessions.map(vscodeProject)
+        var names: [String: String] = [:]
+        for project in projects { names[projectKey(project)] = project.title ?? "Unassigned" }
+        return names.map { AgentTaskGroup(id: $0.key, title: $0.value, entries: []) }
+            .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+    private var vscodeWorkspaceNames: [String] {
+        Array(Set(vscodeSessions.map { session in
+            session.workspaceTitle ?? session.discoveredDirectory.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Unassigned workspace"
+        })).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
     private var listedTaskIDs: [String] { visibleGroups.flatMap { visibleTasks(in: $0) }.map(\.id) }
     private var selectedTask: CatalogTask? {
+        guard selectedVSCodeSessionKey == nil, providerFilter != .vsCode else { return nil }
         let listed = visibleGroups.flatMap { visibleTasks(in: $0) }
-        return listed.first(where: { $0.id == selectedTaskID }) ?? listed.first
+        return listed.first(where: { $0.id == selectedTaskID })
+    }
+
+    private var unifiedEntries: [AgentTaskEntry] {
+        let entries = visibleGroups.flatMap { visibleTasks(in: $0) }.map(AgentTaskEntry.clicky)
+            + visibleVSCodeSessions.map(AgentTaskEntry.vscode)
+        func priorityRank(_ entry: AgentTaskEntry) -> Int {
+            switch entry {
+            case .clicky(let item): priority(for: item).rank
+            case .vscode(let session): (store.config.vscodeTaskPlans[session.key]?.priority ?? .normal).rank
+            }
+        }
+        func date(_ entry: AgentTaskEntry) -> Date {
+            switch entry {
+            case .clicky(let task): selectedSort == .newest ? task.createdAt ?? .distantPast : lastUpdate(for: task)
+            case .vscode: .distantPast
+            }
+        }
+        return entries.sorted { left, right in
+            if selectedSort == .priority, priorityRank(left) != priorityRank(right) {
+                return priorityRank(left) < priorityRank(right)
+            }
+            if [.updated, .newest].contains(selectedSort), date(left) != date(right) {
+                return date(left) > date(right)
+            }
+            let comparison = left.title.localizedStandardCompare(right.title)
+            return comparison == .orderedSame ? left.id < right.id : comparison == .orderedAscending
+        }
+    }
+
+    private var unifiedGroups: [AgentTaskGroup] {
+        guard groupedByProject || groupedByWorkspace else {
+            return [.init(id: "all", title: "", entries: unifiedEntries)]
+        }
+        var groups: [AgentTaskGroup] = []
+        for entry in unifiedEntries {
+            let project: TaskProject
+            switch entry {
+            case .clicky(let task): project = task.project
+            case .vscode(let session): project = vscodeProject(session)
+            }
+            let key = projectKey(project)
+            if let index = groups.firstIndex(where: { $0.id == key }) {
+                groups[index].entries.append(entry)
+            } else {
+                groups.append(.init(id: key, title: groupedByWorkspace ? project.directoryPath ?? "Unassigned workspace" : project.title ?? "Unassigned", entries: [entry]))
+            }
+        }
+        return groups
+    }
+
+    private var selectedEntryID: String? {
+        if let selectedVSCodeSessionKey { return "vscode:\(selectedVSCodeSessionKey)" }
+        return selectedTaskID.map { "clicky:\($0)" }
+    }
+
+    private func selectEntry(_ entry: AgentTaskEntry?) {
+        selectedTaskID = nil
+        selectedVSCodeSessionKey = nil
+        switch entry {
+        case .clicky(let task): selectedTaskID = task.id
+        case .vscode(let session): selectedVSCodeSessionKey = session.key
+        case nil: break
+        }
+    }
+
+    private func refreshVSCodeSessions() async {
+        let config = store.config
+        let discovered = await Worker.scanVSCode { VSCodeScanner(config: config).visibleTaskSessions() }
+        monitor.adoptLegacyVSCodeKeys(discovered)
+        vscodeSessions = discovered
+        if let selectedVSCodeSessionKey, !discovered.contains(where: { $0.key == selectedVSCodeSessionKey }) {
+            self.selectedVSCodeSessionKey = nil
+        }
     }
 
     private var redesignedBody: some View {
         VStack(spacing: 0) {
-            taskHeader.padding(.bottom, 12)
-            taskOverview.padding(.bottom, 12)
-            taskControls.padding(.bottom, 8)
-            taskFilters.padding(.bottom, 10)
-            DisclosureGroup("Cruise permissions & background review") {
+            taskHeader.padding(.bottom, 8)
+            TimelineView(.periodic(from: .now, by: 2)) { _ in
+                Label(monitor.engineSummary, systemImage: monitor.engineActivity == nil ? "checklist" : "gearshape.2")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("task-engine-summary")
+            }
+            .padding(.bottom, 6)
+            taskControls.padding(.bottom, 6)
+            taskFilters.padding(.bottom, 7)
+            DisclosureGroup("Automation & safety") {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Mode: \(store.config.mode.rawValue.capitalized). Task Auto-bump runs in Manual or Cruise independently of drive approvals; Rest pauses it.")
                     Toggle("Allow per-task auto-bumps", isOn: $store.config.continueUntilDefinedDone)
@@ -297,7 +483,7 @@ struct TasksSettingsView: View {
                     Toggle("Review opted-in tasks in the background", isOn: $store.config.backgroundTaskReview)
                     Text("Background review is separate from Auto-bump and selected-task previews. Global switches never change a task's saved opt-in.")
                     if let message = monitor.pendingMessage {
-                        Text("Sending is blocked by a saved message to \(message.task). Review it in Activity before discarding the delivery record.")
+                        Text("Confirming delivery of a message to \(message.task). If HeyClicky doesn't confirm it within 10 minutes it's set aside in Activity and other tasks keep going.")
                             .foregroundStyle(Brand.youBadge)
                     }
                 }
@@ -313,20 +499,30 @@ struct TasksSettingsView: View {
         .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 18))
-        .task { await monitor.refreshTaskCatalog() }
+        .task {
+            await refreshVSCodeSessions()
+            await monitor.refreshTaskCatalog()
+        }
+        .task {
+            // VS Code chats appear, finish and get renamed while this pane is open.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                guard !Task.isCancelled else { return }
+                await refreshVSCodeSessions()
+            }
+        }
         .onReceive(tasks.$tasks) { loaded in
             if tasks.loadedAt != nil { monitor.updateTaskCatalog(loaded) }
         }
         .onReceive(tasks.$loadedAt) { loadedAt in
             guard loadedAt != nil else { return }
             monitor.updateTaskCatalog(tasks.tasks)
-            if selectedTaskID == nil { selectedTaskID = listedTaskIDs.first }
-            if projectFilter != "all" && !visibleGroups.contains(where: { $0.id == projectFilter }) { projectFilter = "all" }
+            if selectedEntryID == nil { selectEntry(unifiedEntries.first) }
         }
-        .onChange(of: listedTaskIDs) { previousIDs, ids in
-            if !ids.contains(selectedTaskID ?? "") {
-                let previousIndex = previousIDs.firstIndex(of: selectedTaskID ?? "") ?? 0
-                selectedTaskID = ids.isEmpty ? nil : ids[min(previousIndex, ids.count - 1)]
+        .onChange(of: unifiedEntries.map(\.id)) { previousIDs, ids in
+            if !ids.contains(selectedEntryID ?? "") {
+                let previousIndex = previousIDs.firstIndex(of: selectedEntryID ?? "") ?? 0
+                selectEntry(unifiedEntries.isEmpty ? nil : unifiedEntries[min(previousIndex, ids.count - 1)])
             }
         }
         .onReceive(tasks.$requestedTaskID) { id in
@@ -335,58 +531,77 @@ struct TasksSettingsView: View {
             filter = .all
             priorityFilter = .all
             projectFilter = "all"
+            providerFilter = .all
+            selectedVSCodeSessionKey = nil
             selectedTaskID = id
             tasks.requestedTaskID = nil
+        }
+        .sheet(isPresented: $showingProjectWizard) {
+            TaskProjectWizard(monitor: monitor, store: store, vscodeSessions: vscodeSessions) {
+                store.config.taskWorkspaceWizardCompleted = true
+                showingProjectWizard = false
+            }
         }
     }
 
     private var taskHeader: some View {
-        HStack(alignment: .center, spacing: 12) {
-            RoundedRectangle(cornerRadius: 12).fill(Brand.primaryFill)
-                .overlay(Image(systemName: "checklist").foregroundStyle(Brand.navy).font(.title3))
-                .frame(width: 42, height: 42)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("HeyClicky Tasks").font(BrandFont.inter(20, .semibold))
-                Text("One place for project context, priorities, completion goals, and the latest report.")
-                    .font(BrandFont.inter(11)).foregroundStyle(.secondary)
+        HStack(alignment: .center, spacing: 9) {
+            Image(systemName: "checklist").foregroundStyle(Brand.periwinkle).font(.title3)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Tasks").font(BrandFont.inter(16, .semibold))
+                Text("HeyClicky & VS Code · \(monitor.taskCatalog.currentTaskCount) tasks · \(vscodeSessions.count) sessions")
+                    .font(BrandFont.inter(9.5)).foregroundStyle(.secondary)
             }
             Spacer()
             Button {
-                Task { refreshing = true; await monitor.refreshTaskCatalog(); await tasks.refresh(); refreshing = false }
+                Task {
+                    refreshing = true
+                    await refreshVSCodeSessions()
+                    await monitor.refreshTaskCatalog()
+                    await tasks.refresh()
+                    refreshing = false
+                }
             } label: {
                 Label(refreshing ? "Refreshing…" : "Refresh", systemImage: "arrow.clockwise")
             }
             .buttonStyle(.bordered)
-            .disabled(refreshing || tasks.loading)
+            .disabled(refreshing)
             .accessibilityIdentifier("refresh-agent-tasks")
-        }
-    }
-
-    private var taskOverview: some View {
-        HStack(spacing: 8) {
-            overviewMetric("CURRENT TASKS", "\(monitor.taskCatalog.currentTaskCount)", "checklist", Brand.periwinkle)
-            overviewMetric("NEED ATTENTION", "\(attentionTaskCount)", "exclamationmark.circle", Brand.youBadge)
-            overviewMetric("PROJECTS", "\(projectGroups.count)", "folder", Brand.accent(for: .cruise))
+            Button("Review tasks & folders") { showingProjectWizard = true }
+                .buttonStyle(.bordered)
+                .help("Review first-word task suggestions and confirm or reject each task and workspace.")
+                .accessibilityIdentifier("review-task-groups")
         }
     }
 
     private var taskControls: some View {
-        HStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 7) {
+        HStack(spacing: 9) {
             TextField("Search tasks, projects, workspaces…", text: $search)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityIdentifier("agent-task-search")
-            HStack(spacing: 4) {
-                Text("Group").font(BrandFont.inter(9, .medium)).foregroundStyle(.secondary)
+            Picker("Provider", selection: $providerFilter) {
+                ForEach(TaskProviderFilter.allCases) { option in Text(option.title).tag(option) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 180)
+            .accessibilityIdentifier("task-provider-filter")
+        }
+        DisclosureGroup("Sort & organization") {
+        HStack(spacing: 9) {
+            Menu {
                 ForEach([TaskGrouping.project, .directory, .none]) { option in
-                    let title = option == .directory ? "Workspaces" : option == .project ? "Projects" : "All"
-                    Button(title) {
+                    Button {
                         store.config.taskGrouping = option
                         projectFilter = "all"
+                    } label: {
+                        let title = option == .directory ? "Group by workspace" : option == .project ? "Group by project" : "Flat task list"
+                        if (groupedByWorkspace ? .directory : groupedByProject ? .project : .none) == option { Label(title, systemImage: "checkmark") }
+                        else { Text(title) }
                     }
-                    .buttonStyle(TaskControlPillStyle(selected: (groupedByWorkspace ? .directory : groupedByProject ? .project : .none) == option))
-                    .accessibilityIdentifier("task-group-\(option.rawValue)")
                 }
-            }
+            } label: { TaskMenuPill(title: groupedByWorkspace ? "Workspace groups" : groupedByProject ? "Project groups" : "Flat list", icon: "folder") }
             .accessibilityIdentifier("agent-task-layout")
             Menu {
                 ForEach(TaskPriorityFilter.allCases) { option in
@@ -419,21 +634,33 @@ struct TasksSettingsView: View {
             .frame(width: 135)
             .accessibilityIdentifier("agent-task-sort")
         }
+        }
+        }
     }
 
     private var taskFilters: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
+        HStack(spacing: 8) {
+            Menu {
                 ForEach(TaskListFilter.allCases) { option in
-                    Button(option.title) { filter = option }
-                    .buttonStyle(TaskControlPillStyle(selected: filter == option))
-                    .accessibilityIdentifier("task-filter-\(option.id)")
+                    Button {
+                        filter = option
+                    } label: {
+                        if filter == option { Label(option.title, systemImage: "checkmark") }
+                        else { Text(option.title) }
+                    }
                 }
-                if projectFilter != "all" {
-                    Button("Clear project filter") { projectFilter = "all" }
-                        .font(BrandFont.inter(10, .semibold)).foregroundStyle(Brand.periwinkle)
+            } label: { TaskMenuPill(title: filter.title, icon: "line.3.horizontal.decrease.circle") }
+            .accessibilityIdentifier("agent-task-filter")
+            Menu {
+                Button("All projects & workspaces") { projectFilter = "all" }
+                ForEach(projectChoices) { group in
+                    Button(group.title) { projectFilter = group.id }
                 }
-            }
+            } label: { TaskMenuPill(title: projectFilterTitle, icon: "folder") }
+            .accessibilityIdentifier("agent-project-filter")
+            Spacer(minLength: 0)
+            Text("\(visibleTaskCount) shown")
+                .font(BrandFont.inter(9)).foregroundStyle(.secondary)
         }
     }
 
@@ -447,16 +674,27 @@ struct TasksSettingsView: View {
 
     private var taskListColumn: some View {
         ScrollView(.vertical) {
-            LazyVStack(alignment: .leading, spacing: 10) {
+            LazyVStack(alignment: .leading, spacing: 7) {
                 HStack {
-                    Text(groupedByWorkspace ? "WORKSPACES" : groupedByProject ? "PROJECTS" : "TASKS")
+                    Text("TASKS & SESSIONS")
                         .font(BrandFont.inter(9, .bold)).tracking(0.8).foregroundStyle(.secondary)
                     Spacer()
                     Text("\(visibleTaskCount)").font(BrandFont.mono(9)).foregroundStyle(.tertiary)
                 }
-                ForEach(visibleGroups) { group in taskGroupRow(group) }
-                if visibleGroups.isEmpty {
-                    Text(tasks.loading ? "Reading local HeyClicky tasks…" : "Nothing matches these filters.")
+                ForEach(unifiedGroups) { group in
+                    if !group.title.isEmpty {
+                        Text(group.title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            .lineLimit(1).help(group.title).padding(.top, 5)
+                    }
+                ForEach(group.entries) { entry in
+                    switch entry {
+                    case .clicky(let task): taskListButton(task)
+                    case .vscode(let session): vscodeSessionRow(session)
+                    }
+                    }
+                }
+                if visibleTaskCount == 0 {
+                    Text(tasks.loading ? "Reading agent tasks…" : "Nothing matches these filters.")
                         .font(BrandFont.inter(11)).foregroundStyle(.secondary).padding(12)
                 }
             }
@@ -466,11 +704,11 @@ struct TasksSettingsView: View {
         .accessibilityIdentifier("task-sidebar-scroll")
         .focusable()
         .onMoveCommand { direction in
-            let ids = listedTaskIDs
-            guard !ids.isEmpty else { return }
-            let index = ids.firstIndex(of: selectedTaskID ?? "") ?? 0
-            if direction == .up { selectedTaskID = ids[max(0, index - 1)] }
-            if direction == .down { selectedTaskID = ids[min(ids.count - 1, index + 1)] }
+            let entries = unifiedEntries
+            guard !entries.isEmpty else { return }
+            let index = entries.firstIndex(where: { $0.id == selectedEntryID }) ?? 0
+            if direction == .up { selectEntry(entries[max(0, index - 1)]) }
+            if direction == .down { selectEntry(entries[min(entries.count - 1, index + 1)]) }
         }
     }
 
@@ -500,30 +738,48 @@ struct TasksSettingsView: View {
             .accessibilityIdentifier("task-detail-scroll")
     }
 
+    private func vscodeSessionRow(_ session: VSCodeVisibleSession) -> some View {
+        let selected = selectedVSCodeSessionKey == session.key
+        let workspace = session.workspaceTitle ?? session.discoveredDirectory.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Workspace not identified"
+        return Button {
+            selectedTaskID = nil
+            selectedVSCodeSessionKey = session.key
+        } label: {
+            HStack(alignment: .top, spacing: 7) {
+                Circle().fill(session.ambiguous ? Brand.youBadge : taskAccent(session.state)).frame(width: 6, height: 6).padding(.top, 4)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 4) {
+                        Text(session.title).font(BrandFont.inter(10, .medium)).lineLimit(1)
+                        if session.ambiguous { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Brand.youBadge) }
+                    }
+                    Text("VS Code · \(workspace) · \(session.state)")
+                        .font(BrandFont.inter(8.5)).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+            .background(selected ? Brand.navy.opacity(0.75) : Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(selected ? Brand.periwinkle.opacity(0.5) : Color.clear))
+        }
+        .buttonStyle(.plain)
+        .disabled(session.ambiguous)
+        .help(session.ambiguous ? "This session identity is ambiguous; no actions are available." : "Select this exact VS Code session. VS Code exposes relative update labels, not a creation timestamp; dated sorts place unknown timestamps last.")
+        .accessibilityIdentifier("vscode-task-row-\(session.id)")
+    }
+
     @ViewBuilder
     private var taskDetailContent: some View {
-        if let current = selectedTask {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    Image(systemName: "text.alignleft").foregroundStyle(Brand.periwinkle)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(current.name).font(BrandFont.inter(16, .semibold)).textSelection(.enabled)
-                        Text("\(current.project.title ?? "Unassigned project") · \(current.status.replacingOccurrences(of: "_", with: " ").capitalized)")
-                            .font(BrandFont.inter(10)).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                }
+        if let session = selectedVSCodeSession {
+            VSCodeTasksSection(session: session, store: store, monitor: monitor)
+                .id(session.key)
                 .padding(12)
-                .background(Brand.card, in: RoundedRectangle(cornerRadius: 12))
-                TaskProjectRow(task: current, projects: projectGroups.map(\.project), store: store,
-                               tasks: tasks, monitor: monitor,
-                               assign: { monitor.assignProject($0, to: current.id) },
-                               reset: { monitor.resetProject(for: current.id) }, initiallyExpanded: true)
-                    .id(current.id)
-                    .padding(12)
-                    .background(Brand.card, in: RoundedRectangle(cornerRadius: 12))
-            }
-            .padding(12)
+        } else if let current = selectedTask {
+            TaskProjectRow(task: current, projects: projectGroups.map(\.project), store: store,
+                           tasks: tasks, monitor: monitor,
+                           assign: { monitor.assignProject($0, to: current.id) },
+                           reset: { monitor.resetProject(for: current.id) }, initiallyExpanded: false)
+                .id(current.id)
+                .padding(12)
         } else {
             VStack(spacing: 10) {
                 Image(systemName: "text.magnifyingglass").font(.largeTitle).foregroundStyle(Brand.periwinkle)
@@ -559,14 +815,14 @@ struct TasksSettingsView: View {
     }
 
     private func taskListButton(_ item: CatalogTask) -> some View {
-        let selected = selectedTaskID == item.id
-        return Button { selectedTaskID = item.id } label: {
+        let selected = selectedVSCodeSessionKey == nil && selectedTaskID == item.id
+        return Button { selectedVSCodeSessionKey = nil; selectedTaskID = item.id } label: {
             HStack(alignment: .top, spacing: 7) {
                 Circle().fill(taskAccent(item.status)).frame(width: 6, height: 6).padding(.top, 4)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(item.name).font(BrandFont.inter(10.5, .medium)).lineLimit(2).multilineTextAlignment(.leading)
                     HStack(spacing: 5) {
-                        Text(item.status.replacingOccurrences(of: "_", with: " ").capitalized)
+                        Text("HeyClicky · \(item.status.replacingOccurrences(of: "_", with: " ").capitalized)")
                         Text("·")
                         Text(priority(for: item).title)
                     }
@@ -812,9 +1068,163 @@ struct TasksSettingsView: View {
                 collapsedGroups.formUnion(monitor.taskCatalog.groups(by: .project, sort: .name).map(\.id))
                 initializedGroupState = true
             }
+            if !store.config.taskWorkspaceWizardCompleted, !workspaceWizardAutoPresented,
+               !monitor.taskCatalog.nameSuggestionGroups().isEmpty {
+                workspaceWizardAutoPresented = true
+                showingProjectWizard = true
+            }
             if projectFilter != "all" && !projectGroups.contains(where: { $0.id == projectFilter }) {
                 projectFilter = "all"
             }
+        }
+    }
+}
+
+private struct TaskProjectWizard: View {
+    @ObservedObject var monitor: ClickyMonitor
+    @ObservedObject var store: ConfigStore
+    var vscodeSessions: [VSCodeVisibleSession] = []
+    let close: () -> Void
+    @State private var folderTaskID: String?
+    @State private var selectingFolder = false
+    @State private var folderError: String?
+    @State private var folderVSCodeKey: String?
+
+    private var vscodeSuggestions: [String: [VSCodeVisibleSession]] {
+        Dictionary(grouping: vscodeSessions.filter { store.config.vscodeTaskProjects[$0.key] == nil }) {
+            Matcher.normalize($0.title.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? $0.title)
+        }
+    }
+
+    private var suggestions: [TaskCatalog.NameSuggestionGroup] {
+        monitor.taskCatalog.nameSuggestionGroups()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Review tasks and workspaces").font(.title3.weight(.semibold))
+            Text("Matching first words are suggestions only. Confirm each task or mark it as not part of that group. Suggested folders need your confirmation; choosing a folder for a task saves it immediately.")
+                .font(.caption).foregroundStyle(.secondary)
+            if suggestions.isEmpty && vscodeSuggestions.isEmpty {
+                ContentUnavailableView("No unassigned tasks to review", systemImage: "checkmark.folder",
+                                       description: Text("You can reopen this review from the task list at any time."))
+                    .frame(minHeight: 180)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(suggestions) { group in
+                            VStack(alignment: .leading, spacing: 7) {
+                                Text("Starts with “\(group.firstWord)”").font(.headline)
+                                ForEach(group.tasks) { item in
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Text(item.name).font(.caption.weight(.medium)).lineLimit(2)
+                                        if let path = item.project.directoryPath {
+                                            Label("Suggested folder · \(path)", systemImage: "folder.badge.questionmark")
+                                                .font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+                                        } else {
+                                            Label("No workspace folder confirmed", systemImage: "folder")
+                                                .font(.caption2).foregroundStyle(.secondary)
+                                        }
+                                        HStack {
+                                            Button("Choose folder…") {
+                                                folderVSCodeKey = nil
+                                                folderTaskID = item.id
+                                                selectingFolder = true
+                                            }
+                                            .help("Choosing a folder saves it to this task as confirmed immediately.")
+                                            .accessibilityIdentifier("wizard-choose-folder-\(item.id)")
+                                            Button("Confirm task") {
+                                                var project = item.project
+                                                if project.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                                    project.name = group.firstWord
+                                                }
+                                                monitor.assignProject(project, to: item.id)
+                                            }
+                                            .accessibilityIdentifier("wizard-confirm-\(item.id)")
+                                            Button("Not this group") {
+                                                monitor.assignProject(TaskProject(), to: item.id)
+                                            }
+                                            .accessibilityIdentifier("wizard-reject-\(item.id)")
+                                        }
+                                        .font(.caption)
+                                    }
+                                    .padding(.vertical, 3)
+                                    Divider()
+                                }
+                            }
+                            .padding(10)
+                            .background(Brand.card, in: RoundedRectangle(cornerRadius: 9))
+                        }
+                        vscodeReviewRows
+                    }
+                }
+            }
+            if let folderError {
+                Text(folderError).font(.caption2).foregroundStyle(Brand.youBadge)
+            }
+            HStack {
+                Spacer()
+                Button("Finish review", action: close).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 520, minHeight: 420)
+        .fileImporter(isPresented: $selectingFolder, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first, let key = folderVSCodeKey,
+                   let session = vscodeSessions.first(where: { $0.key == key }) {
+                    var project = TaskProject()
+                    project.name = session.title.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? session.title
+                    project.directory = url.standardizedFileURL.path
+                    store.config.vscodeTaskProjects[key] = project
+                    folderError = nil
+                    return
+                }
+                guard let url = urls.first, let taskID = folderTaskID,
+                      let item = monitor.taskCatalog.tasks.first(where: { $0.id == taskID }),
+                      let group = suggestions.first(where: { $0.tasks.contains(where: { $0.id == taskID }) }) else { return }
+                var project = item.project
+                if project.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { project.name = group.firstWord }
+                project.directory = url.standardizedFileURL.path
+                monitor.assignProject(project, to: taskID)
+                folderError = nil
+            case .failure(let error):
+                folderError = error.localizedDescription
+            }
+        }
+    }
+
+    private var vscodeReviewRows: some View {
+        ForEach(vscodeSuggestions.keys.sorted(), id: \.self) { firstWord in
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Starts with “\(firstWord)” · VS Code").font(.headline)
+                ForEach(vscodeSuggestions[firstWord] ?? []) { session in
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(session.title).font(.caption.weight(.medium))
+                        if let path = session.discoveredDirectory {
+                            Text("Suggested, not confirmed: \(path)").font(.caption2).textSelection(.enabled)
+                            Button("Confirm task & suggested folder") {
+                                var project = TaskProject()
+                                project.name = firstWord
+                                project.directory = path
+                                store.config.vscodeTaskProjects[session.key] = project
+                            }
+                        }
+                        HStack {
+                            Button("Choose folder…") {
+                                folderVSCodeKey = session.key
+                                selectingFolder = true
+                            }
+                            Button("Not this group") {
+                                store.config.vscodeTaskProjects[session.key] = TaskProject()
+                            }
+                        }
+                    }
+                    .font(.caption)
+                }
+            }
+            .padding(10).background(Brand.card, in: RoundedRectangle(cornerRadius: 9))
         }
     }
 }
@@ -831,19 +1241,22 @@ private struct TaskProjectRow: View {
     @State private var editingProject = false
     @State private var projectDraft = TaskProject()
     @State private var selectingWorkspace = false
+    @State private var choosingFolder = false
     @State private var definingDone = false
     @State private var definitionDraft = ""
     @State private var showingDetails = false
     @State private var draftingBump = false
-    @State private var reviewingLatestReport = false
     @State private var sendingBump = false
+    @State private var workspaceBranches: [String] = []
+    @State private var newBranchName = ""
+    @State private var workspaceGitStatus: String?
     @State private var bumpDraftMessage: String?
     @State private var bumpDraftFingerprint: String?
     @State private var bumpDraftDefinition: String?
+    @State private var bumpDraftWorkflowKey: String?
     @State private var bumpDraftAssessment: ClickyTaskAssessment?
     @State private var bumpDraftError: String?
     @State private var bumpSendStatus: String?
-    @State private var copiedReport = false
     @State private var sendingLifecycleNotice = false
     @State private var lifecycleNoticeStatus: String?
 
@@ -852,10 +1265,111 @@ private struct TaskProjectRow: View {
         let state = Matcher.normalize(task.status)
         return ["done", "complete", "completed", "reported done"].contains(state) ? "Ready for your review" : task.status.replacingOccurrences(of: "_", with: " ").capitalized
     }
+    private var nextAction: String {
+        guard details != nil else { return "History only — no matching current HeyClicky task." }
+        if flow.current == nil, assessment?.meetsDefinition == true { return "Check the report evidence, then mark the task finished." }
+        return flow.nextAction
+    }
+    private var reviewed: Bool { assessment != nil && draftGate != .reviewLatestReport }
+    private var flow: TaskFlow {
+        let ambiguous = details.map { ClickyTaskLibrary.ambiguousNames(tasks.tasks).contains(Matcher.normalize($0.name)) } ?? false
+        let reviewBlocker: TaskBlocker? = if let details {
+            details.dismissed ? TaskBlocker("This task is dismissed in HeyClicky, so Cruise can't read or bump it.", fix: .showInHeyClicky)
+                : !details.hasReport ? TaskBlocker("HeyClicky hasn't posted a response in this task yet. Cruise reviews it as soon as one appears.", fix: .showInHeyClicky)
+                : details.isWorking ? TaskBlocker("HeyClicky is still working on this task. Cruise reviews it when the turn finishes.", fix: .showInHeyClicky)
+                : ambiguous ? TaskBlocker("Another HeyClicky task has the same name, so Cruise won't target either. Rename one in HeyClicky.", fix: .showInHeyClicky)
+                : nil
+        } else { TaskBlocker("This task isn't in HeyClicky's current task list.", fix: .refreshTasks) }
+        let key = ClickyMonitor.clickyKey(task.id)
+        let record = monitor.engine.records[key]
+        let activity: String? = sendingBump ? "Sending this draft to HeyClicky"
+            : monitor.engineActivity.flatMap { $0.key == key ? $0.text : nil }
+        return TaskFlow(
+            hasFolder: hasConfirmedWorkspace, hasDefinition: definition != nil,
+            reviewBlocker: reviewBlocker, reviewed: reviewed,
+            draftBlocker: messagePolicyBlocker.map { TaskBlocker($0, fix: .defineDone) }
+                ?? (draftGate == .ready ? nil : draftBlocker),
+            hasDraft: bumpDraftMessage != nil,
+            sendBlocker: store.config.mode == .rest
+                ? TaskBlocker("Rest mode pauses sending. Switch to Manual or Cruise mode.", fix: .automationSettings)
+                : record?.stage == .held ? record?.blocker : nil,
+            activity: activity)
+    }
+    private var draftBlocker: TaskBlocker {
+        switch draftGate {
+        case .taskStopped: TaskBlocker("You stopped this task in HeyClicky, so Cruise holds its follow-ups. Resume auto-bump to continue.", fix: .resumeStopped)
+        case .needsUser: TaskBlocker("HeyClicky asked you a question in this task. Answer it there; Cruise won't answer for you.", fix: .showInHeyClicky)
+        case .reviewLatestReport: TaskBlocker(TaskDraftGate.reviewLatestReport.message, fix: .reviewReport)
+        case .ambiguousTask: TaskBlocker(TaskDraftGate.ambiguousTask.message, fix: .showInHeyClicky)
+        case .noActionableGaps: TaskBlocker("The latest response appears to cover Done. Check its evidence in HeyClicky.", fix: .showInHeyClicky)
+        default: TaskBlocker(draftGate.message, fix: .showInHeyClicky)
+        }
+    }
+    private func goThere(_ fix: TaskFix) {
+        switch fix {
+        case .defineDone:
+            definitionDraft = store.config.clickyDefinitionsOfDone[task.id] ?? ""
+            definingDone = true
+        case .chooseFolder:
+            choosingFolder = true
+        default:
+            Task { if let message = await monitor.perform(fix, key: ClickyMonitor.clickyKey(task.id)) { bumpSendStatus = message } }
+        }
+    }
+    private var autoBumpLockReason: String? {
+        if definition == nil { return "Define what done looks like first (step 2)." }
+        if details?.dismissed == true { return TaskDraftGate.taskDismissed.message }
+        if !hasConfirmedWorkspace { return "Confirm a project folder first." }
+        return TaskWorkflow.autoBumpBlocker(plan: store.config.taskPlans[task.id] ?? TaskPlan())
+    }
+    private var suggestedFolder: String? {
+        task.projectAssigned ? nil : task.project.directoryPath
+    }
+    private func chooseFolder(_ path: String) {
+        var project = task.projectAssigned ? task.project : TaskProject()
+        project.directory = path
+        if project.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            project.name = task.project.name.isEmpty ? URL(fileURLWithPath: path).lastPathComponent : task.project.name
+        }
+        assign(project)
+    }
     private var definition: String? { DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id]) }
+
+    private func refreshWorkspaceBranches() {
+        guard hasConfirmedWorkspace, let path = task.project.directoryPath else {
+            workspaceBranches = []
+            workspaceGitStatus = nil
+            return
+        }
+        do {
+            workspaceBranches = try TaskWorkspaceGit.branches(in: path)
+            workspaceGitStatus = workspaceBranches.isEmpty
+                ? "No local branches found."
+                : "Found \(workspaceBranches.count) local branch\(workspaceBranches.count == 1 ? "" : "es")."
+        } catch {
+            workspaceBranches = []
+            workspaceGitStatus = error.localizedDescription
+        }
+    }
+
+    private func createWorkspaceBranch() {
+        guard hasConfirmedWorkspace, let path = task.project.directoryPath else { return }
+        let name = newBranchName.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try TaskWorkspaceGit.createBranch(name, in: path)
+            newBranchName = ""
+            refreshWorkspaceBranches()
+            workflowBinding(\.workBranch).wrappedValue = name
+            workspaceGitStatus = "Created local branch “\(name)” and selected it for this task."
+        } catch {
+            workspaceGitStatus = error.localizedDescription
+        }
+    }
+
+    /// The same evidence-corrected review the engine drafts and sends from.
     private var assessment: ClickyTaskAssessment? {
-        guard let details else { return nil }
-        return tasks.currentAssessment(for: details, definition: definition)
+        guard let details, let definition else { return nil }
+        return monitor.engineAssessment(details, definition: definition)
     }
     private var projectDefault: TaskPriority {
         store.config.projectPriorities[task.project.priorityKey] ?? .normal
@@ -865,6 +1379,23 @@ private struct TaskProjectRow: View {
     }
     private var autoBumpEnabled: Bool {
         store.config.taskPlans[task.id]?.autoBump == true
+    }
+    private var hasConfirmedWorkspace: Bool {
+        task.projectAssigned && task.project.directoryPath != nil
+    }
+
+    private func workflowBinding<Value>(_ keyPath: WritableKeyPath<TaskPlan, Value>) -> Binding<Value> {
+        Binding(
+            get: { store.config.taskPlans[task.id, default: TaskPlan()][keyPath: keyPath] },
+            set: { store.config.taskPlans[task.id, default: TaskPlan()][keyPath: keyPath] = $0 }
+        )
+    }
+
+    private var workflowPlanBinding: Binding<TaskPlan> {
+        Binding(
+            get: { store.config.taskPlans[task.id] ?? TaskPlan() },
+            set: { store.config.taskPlans[task.id] = $0 }
+        )
     }
     private var draftGate: TaskDraftGate {
         guard let details else { return .latestReportUnavailable }
@@ -876,58 +1407,33 @@ private struct TaskProjectRow: View {
             ambiguous: ClickyTaskLibrary.ambiguousNames(tasks.tasks).contains(Matcher.normalize(details.name))
         )
     }
-    private var canDraftBump: Bool { draftGate == .ready }
+    private var messagePolicyBlocker: String? {
+        TaskWorkflow.messageBlocker(project: hasConfirmedWorkspace ? task.project : TaskProject(),
+                                    plan: store.config.taskPlans[task.id] ?? TaskPlan())
+    }
+    private var canDraftBump: Bool { draftGate == .ready && messagePolicyBlocker == nil }
     private var previewKey: String {
-        [task.id, details?.fingerprint ?? "", definition ?? ""].joined(separator: "\u{1F}")
+        let plan = store.config.taskPlans[task.id] ?? TaskPlan()
+        return [task.id, details?.fingerprint ?? "", definition ?? "",
+                TaskWorkflow.finishRequestKey(project: task.project, plan: plan, definition: definition)].joined(separator: "\u{1F}")
+    }
+    private var canShowTaskInHeyClicky: Bool {
+        details != nil && details?.dismissed != true
     }
 
+    /// Shows the engine's cached draft for the current review. The engine examines every task in the background and,
+    /// for auto-bump tasks, sends this same draft itself, so the panel never sends on its own.
     private func prepareCurrentPreview() async {
-        guard definition != nil else { return }
-        await reviewLatestReport()
-        guard !Task.isCancelled, canDraftBump, bumpDraftError == nil else { return }
+        guard definition != nil, canDraftBump, bumpDraftMessage == nil else { return }
         await createBumpDraft()
     }
 
-    private func draftOrSendBump() {
-        if bumpDraftMessage != nil {
-            Task { await sendBumpDraft() }
-            return
-        }
-        Task {
-            await reviewLatestReport()
-            guard canDraftBump else {
-                bumpDraftError = draftGate.message
-                return
-            }
-            await createBumpDraft()
-        }
-    }
-
     private func reviewLatestReport() async {
-        guard let definition else { return }
-        reviewingLatestReport = true
+        guard definition != nil else { return }
+        monitor.requestEngineExamination(ClickyMonitor.clickyKey(task.id))
         bumpDraftMessage = nil
         bumpDraftError = nil
-        bumpSendStatus = nil
-        defer { reviewingLatestReport = false }
-
-        let expectedDefinition = definition
-        let requestedAt = Date()
-        await tasks.refresh(measure: false)
-        guard let loadedAt = tasks.loadedAt, loadedAt >= requestedAt, tasks.loadError == nil,
-              DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id]) == expectedDefinition,
-              let latest = tasks.task(task.id), latest.hasReport else {
-            bumpDraftError = tasks.loadError ?? "A fresh task report is unavailable. Refresh and review again."
-            return
-        }
-        let expectedFingerprint = latest.fingerprint
-        _ = await tasks.assess(latest, config: store.config, localOnly: true)
-        guard let current = tasks.task(task.id), current.fingerprint == expectedFingerprint,
-              DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id]) == expectedDefinition,
-              tasks.currentAssessment(for: current, definition: expectedDefinition) != nil else {
-            bumpDraftError = "The report or saved criteria changed during review. Review the latest version again."
-            return
-        }
+        bumpSendStatus = "Queued for examination by local Ollama — the status card above shows progress."
     }
 
     private func createBumpDraft() async {
@@ -937,6 +1443,7 @@ private struct TaskProjectRow: View {
         }
         let expectedFingerprint = details.fingerprint
         let expectedDefinition = definition
+        let expectedWorkflowKey = previewKey
         draftingBump = true
         bumpDraftMessage = nil
         bumpDraftError = nil
@@ -944,22 +1451,15 @@ private struct TaskProjectRow: View {
         defer { draftingBump = false }
 
         do {
-            let fallback = ChatBump.Draft(unfinished: true,
-                                          message: DefinitionOfDone.criteriaFollowUp(task: details.name, missing: reviewed.missing))
-            var draft: ChatBump.Draft
-            do {
-                draft = try await Ollama.draftTaskBump(task: details, definition: expectedDefinition, project: task.project,
-                                                      priority: priority, missing: reviewed.missing, config: store.config)
-            } catch Ollama.OllamaError.invalidFollowUp, Ollama.OllamaError.ungroundedFollowUp,
-                    Ollama.OllamaError.invalidCoverage, Ollama.OllamaError.incompleteCriteria {
-                draft = fallback
-            }
-            // The review found unmet criteria, so a declining drafter falls back to the saved criteria verbatim.
-            if !draft.unfinished { draft = fallback }
+            // Same text the engine caches and auto-sends, so what you see is exactly what goes out.
+            try Task.checkCancellation()
+            let draft = ChatBump.Draft(unfinished: true,
+                message: monitor.heyClickyFollowUp(details, definition: expectedDefinition, missing: reviewed.missing, config: store.config))
             guard let latest = tasks.task(task.id), latest.fingerprint == expectedFingerprint,
                   DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id]) == expectedDefinition,
-                  tasks.currentAssessment(for: latest, definition: expectedDefinition) == reviewed,
-                  !latest.isWorking, !latest.isStopped, !latest.dismissed,
+                  previewKey == expectedWorkflowKey,
+                  monitor.engineAssessment(latest, definition: expectedDefinition) == reviewed,
+                  !latest.isWorking, !monitor.stopHeld(latest), !latest.dismissed,
                   !TaskAudit.requiresUser(latest.lastMessage) else {
                 bumpDraftError = "The task report or criteria changed while drafting. Review again before drafting."
                 return
@@ -967,22 +1467,18 @@ private struct TaskProjectRow: View {
             bumpDraftMessage = draft.message
             bumpDraftFingerprint = expectedFingerprint
             bumpDraftDefinition = expectedDefinition
+            bumpDraftWorkflowKey = expectedWorkflowKey
             bumpDraftAssessment = reviewed
         } catch {
             bumpDraftError = error.localizedDescription
         }
     }
 
-    private func copyReport(_ report: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(report, forType: .string)
-        copiedReport = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copiedReport = false }
-    }
 
     private func sendBumpDraft() async {
         guard let message = bumpDraftMessage, let details, let definition, let reviewed = assessment,
               bumpDraftFingerprint == details.fingerprint, bumpDraftDefinition == definition,
+              bumpDraftWorkflowKey == previewKey,
               bumpDraftAssessment == reviewed, canDraftBump else {
             bumpDraftMessage = nil
             bumpDraftError = "The draft is stale. Refreshing the current review and continuation."
@@ -1075,51 +1571,45 @@ private struct TaskProjectRow: View {
                     .accessibilityIdentifier("task-details-\(task.id)")
             }
 
+            Label("Next: \(nextAction)", systemImage: "arrow.turn.down.right")
+                .font(.caption).foregroundStyle(.secondary)
+                .accessibilityIdentifier("task-next-action-\(task.id)")
+
             if details == nil {
                 Text("This saved record is not matched to a current HeyClicky job.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
             if let details {
-                HStack(alignment: .top, spacing: 10) {
-                    Text("1").font(BrandFont.mono(9)).foregroundStyle(Brand.navy)
-                        .frame(width: 20, height: 20)
-                        .background(Brand.periwinkle, in: Circle())
-                        .accessibilityLabel("Step 1")
-                    VStack(alignment: .leading, spacing: 4) {
-                        Button(definition == nil ? "Define what done looks like" : "Edit completion criteria") {
-                            definitionDraft = store.config.clickyDefinitionsOfDone[task.id] ?? ""
-                            definingDone = true
-                        }
-                        .buttonStyle(ClickyPillButtonStyle(primary: definition == nil))
-                        .accessibilityIdentifier("define-done-\(task.id)")
-                        if let definition {
-                            Text("Done when: \(definition)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                        } else {
-                            Text("Choose a short, verifiable goal before reviewing the report.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    Spacer(minLength: 0)
+                TaskFolderStep(confirmed: hasConfirmedWorkspace ? task.project.directoryPath : nil,
+                               suggested: suggestedFolder, flow: flow, identifier: "choose-folder-\(task.id)",
+                               useSuggestion: { assign(task.project) },
+                               choose: { choosingFolder = true })
+                TaskDoneCriteriaControl(definition: definition, identifier: "define-done-\(task.id)", flow: flow) {
+                    definitionDraft = store.config.clickyDefinitionsOfDone[task.id] ?? ""
+                    definingDone = true
+                }
+                if hasConfirmedWorkspace {
+                    DoneWorkflowPolicyEditor(
+                        plan: workflowPlanBinding, confirmedWorkspace: hasConfirmedWorkspace,
+                        branches: workspaceBranches, newBranchName: $newBranchName,
+                        branchStatus: workspaceGitStatus, onCreateBranch: createWorkspaceBranch)
                 }
                 latestResponseCard(details)
-                HStack(alignment: .center, spacing: 10) {
-                    Text("2").font(BrandFont.mono(9)).foregroundStyle(Brand.navy)
-                        .frame(width: 20, height: 20)
-                        .background(Brand.periwinkle, in: Circle())
-                        .accessibilityLabel("Step 2")
-                    Button(reviewingLatestReport ? "Reviewing latest report…" : "Review latest report") {
+                TaskEngineStatusCard(record: monitor.engine.records[ClickyMonitor.clickyKey(task.id)],
+                                     activity: monitor.engineActivity.flatMap { $0.key == ClickyMonitor.clickyKey(task.id) ? $0.text : nil },
+                                     goThere: goThere)
+                TaskFlowRow(step: .review, flow: flow) {
+                    TaskFlowButton(title: monitor.engine.records[ClickyMonitor.clickyKey(task.id)]?.stage == .examining && monitor.engineActivity?.key == ClickyMonitor.clickyKey(task.id) ? "Examining…" : "Review latest response",
+                                   systemImage: "text.magnifyingglass", step: .review, flow: flow,
+                                   help: "Refreshes this HeyClicky task, then compares its newest response with your saved completion criteria.",
+                                   identifier: "review-task-\(task.id)") {
                         Task { await reviewLatestReport() }
                     }
-                    .buttonStyle(ClickyPillButtonStyle(primary: false))
-                    .disabled(reviewingLatestReport || details.isWorking || definition == nil || !details.hasReport)
-                    .help("Refresh the selected HeyClicky task, then compare its newest response with your saved completion criteria.")
-                    .accessibilityIdentifier("review-task-\(task.id)")
-                    if assessment != nil {
+                    if reviewed {
                         Label("Gaps reviewed", systemImage: "checkmark.circle.fill")
                             .font(.caption2).foregroundStyle(Brand.periwinkle)
                     }
-                    Spacer(minLength: 0)
                 }
                 criteriaSummary(details)
                 let progress = tasks.record(task.id).progress
@@ -1138,36 +1628,25 @@ private struct TaskProjectRow: View {
                     ))
                     .toggleStyle(.switch)
                     .controlSize(.small)
-                    .disabled(definition == nil || details.dismissed)
-                    .help("Opt this task into automatic follow-ups when a fresh report falls short of its saved criteria.")
+                    .disabled(autoBumpLockReason != nil && !autoBumpEnabled)
                     Spacer(minLength: 0)
                 }
-                Text(autoBumpEnabled && monitor.autoBumpHoldReason(taskID: task.id) != nil
-                     ? "Auto-bump held: \(monitor.autoBumpHoldReason(taskID: task.id) ?? "")"
-                     : autoBumpEnabled && store.config.mode != .rest
-                     ? "Auto-bump is on: reviews fresh reports and sends eligible follow-ups in Manual or Cruise, without enabling drive or tool approvals."
+                .help(autoBumpLockReason ?? "Opt this task into automatic follow-ups when a fresh report falls short of its saved criteria.")
+                Text(autoBumpLockReason.map { "Auto-bump locked: \($0)" }
+                     ?? (autoBumpEnabled && store.config.mode != .rest
+                     ? "Auto-bump is on: Cruise sends each draft as soon as it's ready, in Manual or Cruise mode. Anything holding it is shown above with a Go there fix."
                      : autoBumpEnabled
                         ? "Auto-bump is selected, but Rest mode pauses sending."
-                        : "Cruise refreshes, reviews and prepares a draft when you view this task. Sending stays under your control.")
+                        : "Cruise examines this task and keeps a draft ready in the background. Sending stays under your control."))
                     .font(.caption2).foregroundStyle(.secondary)
-                    HStack(alignment: .center, spacing: 10) {
-                        Text("3").font(BrandFont.mono(9)).foregroundStyle(Brand.navy)
-                            .frame(width: 20, height: 20)
-                            .background(Brand.periwinkle, in: Circle())
-                            .accessibilityLabel("Step 3")
-                        Button(action: draftOrSendBump) {
-                            Label(draftingBump ? "Drafting…" : reviewingLatestReport ? "Analyzing…" : sendingBump ? "Sending…" : bumpDraftMessage == nil ? "Generate response" : "Send to HeyClicky",
-                                  systemImage: bumpDraftMessage == nil ? "doc.text" : "paperplane.fill")
-                        }
-                        .buttonStyle(ClickyPillButtonStyle(primary: bumpDraftMessage != nil))
-                        .disabled(draftingBump || reviewingLatestReport || sendingBump || definition == nil || !details.hasReport || details.dismissed)
-                        .help(bumpDraftMessage == nil
-                              ? "Refreshes and analyzes the full report against your saved Done definition, then generates a response for eligible gaps. Clarification and safety blockers are shown here."
-                              : "Sends exactly the visible draft to this uniquely matched HeyClicky task after freshness and safety checks.")
-                        .accessibilityHint(bumpDraftMessage == nil ? draftGate.message : "Sends only the exact visible draft after freshness checks.")
-                        .accessibilityIdentifier("bump-task-\(task.id)")
-                        Spacer(minLength: 0)
+                TaskFlowRow(step: .draft, flow: flow) {
+                    TaskFlowButton(title: draftingBump ? "Drafting…" : "Generate response", systemImage: "doc.text",
+                                   step: .draft, flow: flow,
+                                   help: "Drafts a follow-up for the gaps found in the review. Nothing is sent yet.",
+                                   identifier: "draft-task-\(task.id)") {
+                        Task { await createBumpDraft() }
                     }
+                }
                 if let bumpDraftMessage {
                     VStack(alignment: .leading, spacing: 4) {
                         Label("Draft · not sent", systemImage: "doc.text")
@@ -1177,6 +1656,28 @@ private struct TaskProjectRow: View {
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Brand.card.opacity(0.75), in: RoundedRectangle(cornerRadius: 8))
+                }
+                TaskFlowRow(step: .send, flow: flow) {
+                    TaskFlowButton(title: sendingBump ? "Sending…" : "Send to HeyClicky", systemImage: "paperplane.fill",
+                                   step: .send, flow: flow,
+                                   help: "Sends exactly the visible draft to this uniquely matched HeyClicky task after freshness and safety checks.",
+                                   identifier: "bump-task-\(task.id)") {
+                        Task { await sendBumpDraft() }
+                    }
+                    Button {
+                        Task {
+                            let result = await monitor.showTaskInHeyClicky(task.id)
+                            if let result {
+                                bumpSendStatus = result
+                            }
+                        }
+                    } label: {
+                        Label("Show in HeyClicky", systemImage: "arrow.up.right.square")
+                    }
+                    .buttonStyle(ClickyPillButtonStyle(primary: false))
+                    .disabled(!canShowTaskInHeyClicky)
+                    .help(canShowTaskInHeyClicky ? "Opens this task in HeyClicky's expanded chat." : "This task is dismissed in HeyClicky.")
+                    .accessibilityIdentifier("show-task-\(task.id)")
                 }
                 if let bumpDraftError {
                     Text("Workflow paused: \(bumpDraftError)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
@@ -1205,7 +1706,13 @@ private struct TaskProjectRow: View {
             }
         }
         .padding(.vertical, 8)
-        .task(id: previewKey) { await prepareCurrentPreview() }
+        .task(id: previewKey + (assessment == nil ? "" : "\u{1F}reviewed")) { await prepareCurrentPreview() }
+        .environment(\.taskGoThere, goThere)
+        .onReceive(NotificationCenter.default.publisher(for: ClickyMonitor.engineFixNotification)) { note in
+            guard note.userInfo?["key"] as? String == ClickyMonitor.clickyKey(task.id),
+                  let raw = note.userInfo?["fix"] as? String, let fix = TaskFix(rawValue: raw) else { return }
+            goThere(fix)
+        }
         .onAppear { showingDetails = initiallyExpanded }
         .onChange(of: task.id) { _, _ in
             showingDetails = initiallyExpanded
@@ -1223,6 +1730,8 @@ private struct TaskProjectRow: View {
             bumpDraftError = nil
             bumpSendStatus = nil
         }
+        .onAppear { refreshWorkspaceBranches() }
+        .onChange(of: task.project.directoryPath) { _, _ in refreshWorkspaceBranches() }
         .accessibilityIdentifier("task-row-\(task.id)")
         .sheet(isPresented: $editingProject) {
             VStack(alignment: .leading, spacing: 14) {
@@ -1237,11 +1746,16 @@ private struct TaskProjectRow: View {
                         .accessibilityIdentifier("workspace-path-\(task.id)")
                     Button("Choose…") { selectingWorkspace = true }
                 }
-                Text("A workspace is a local folder, not a project/repository guess. It only helps organize tasks; Cruise will not move or edit files here.")
+
+                Text("Choosing a folder immediately saves it to this task as its confirmed workspace. Suggested folders still need an explicit Confirm task. Cruise will not move or edit files here.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fileImporter(isPresented: $selectingWorkspace, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in
                         if case .success(let urls) = result, let url = urls.first {
                             projectDraft.directory = url.standardizedFileURL.path
+                            if projectDraft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                projectDraft.name = task.project.name
+                            }
+                            assign(projectDraft)
                         }
                     }
                 HStack {
@@ -1263,61 +1777,28 @@ private struct TaskProjectRow: View {
             .frame(width: 460)
             .textFieldStyle(.roundedBorder)
         }
-        .sheet(isPresented: $definingDone) {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("What does done mean for \(task.name)?").font(.headline)
-                Text("Write one or more results you can verify. Cruise compares the latest HeyClicky report with this definition; it cannot prove the real work by itself.")
-                    .font(.caption).foregroundStyle(.secondary)
-                TextEditor(text: $definitionDraft).frame(height: 150)
-                Text("\(definitionDraft.count) / \(DefinitionOfDone.maxDefinitionLength) characters")
-                    .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button("Cancel") { definingDone = false }.keyboardShortcut(.cancelAction)
-                    Spacer()
-                    Button("Save definition") {
-                        store.config.clickyDefinitionsOfDone[task.id] = DefinitionOfDone.normalized(definitionDraft)
-                        definingDone = false
-                    }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(definitionDraft.count > DefinitionOfDone.maxDefinitionLength)
-                }
+        .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in
+            if case .success(let urls) = result, let url = urls.first {
+                chooseFolder(url.standardizedFileURL.path)
             }
-            .padding(24)
-            .frame(width: 480)
+        }
+        .sheet(isPresented: $definingDone) {
+            TaskDoneDefinitionEditor(
+                taskName: task.name, agentName: "HeyClicky", definition: $definitionDraft,
+                plan: workflowPlanBinding, confirmedWorkspace: hasConfirmedWorkspace,
+                branches: workspaceBranches, newBranchName: $newBranchName,
+                branchStatus: workspaceGitStatus, onCreateBranch: createWorkspaceBranch
+            ) {
+                store.config.clickyDefinitionsOfDone[task.id] = DefinitionOfDone.normalized(definitionDraft)
+            }
         }
     }
 
     @ViewBuilder
     private func latestResponseCard(_ details: ClickyAgentTask) -> some View {
         if !details.lastMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Label("Latest HeyClicky response", systemImage: "text.bubble")
-                        .font(.caption.weight(.semibold))
-                    Spacer()
-                    if let updated = details.lastMessageAt ?? details.updatedAt {
-                        Text(updated.formatted(date: .abbreviated, time: .shortened))
-                            .font(.caption2).foregroundStyle(.tertiary)
-                    }
-                    Button {
-                        copyReport(details.lastMessage)
-                    } label: {
-                        Label(copiedReport ? "Copied" : "Copy report", systemImage: copiedReport ? "checkmark" : "doc.on.doc")
-                    }
-                    .buttonStyle(TaskControlPillStyle(selected: copiedReport))
-                    .accessibilityLabel(copiedReport ? "Report copied" : "Copy full report")
-                }
-                TaskReportContent(text: String(details.lastMessage.prefix(6_000)))
-                if details.lastMessage.count > 6_000 {
-                    Text("Report shortened after 6,000 characters; open the task thread in HeyClicky for the remainder.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-                Text("Source report · not an independent verification of the work")
-                    .font(.caption2).foregroundStyle(.tertiary)
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Brand.card.opacity(0.75), in: RoundedRectangle(cornerRadius: 8))
+            TaskLatestResponseCard(agentName: "HeyClicky", text: details.lastMessage,
+                                   updatedAt: details.lastMessageAt ?? details.updatedAt)
         } else {
             Label("No task report available yet", systemImage: "doc.text.magnifyingglass")
                 .font(.caption).foregroundStyle(.secondary)
@@ -1491,7 +1972,7 @@ private struct TaskProjectRow: View {
     }
 }
 
-private struct TaskControlPillStyle: ButtonStyle {
+struct TaskControlPillStyle: ButtonStyle {
     let selected: Bool
     @State private var hovering = false
     @Environment(\.isFocused) private var isFocused
@@ -1512,7 +1993,7 @@ private struct TaskControlPillStyle: ButtonStyle {
     }
 }
 
-private struct TaskMenuPill: View {
+struct TaskMenuPill: View {
     let title: String
     let icon: String
     @State private var hovering = false

@@ -238,7 +238,12 @@ enum Ollama {
                 correction = "\nChoose a nonempty verbatim report excerpt from the evidence schema; do not paraphrase it. Request ALL details in the complete saved definition."
                 continue
             }
-            guard draft.unfinished else { return draft }
+            guard draft.unfinished else {
+                // A small local model can call unrelated work "done"; require the report to cover the saved goal.
+                guard DefinitionOfDone.reportLacksEvidence(definition: definition, report: task.lastMessage) else { return draft }
+                return ChatBump.Draft(unfinished: true, message: DefinitionOfDone.criteriaFollowUp(
+                    task: task.name, missing: DefinitionOfDone.userCriteria(definition)))
+            }
             let omissions = try await missingBumpDetails(draft.message, task: task, definition: definition, config: config)
             if omissions.isEmpty { return draft }
             guard attempt == 0 else {

@@ -249,6 +249,29 @@ public struct TaskCatalog: Codable, Equatable, Sendable {
         public let tasks: [CatalogTask]
     }
 
+    public struct NameSuggestionGroup: Identifiable, Sendable {
+        public let id: String
+        public let firstWord: String
+        public let tasks: [CatalogTask]
+    }
+
+    /// Initial setup suggestions use the shared first word literally; the user confirms every association.
+    public func nameSuggestionGroups() -> [NameSuggestionGroup] {
+        let candidates = tasks.filter { $0.sourceID != nil && $0.sourceUnavailable != true && !$0.projectAssigned }
+        let grouped = Dictionary(grouping: candidates) { task -> String in
+            let first = task.name.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? ""
+            return Matcher.normalize(first)
+        }
+        return grouped.compactMap { key, items -> NameSuggestionGroup? in
+            guard !key.isEmpty else { return nil }
+            let ordered = items.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            let firstWord = ordered.first?.name.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? key
+            return NameSuggestionGroup(id: key, firstWord: firstWord, tasks: ordered)
+        }.sorted {
+            $0.firstWord.localizedStandardCompare($1.firstWord) == .orderedAscending
+        }
+    }
+
     public func groups(by grouping: TaskGrouping, sort: TaskSort, query: String = "") -> [Group] {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let aliases = grouping == .project ? projectAliases() : [:]

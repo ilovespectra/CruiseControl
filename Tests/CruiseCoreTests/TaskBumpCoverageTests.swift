@@ -69,6 +69,18 @@ import Testing
         #expect(TaskBumpCoverage.appendingCriteria([], to: draft) == draft)
     }
 
+    @Test func definitionFollowUpRequestsCurrentStateAndEvidenceBeforeClarification() {
+        let definition = "Add the requested controls.\nVerify the feature with tests."
+        let message = DefinitionOfDone.criteriaFollowUp(task: "Cruise Audio", missing: DefinitionOfDone.userCriteria(definition))
+        #expect(message.contains("inspect the current project/workspace"))
+        #expect(message.contains("report the current state of each item"))
+        #expect(message.contains("concrete evidence"))
+        #expect(message.contains("Before asking the user to clarify requirements that are already stated"))
+        #expect(message.contains("- Add the requested controls."))
+        #expect(message.contains("- Verify the feature with tests."))
+        #expect(TaskAudit.definitionFollowUpIsActionable(message))
+    }
+
     @Test func deliverableRequestsAreNotClarifications() {
         let definition = "verify by screenshots of the landing pages. end by providing each screenshot and a markdown of the numbers."
         #expect(TaskAudit.clarificationRequestsDeliverables("Could you please provide the screenshots and markdown?", definition: definition))

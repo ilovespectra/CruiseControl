@@ -58,6 +58,7 @@ public enum PillSide: String, Codable, Sendable {
 }
 
 public struct Config: Codable, Equatable, Sendable {
+    public var colorTheme: ColorTheme = .blue
     public var mode: DriveMode = .manual
     public var heyClickyDriveEnabled = true
     public var autoContinueReports = true
@@ -178,6 +179,13 @@ public struct Config: Codable, Equatable, Sendable {
     public var vscodeTaskBumps = false
     public var vscodeBumpQuietMinutes: Double = 5
     public var vscodeBumpCooldownMinutes: Double = 15
+    /// Per-chat completion criteria and Auto-bump opt-ins, keyed by stable VS Code chat identity.
+    public var vscodeDefinitionsOfDone: [String: String] = [:]
+    public var vscodeAutoBumpChatKeys: Set<String> = []
+    public var vscodeTaskPlans: [String: TaskPlan] = [:]
+    /// User-confirmed VS Code project and workspace associations; discovered paths remain suggestions until confirmed.
+    public var vscodeTaskProjects: [String: TaskProject] = [:]
+    public var vscodeAutoBumpRounds: [String: Int] = [:]
     public var auditClickyTasks = true
     public var trackedClickyTasks: [String] = []
     public var clickyTaskAuditMinutes: Double = 5
@@ -196,6 +204,8 @@ public struct Config: Codable, Equatable, Sendable {
     public var backgroundTaskDelivery: TaskDeliveryMode = .apiOnly
     public var taskPlans: [String: TaskPlan] = [:]
     public var projectPriorities: [String: TaskPriority] = [:]
+    /// The first-run task/workspace confirmation wizard stays eligible until the user completes it.
+    public var taskWorkspaceWizardCompleted = false
     /// Cruise-only, read-only inventory scope. Empty uses HeyClicky's default support folder; it does not change Clicky's own storage settings.
     public var clickyCacheInventoryLocation = ""
 
@@ -212,6 +222,7 @@ public struct Config: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = Config()
+        colorTheme = try c.decodeIfPresent(ColorTheme.self, forKey: .colorTheme) ?? d.colorTheme
         mode = try c.decodeIfPresent(DriveMode.self, forKey: .mode) ?? d.mode
         heyClickyDriveEnabled = try c.decodeIfPresent(Bool.self, forKey: .heyClickyDriveEnabled) ?? d.heyClickyDriveEnabled
         autoContinueReports = try c.decodeIfPresent(Bool.self, forKey: .autoContinueReports) ?? d.autoContinueReports
@@ -286,6 +297,11 @@ public struct Config: Codable, Equatable, Sendable {
         vscodeTaskBumps = try c.decodeIfPresent(Bool.self, forKey: .vscodeTaskBumps) ?? d.vscodeTaskBumps
         vscodeBumpQuietMinutes = max(1, try c.decodeIfPresent(Double.self, forKey: .vscodeBumpQuietMinutes) ?? d.vscodeBumpQuietMinutes)
         vscodeBumpCooldownMinutes = max(5, try c.decodeIfPresent(Double.self, forKey: .vscodeBumpCooldownMinutes) ?? d.vscodeBumpCooldownMinutes)
+        vscodeDefinitionsOfDone = try c.decodeIfPresent([String: String].self, forKey: .vscodeDefinitionsOfDone) ?? d.vscodeDefinitionsOfDone
+        vscodeAutoBumpChatKeys = try c.decodeIfPresent(Set<String>.self, forKey: .vscodeAutoBumpChatKeys) ?? d.vscodeAutoBumpChatKeys
+        vscodeTaskPlans = try c.decodeIfPresent([String: TaskPlan].self, forKey: .vscodeTaskPlans) ?? d.vscodeTaskPlans
+        vscodeTaskProjects = try c.decodeIfPresent([String: TaskProject].self, forKey: .vscodeTaskProjects) ?? d.vscodeTaskProjects
+        vscodeAutoBumpRounds = try c.decodeIfPresent([String: Int].self, forKey: .vscodeAutoBumpRounds) ?? d.vscodeAutoBumpRounds
         auditClickyTasks = try c.decodeIfPresent(Bool.self, forKey: .auditClickyTasks) ?? d.auditClickyTasks
         trackedClickyTasks = try c.decodeIfPresent([String].self, forKey: .trackedClickyTasks) ?? d.trackedClickyTasks
         clickyTaskAuditMinutes = max(1, try c.decodeIfPresent(Double.self, forKey: .clickyTaskAuditMinutes) ?? d.clickyTaskAuditMinutes)
@@ -303,8 +319,32 @@ public struct Config: Codable, Equatable, Sendable {
         backgroundTaskDelivery = try c.decodeIfPresent(TaskDeliveryMode.self, forKey: .backgroundTaskDelivery) ?? d.backgroundTaskDelivery
         taskPlans = try c.decodeIfPresent([String: TaskPlan].self, forKey: .taskPlans) ?? d.taskPlans
         projectPriorities = try c.decodeIfPresent([String: TaskPriority].self, forKey: .projectPriorities) ?? d.projectPriorities
+        taskWorkspaceWizardCompleted = try c.decodeIfPresent(Bool.self, forKey: .taskWorkspaceWizardCompleted) ?? d.taskWorkspaceWizardCompleted
         clickyCacheInventoryLocation = try c.decodeIfPresent(String.self, forKey: .clickyCacheInventoryLocation) ?? d.clickyCacheInventoryLocation
         pillSide = try c.decodeIfPresent(PillSide.self, forKey: .pillSide) ?? d.pillSide
         showOnlyWithClicky = try c.decodeIfPresent(Bool.self, forKey: .showOnlyWithClicky) ?? d.showOnlyWithClicky
+    }
+}
+
+extension Config {
+    /// Moves per-chat VS Code settings saved under an older key to the chat's current key.
+    /// Nothing is overwritten: if the current key already has a setting, the old one is left alone.
+    public mutating func adoptVSCodeSettings(from legacyKey: String, to key: String) -> Bool {
+        guard legacyKey != key else { return false }
+        var changed = false
+        func move<Value>(_ dictionary: inout [String: Value]) {
+            guard dictionary[key] == nil, let value = dictionary.removeValue(forKey: legacyKey) else { return }
+            dictionary[key] = value
+            changed = true
+        }
+        move(&vscodeDefinitionsOfDone)
+        move(&vscodeTaskPlans)
+        move(&vscodeTaskProjects)
+        move(&vscodeAutoBumpRounds)
+        if vscodeAutoBumpChatKeys.remove(legacyKey) != nil {
+            vscodeAutoBumpChatKeys.insert(key)
+            changed = true
+        }
+        return changed
     }
 }

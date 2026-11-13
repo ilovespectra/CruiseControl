@@ -30,15 +30,18 @@ if [[ "${CC_UNIVERSAL:-0}" == "1" ]]; then
   mkdir -p .build/universal
   lipo -create "$ARM_BIN" "$INTEL_BIN" -output .build/universal/CruiseControl
   BIN=".build/universal/CruiseControl"
+  BRAND_RESOURCES="$(dirname "$ARM_BIN")/CruiseControl_CruiseControl.bundle"
 else
   swift build -c release --product CruiseControl "${ARCH_ARGS[@]}"
   BIN="$(swift build -c release --show-bin-path "${ARCH_ARGS[@]}")/CruiseControl"
+  BRAND_RESOURCES="$(dirname "$BIN")/CruiseControl_CruiseControl.bundle"
 fi
 
 APP="build/Cruise Control.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/CruiseControl"
+cp -R "$BRAND_RESOURCES" "$APP/Contents/Resources/"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CruiseControlAudioControlsEnabled bool $AUDIO_CONTROLS" "$APP/Contents/Info.plist"
 if [[ -n "${CC_VERSION:-}" ]]; then

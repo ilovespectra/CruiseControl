@@ -5,6 +5,8 @@ import Foundation
 public struct TaskRecovery: Codable, Equatable, Sendable {
     public private(set) var stoppedTasks: Set<String> = []
     public private(set) var releasedTasks: Set<String> = []
+    /// Explicit user stops are sticky until the user resumes or releases the task in Cruise.
+    public private(set) var manualStops: Set<String> = []
 
     public init() {}
 
@@ -12,6 +14,7 @@ public struct TaskRecovery: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         stoppedTasks = try container.decodeIfPresent(Set<String>.self, forKey: .stoppedTasks) ?? []
         releasedTasks = try container.decodeIfPresent(Set<String>.self, forKey: .releasedTasks) ?? []
+        manualStops = try container.decodeIfPresent(Set<String>.self, forKey: .manualStops) ?? []
     }
 
     public static func isStopped(_ label: String?) -> Bool {
@@ -26,18 +29,25 @@ public struct TaskRecovery: Codable, Equatable, Sendable {
     }
 
     public func isStopped(task: String) -> Bool {
-        stoppedTasks.contains(Matcher.normalize(task))
+        let key = Matcher.normalize(task)
+        return stoppedTasks.contains(key) || manualStops.contains(key)
     }
 
     public mutating func release(task: String) {
         let key = Matcher.normalize(task)
         stoppedTasks.remove(key)
+        manualStops.remove(key)
         releasedTasks.insert(key)
     }
 
     public mutating func observe(task: String, status: String?, latestTurnStatus: String?) {
         let key = Matcher.normalize(task)
         guard !key.isEmpty else { return }
+        if manualStops.contains(key) {
+            stoppedTasks.insert(key)
+            releasedTasks.remove(key)
+            return
+        }
         if StallTracker.isBusy(latestTurnStatus ?? status) {
             stoppedTasks.remove(key)
             releasedTasks.remove(key)
@@ -50,6 +60,7 @@ public struct TaskRecovery: Codable, Equatable, Sendable {
     public mutating func stopByUser(task: String) {
         let key = Matcher.normalize(task)
         releasedTasks.remove(key)
+        manualStops.insert(key)
         stoppedTasks.insert(key)
     }
 }

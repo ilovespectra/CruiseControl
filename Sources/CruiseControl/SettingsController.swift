@@ -8,6 +8,8 @@ final class SettingsController: NSObject, NSToolbarDelegate {
     static let openOllamaNotification = Notification.Name("CruiseControl.openOllamaSettings")
     static let focusOllamaSettingsNotification = Notification.Name("CruiseControl.focusOllamaSettings")
     static let openTasksNotification = Notification.Name("CruiseControl.openTasksSettings")
+    /// Selects a Settings tab; `object` is the tab tag (1 Automation, 2 Activity, 3 App & permissions, 4 Tasks).
+    static let focusSectionNotification = Notification.Name("CruiseControl.focusSettingsSection")
     static let focusTasksNotification = Notification.Name("CruiseControl.focusTasksSettings")
     private static let audioToolbarItemID = NSToolbarItem.Identifier("CruiseControl.audioControls")
 
