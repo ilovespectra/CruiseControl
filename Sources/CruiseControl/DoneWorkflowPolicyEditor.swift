@@ -10,10 +10,12 @@ struct DoneWorkflowPolicyEditor: View {
     let branchStatus: String?
     let onCreateBranch: () -> Void
     var requiresBuildLocation = true
+    var workspace: String? = nil
     @State private var expanded = false
+    @State private var choosingBuildFolder = false
 
     private var missing: String? {
-        confirmedWorkspace ? TaskWorkflow.autoBumpBlocker(plan: plan, requiresBuildLocation: requiresBuildLocation) : "Confirm a project folder before drafting or sending."
+        confirmedWorkspace ? TaskWorkflow.autoBumpBlocker(plan: plan, requiresBuildLocation: requiresBuildLocation, workspace: workspace) : "Confirm a project folder before drafting or sending."
     }
 
     var body: some View {
@@ -23,18 +25,34 @@ struct DoneWorkflowPolicyEditor: View {
                     Label(missing, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                 }
-                if !confirmedWorkspace {
-                    Label("Confirm a project folder to configure repository policies.", systemImage: "folder.badge.questionmark")
-                        .foregroundStyle(.secondary)
-                } else {
-                    if requiresBuildLocation {
-                      Picker("Build location", selection: $plan.buildLocation) {
+                if confirmedWorkspace && requiresBuildLocation {
+                    Picker("Build location", selection: $plan.buildLocation) {
                         Text("Choose later").tag(TaskBuildLocation?.none)
                         ForEach(TaskBuildLocation.allCases) { choice in
                             Text(choice.title).tag(Optional(choice))
                         }
                     }
+                    if plan.buildLocation == .externalFolder {
+                        Button("Choose external build folder…") { choosingBuildFolder = true }
+                        if let path = plan.externalBuildDirectory {
+                            Text(path).textSelection(.enabled)
+                        }
                     }
+                } else if confirmedWorkspace {
+                    Text("Build in the confirmed VS Code agent workspace. Cruise does not create or assume an agent cache.")
+                        .foregroundStyle(.secondary)
+                }
+                if !confirmedWorkspace {
+                    Label("Confirm a project folder to configure repository policies.", systemImage: "folder.badge.questionmark")
+                        .foregroundStyle(.secondary)
+                } else if let workspace, TaskWorkspaceGit.isPlainFolder(workspace) {
+                    Text("Local folder workflow. No GitHub account, repository, branch or Git delivery choices are required.")
+                    Button("Set up Git / GitHub in Terminal…") {
+                        GitHubWorkspaceSetup.open(workspace: workspace)
+                    }
+                    Text("Optional: initializes local Git and opens GitHub CLI browser authentication in Terminal. You complete login and 2FA yourself. No remote repository is created or files committed automatically.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else {
                     Picker("When Done", selection: $plan.deliveryStyle) {
                         Text("Choose later").tag(TaskDeliveryStyle?.none)
                         Text("Commit / push to selected branch").tag(TaskDeliveryStyle?.some(.commit))
@@ -85,6 +103,14 @@ struct DoneWorkflowPolicyEditor: View {
         }
         .onAppear { if missing != nil { expanded = true } }
         .onChange(of: missing) { _, value in if value != nil { expanded = true } }
+        .fileImporter(isPresented: $choosingBuildFolder, allowedContentTypes: [.folder]) { result in
+            switch result {
+            case .success(let url):
+                plan.externalBuildDirectory = url.standardizedFileURL.path
+            case .failure(let error):
+                NSAlert(error: error).runModal()
+            }
+        }
         .accessibilityIdentifier("done-workflow-policies")
     }
 }

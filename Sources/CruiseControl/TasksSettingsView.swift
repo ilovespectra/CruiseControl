@@ -1322,7 +1322,7 @@ private struct TaskProjectRow: View {
         if definition == nil { return "Define what done looks like first (step 2)." }
         if details?.dismissed == true { return TaskDraftGate.taskDismissed.message }
         if !hasConfirmedWorkspace { return "Confirm a project folder first." }
-        return TaskWorkflow.autoBumpBlocker(plan: store.config.taskPlans[task.id] ?? TaskPlan())
+        return TaskWorkflow.autoBumpBlocker(plan: store.config.taskPlans[task.id] ?? TaskPlan(), workspace: task.project.directoryPath)
     }
     private var suggestedFolder: String? {
         task.projectAssigned ? nil : task.project.directoryPath
@@ -1625,7 +1625,7 @@ private struct TaskProjectRow: View {
                     DoneWorkflowPolicyEditor(
                         plan: workflowPlanBinding, confirmedWorkspace: hasConfirmedWorkspace,
                         branches: workspaceBranches, newBranchName: $newBranchName,
-                        branchStatus: workspaceGitStatus, onCreateBranch: createWorkspaceBranch)
+                        branchStatus: workspaceGitStatus, onCreateBranch: createWorkspaceBranch, workspace: task.project.directoryPath)
                 }
                 latestResponseCard(details)
                 TaskEngineStatusCard(record: monitor.engine.records[ClickyMonitor.clickyKey(task.id)],
@@ -1763,6 +1763,9 @@ private struct TaskProjectRow: View {
             bumpSendStatus = nil
         }
         .onAppear { refreshWorkspaceBranches() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshWorkspaceBranches()
+        }
         .onChange(of: task.project.directoryPath) { _, _ in refreshWorkspaceBranches() }
         .accessibilityIdentifier("task-row-\(task.id)")
         .sheet(isPresented: $editingProject) {
@@ -1819,7 +1822,8 @@ private struct TaskProjectRow: View {
                 taskName: task.name, agentName: "HeyClicky", definition: $definitionDraft,
                 plan: workflowPlanBinding, confirmedWorkspace: hasConfirmedWorkspace,
                 branches: workspaceBranches, newBranchName: $newBranchName,
-                branchStatus: workspaceGitStatus, onCreateBranch: createWorkspaceBranch
+                branchStatus: workspaceGitStatus, onCreateBranch: createWorkspaceBranch,
+                workspace: task.project.directoryPath
             ) {
                 store.config.clickyDefinitionsOfDone[task.id] = DefinitionOfDone.normalized(definitionDraft)
             }

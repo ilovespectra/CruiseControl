@@ -502,7 +502,7 @@ final class ClickyMonitor: ObservableObject {
             baseMessage: reply.text, taskName: task.name, definition: reply.definition, project: project, plan: plan,
             clickyCacheLocations: task.threadIDs.flatMap { ClickyTaskLibrary.cachePaths(threadIDs: [$0]).map(\.path) })
         let target = PendingMessage.CompletionTarget(taskID: task.id, definition: reply.definition, reportFingerprint: reply.fingerprint,
-                                                     workflowKey: currentWorkflowKey(task.id))
+                                                     workflowKey: currentWorkflowKey(task.id), workspace: confirmedTaskWorkspace(task.id))
         let delivered = await send(message, via: composer, task: task.name, completionTarget: target, chatOnly: true)
         if delivered {
             stats.continued += 1
@@ -592,7 +592,7 @@ final class ClickyMonitor: ObservableObject {
         }
         let target = PendingMessage.CompletionTarget(taskID: taskID, definition: definition,
                                                      reportFingerprint: reportFingerprint, oneShot: true,
-                                                     workflowKey: currentWorkflowKey(taskID))
+                                                     workflowKey: currentWorkflowKey(taskID), workspace: confirmedTaskWorkspace(taskID))
         guard let chat = await revealChat(config: config),
               let selected = await selectTask(task.name, from: chat, config: config, unique: true),
               let composer = selected.composer, recoveryAllowed(selected),
@@ -1703,7 +1703,7 @@ final class ClickyMonitor: ObservableObject {
                   TaskPlanning.definitionDeliveryAllowed(config: store.config, oneShot: false),
                   !taskRecovery.isStopped(task: latest.name),
                   var notice = TaskCompletionNotice(task: latest, definition: definition, assessment: assessment) else { continue }
-            notice.autoBump = TaskPlanning.autoBumpEnabled(latest, config: store.config)
+            notice.autoBump = TaskPlanning.autoBumpEnabled(latest, config: store.config, workspace: confirmedTaskWorkspace(latest.id))
             if notice.meetsDefinition != true, notice.autoBump == true { lastDefinitionCheckAt = .distantPast }
             if source.recordCompletion(notice) {
                 record("“\(task.name)” changed state; Cruise reviewed it (\(notice.meetsDefinition == true ? "appears to meet" : "short of") your Done definition) and queued a review notice")
@@ -1737,7 +1737,7 @@ final class ClickyMonitor: ObservableObject {
         var due: [(task: ClickyAgentTask, definition: String, assessment: ClickyTaskAssessment)] = []
         let ambiguous = ClickyTaskLibrary.ambiguousNames(tasks.tasks)
         for task in TaskPlanning.prioritized(tasks.tasks, catalog: taskCatalog, config: store.config) {
-            let optedIn = TaskPlanning.autoBumpEnabled(task, config: store.config) || manualRequests.contains(task.id)
+            let optedIn = TaskPlanning.autoBumpEnabled(task, config: store.config, workspace: confirmedTaskWorkspace(task.id)) || manualRequests.contains(task.id)
             if optedIn, DefinitionOfDone.normalized(config.clickyDefinitionsOfDone[task.id]) != nil,
                !task.dismissed, !task.isStopped, taskRecovery.isStopped(task: task.name),
                engine.resumed[task.id] == task.fingerprint {
@@ -1822,7 +1822,7 @@ final class ClickyMonitor: ObservableObject {
         var sent = false
         for item in due {
             let task = item.task
-            guard TaskPlanning.autoBumpEnabled(task, config: store.config) || manualRequests.contains(task.id),
+            guard TaskPlanning.autoBumpEnabled(task, config: store.config, workspace: confirmedTaskWorkspace(task.id)) || manualRequests.contains(task.id),
                   DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id]) == item.definition,
                   let latest = tasks.task(task.id), latest.fingerprint == task.fingerprint,
                   !latest.isWorking, !stopHeld(latest), !latest.dismissed,
@@ -1872,7 +1872,7 @@ final class ClickyMonitor: ObservableObject {
             guard let refreshedAt = tasks.loadedAt, refreshedAt >= afterDraft, tasks.loadError == nil,
                   let refreshedTask = tasks.task(task.id), refreshedTask.fingerprint == task.fingerprint,
                   DefinitionOfDone.normalized(store.config.clickyDefinitionsOfDone[task.id]) == item.definition,
-                  (TaskPlanning.autoBumpEnabled(refreshedTask, config: store.config) || manualRequests.contains(task.id)),
+                  (TaskPlanning.autoBumpEnabled(refreshedTask, config: store.config, workspace: confirmedTaskWorkspace(task.id)) || manualRequests.contains(task.id)),
                   TaskPlanning.continuationAllowed(refreshedTask, config: store.config, manual: manualRequests.contains(task.id),
                                                    ignoringStop: true),
                   !ClickyTaskLibrary.ambiguousNames(tasks.tasks).contains(Matcher.normalize(refreshedTask.name)),
@@ -1895,10 +1895,10 @@ final class ClickyMonitor: ObservableObject {
                     + (tasks.persistenceError ?? tasks.loadError ?? ""))
                 break
             }
-            let oneShot = manualRequests.contains(task.id) && !TaskPlanning.autoBumpEnabled(task, config: store.config)
+            let oneShot = manualRequests.contains(task.id) && !TaskPlanning.autoBumpEnabled(task, config: store.config, workspace: confirmedTaskWorkspace(task.id))
             let target = PendingMessage.CompletionTarget(taskID: task.id, definition: item.definition,
                                                          reportFingerprint: task.fingerprint, oneShot: oneShot,
-                                                         workflowKey: currentWorkflowKey(task.id))
+                                                         workflowKey: currentWorkflowKey(task.id), workspace: confirmedTaskWorkspace(task.id))
             let engineKey = Self.clickyKey(task.id)
             engine.records[engineKey]?.stage = .sending
             engine.records[engineKey]?.detail = "Typing the follow-up into HeyClicky's “\(task.name)” chat…"
@@ -3086,6 +3086,10 @@ final class ClickyMonitor: ObservableObject {
         let delivered = await send(text, via: composer, task: task)
         record(delivered ? "delivery check confirmed in “\(task)” transcript" : "delivery check not confirmed — inspect the saved message in Settings → Activity")
         return delivered
+    }
+
+    private func confirmedTaskWorkspace(_ taskID: String) -> String? {
+        taskCatalog.tasks.first { $0.id == taskID && $0.projectAssigned }?.project.directoryPath
     }
 
     func currentWorkflowKey(_ taskID: String) -> String {

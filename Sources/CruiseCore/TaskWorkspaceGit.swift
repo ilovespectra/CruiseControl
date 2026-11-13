@@ -1,13 +1,33 @@
 import Foundation
 
 public enum TaskWorkspaceGit {
+    public static func isPlainFolder(_ workspace: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: workspace, isDirectory: &isDirectory)
+            && isDirectory.boolValue && FileManager.default.isReadableFile(atPath: workspace)
+            && !isRepository(workspace)
+    }
+
+    public static func isRepository(_ workspace: String) -> Bool {
+        var directory = URL(fileURLWithPath: workspace).standardizedFileURL
+        while directory.path != "/" {
+            if FileManager.default.fileExists(atPath: directory.appendingPathComponent(".git").path) { return true }
+            directory.deleteLastPathComponent()
+        }
+        return false
+    }
+
     public static func branches(in workspace: String) throws -> [String] {
         let url = URL(fileURLWithPath: workspace).standardizedFileURL
-        guard FileManager.default.fileExists(atPath: url.appendingPathComponent(".git").path) else {
+        guard isRepository(workspace) else {
             throw GitError.notRepository
         }
-        return try runGit(["-C", url.path, "branch", "--list", "--format=%(refname:short)"])
+        let branches = try runGit(["-C", url.path, "branch", "--list", "--format=%(refname:short)"])
             .split(whereSeparator: \.isNewline).map(String.init).sorted()
+        if branches.isEmpty {
+            return [try runGit(["-C", url.path, "symbolic-ref", "--short", "HEAD"])]
+        }
+        return branches
     }
 
     public static func createBranch(_ name: String, in workspace: String) throws {

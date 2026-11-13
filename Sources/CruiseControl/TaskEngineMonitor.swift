@@ -496,7 +496,8 @@ extension ClickyMonitor {
             record.detail = "Draft ready. Press Send, or turn on Auto-bump to send drafts like this automatically."
             return record
         }
-        if let reason = TaskWorkflow.autoBumpBlocker(plan: config.vscodeTaskPlans[key] ?? TaskPlan(), requiresBuildLocation: false) {
+        if let reason = TaskWorkflow.autoBumpBlocker(plan: config.vscodeTaskPlans[key] ?? TaskPlan(), requiresBuildLocation: false,
+                                                  workspace: config.vscodeTaskProjects[key]?.directoryPath) {
             record.stage = .held
             record.detail = "Auto-bump needs workflow choices."
             record.blocker = TaskBlocker(reason, fix: .defineDone)

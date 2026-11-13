@@ -34,6 +34,7 @@ public struct TaskPlan: Codable, Equatable, Sendable {
     public var persistMessageLimit = false
     public var priority: TaskPriority?
     public var buildLocation: TaskBuildLocation?
+    public var externalBuildDirectory: String?
     public var deliveryStyle: TaskDeliveryStyle?
     public var branchStrategy: TaskBranchStrategy?
     public var workBranch = ""
@@ -48,7 +49,7 @@ public struct TaskPlan: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case enabled, autoBump, priority, persistTimeLimit, persistCreditLimit, persistMessageLimit
-        case buildLocation, deliveryStyle, branchStrategy, workBranch, finishMergeTarget, finishMergeBranch, commitPendingOnFinish, finishCommitRequestFingerprint, finishCommitRequestKey
+        case buildLocation, externalBuildDirectory, deliveryStyle, branchStrategy, workBranch, finishMergeTarget, finishMergeBranch, commitPendingOnFinish, finishCommitRequestFingerprint, finishCommitRequestKey
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -59,6 +60,7 @@ public struct TaskPlan: Codable, Equatable, Sendable {
         persistMessageLimit = try values.decodeIfPresent(Bool.self, forKey: .persistMessageLimit) ?? false
         priority = try values.decodeIfPresent(TaskPriority.self, forKey: .priority)
         buildLocation = try values.decodeIfPresent(TaskBuildLocation.self, forKey: .buildLocation)
+        externalBuildDirectory = try values.decodeIfPresent(String.self, forKey: .externalBuildDirectory)
         deliveryStyle = try values.decodeIfPresent(TaskDeliveryStyle.self, forKey: .deliveryStyle)
         branchStrategy = try values.decodeIfPresent(TaskBranchStrategy.self, forKey: .branchStrategy)
         workBranch = try values.decodeIfPresent(String.self, forKey: .workBranch) ?? ""
@@ -78,6 +80,7 @@ public struct TaskPlan: Codable, Equatable, Sendable {
         try values.encode(persistMessageLimit, forKey: .persistMessageLimit)
         try values.encodeIfPresent(priority, forKey: .priority)
         try values.encodeIfPresent(buildLocation, forKey: .buildLocation)
+        try values.encodeIfPresent(externalBuildDirectory, forKey: .externalBuildDirectory)
         try values.encodeIfPresent(deliveryStyle, forKey: .deliveryStyle)
         try values.encodeIfPresent(branchStrategy, forKey: .branchStrategy)
         try values.encode(workBranch, forKey: .workBranch)
@@ -90,12 +93,13 @@ public struct TaskPlan: Codable, Equatable, Sendable {
 }
 
 public enum TaskBuildLocation: String, Codable, CaseIterable, Identifiable, Sendable {
-    case heyClickyCache, localWorkspace
+    case heyClickyCache, localWorkspace, externalFolder
     public var id: String { rawValue }
     public var title: String {
         switch self {
         case .heyClickyCache: "Build in HeyClicky cache"
         case .localWorkspace: "Build locally in project workspace"
+        case .externalFolder: "Build in an external folder"
         }
     }
 }
@@ -128,9 +132,20 @@ public enum TaskMergeTarget: String, Codable, CaseIterable, Identifiable, Sendab
 }
 
 public enum TaskWorkflow {
-    public static func autoBumpBlocker(plan: TaskPlan, requiresBuildLocation: Bool = true) -> String? {
+    public static func autoBumpBlocker(plan: TaskPlan, requiresBuildLocation: Bool = true, workspace: String? = nil) -> String? {
         var missing: [String] = []
         if requiresBuildLocation && plan.buildLocation == nil { missing.append("build location") }
+        if requiresBuildLocation && plan.buildLocation == .externalFolder {
+            let path = plan.externalBuildDirectory?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            var isDirectory: ObjCBool = false
+            if !path.hasPrefix("/") || !FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+                || !isDirectory.boolValue || !FileManager.default.isReadableFile(atPath: path) {
+                missing.append("an accessible external build folder")
+            }
+        }
+        if let workspace, TaskWorkspaceGit.isPlainFolder(workspace) {
+            return missing.isEmpty ? nil : "Choose \(missing.joined(separator: ", ")) in Build, branches & finishing before drafting or sending."
+        }
         if plan.deliveryStyle == nil { missing.append("delivery (commit/push or pull request)") }
         if plan.branchStrategy == nil { missing.append("branch organization") }
         if plan.workBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { missing.append("work branch") }
@@ -140,7 +155,7 @@ public enum TaskWorkflow {
 
     public static func messageBlocker(project: TaskProject, plan: TaskPlan, requiresBuildLocation: Bool = true) -> String? {
         guard project.directoryPath != nil else { return "Confirm a project folder before drafting or sending." }
-        return autoBumpBlocker(plan: plan, requiresBuildLocation: requiresBuildLocation)
+        return autoBumpBlocker(plan: plan, requiresBuildLocation: requiresBuildLocation, workspace: project.directoryPath)
     }
 
     public static func instructions(project: TaskProject, plan: TaskPlan, agentName: String = "HeyClicky",
@@ -156,8 +171,20 @@ public enum TaskWorkflow {
         case .heyClickyCache:
             let paths = clickyCacheLocations.isEmpty ? "No task-specific cache path was discovered; ask HeyClicky for the active cache location." : clickyCacheLocations.joined(separator: ", ")
             build = "Build location: Build in HeyClicky cache (ClickyCache); task-linked cache paths: \(paths). Use only the active task's cache; do not substitute the local workspace."
+        case .externalFolder:
+            build = plan.externalBuildDirectory.map { "Build location: user-selected external folder at \($0). Preserve existing files; do not move or delete the project automatically." }
+                ?? "Build location: external folder not yet selected; ask before building."
         case nil:
             build = "Build location: not selected; ask before choosing between HeyClicky ClickyCache and the local workspace."
+        }
+        if let confirmedPath, TaskWorkspaceGit.isPlainFolder(confirmedPath) {
+            return """
+            \(workspace)
+            \(build)
+            This folder has no Git repository. GitHub, branches, commits, pushes, pull requests and merges are not required.
+            Do not initialize Git, create a remote repository, or perform Git delivery unless the user explicitly requests it.
+            Verify the saved Done criteria using the actual files and report the evidence. Ignore any stale saved Git delivery or finish-commit preferences.
+            """
         }
         let delivery = plan.deliveryStyle?.title ?? "Ask before choosing commit/push versus pull request."
         let branchTitle = plan.branchStrategy?.title ?? "Ask before choosing one shared branch versus a dedicated branch per task."
@@ -242,6 +269,7 @@ public enum TaskWorkflow {
                                            agentName: String = "HeyClicky") -> String? {
         guard plan.commitPendingOnFinish,
               project.directoryPath != nil,
+              project.directoryPath.map(TaskWorkspaceGit.isPlainFolder) != true,
               !plan.workBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         let base = """
         Before Cruise marks \(taskName) finished, inspect for pending changes in the confirmed workspace and selected branch.
@@ -275,7 +303,8 @@ public enum TaskPlanning {
     public static func vscodeAutoBumpEnabled(chatKey: String, config: Config) -> Bool {
         config.continueUntilDefinedDone && config.vscodeAutoBumpChatKeys.contains(chatKey)
             && DefinitionOfDone.normalized(config.vscodeDefinitionsOfDone[chatKey]) != nil
-            && TaskWorkflow.autoBumpBlocker(plan: config.vscodeTaskPlans[chatKey] ?? TaskPlan(), requiresBuildLocation: false) == nil
+            && TaskWorkflow.autoBumpBlocker(plan: config.vscodeTaskPlans[chatKey] ?? TaskPlan(), requiresBuildLocation: false,
+                                           workspace: config.vscodeTaskProjects[chatKey]?.directoryPath) == nil
     }
 
     public static func finishBlocker(taskID: String, tasks: [ClickyAgentTask]) -> String? {
@@ -324,10 +353,10 @@ public enum TaskPlanning {
     }
 
     /// Explicit per-task opt-in plus a saved user goal, independently of drive approvals.
-    public static func autoBumpEnabled(_ task: ClickyAgentTask, config: Config) -> Bool {
+    public static func autoBumpEnabled(_ task: ClickyAgentTask, config: Config, workspace: String? = nil) -> Bool {
         config.continueUntilDefinedDone && config.taskPlans[task.id]?.autoBump == true
             && DefinitionOfDone.normalized(config.clickyDefinitionsOfDone[task.id]) != nil
-            && TaskWorkflow.autoBumpBlocker(plan: config.taskPlans[task.id] ?? TaskPlan()) == nil
+            && TaskWorkflow.autoBumpBlocker(plan: config.taskPlans[task.id] ?? TaskPlan(), workspace: workspace) == nil
     }
 
     /// A user-initiated one-shot bump does not require persistent per-task Auto-bump opt-in.

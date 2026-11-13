@@ -61,7 +61,7 @@ struct VSCodeTasksSection: View {
         if savedDefinition == nil { return "Define what done looks like first (step 2)." }
         if session.ambiguous { return "More than one visible session matches this chat." }
         if confirmedWorkspace == nil { return "Confirm a project folder first." }
-        return TaskWorkflow.autoBumpBlocker(plan: plan, requiresBuildLocation: false)
+        return TaskWorkflow.autoBumpBlocker(plan: plan, requiresBuildLocation: false, workspace: confirmedWorkspace)
     }
     private var taskKey: String { session.key }
     private var savedDefinition: String? {
@@ -203,6 +203,9 @@ struct VSCodeTasksSection: View {
         }
         .padding(.vertical, 8)
         .task { refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshBranches()
+        }
         .environment(\.taskGoThere, goThere)
         .onReceive(NotificationCenter.default.publisher(for: ClickyMonitor.engineFixNotification)) { note in
             guard note.userInfo?["key"] as? String == taskKey,
@@ -230,7 +233,7 @@ struct VSCodeTasksSection: View {
                 taskName: session.title, agentName: "VS Code", definition: $definition,
                 plan: workflowPlanBinding, confirmedWorkspace: confirmedWorkspace != nil,
                 branches: workspaceBranches, newBranchName: $newBranchName,
-                branchStatus: branchStatus, onCreateBranch: createWorkspaceBranch, onSave: saveDefinition)
+                branchStatus: branchStatus, onCreateBranch: createWorkspaceBranch, onSave: saveDefinition, workspace: confirmedWorkspace)
         }
     }
 
@@ -238,7 +241,7 @@ struct VSCodeTasksSection: View {
         DoneWorkflowPolicyEditor(
             plan: workflowPlanBinding, confirmedWorkspace: confirmedWorkspace != nil,
             branches: workspaceBranches, newBranchName: $newBranchName,
-            branchStatus: branchStatus, onCreateBranch: createWorkspaceBranch, requiresBuildLocation: false)
+            branchStatus: branchStatus, onCreateBranch: createWorkspaceBranch, requiresBuildLocation: false, workspace: confirmedWorkspace)
     }
 
     private var autoBumpBinding: Binding<Bool> {

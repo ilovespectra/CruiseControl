@@ -20,14 +20,16 @@ public struct PendingMessage: Codable, Equatable {
         /// Explicit user-requested one-shot bump; absent/false requires the task's persistent Auto-bump opt-in.
         public let oneShot: Bool?
         public let workflowKey: String?
+        public let workspace: String?
 
         public init(taskID: String, definition: String, reportFingerprint: String? = nil, oneShot: Bool = false,
-                    workflowKey: String? = nil) {
+                    workflowKey: String? = nil, workspace: String? = nil) {
             self.taskID = taskID
             self.definition = definition
             self.reportFingerprint = reportFingerprint
             self.oneShot = oneShot
             self.workflowKey = workflowKey
+            self.workspace = workspace
         }
 
         public func matches(definition current: String?, enabled: Bool) -> Bool {
@@ -57,14 +59,14 @@ public struct PendingMessage: Codable, Equatable {
         guard !config.usageCutoffReached else { return false }
         guard let target = completionTarget,
               target.reportFingerprint != nil,
-              TaskWorkflow.autoBumpBlocker(plan: config.taskPlans[target.taskID] ?? TaskPlan()) == nil else { return false }
+              TaskWorkflow.autoBumpBlocker(plan: config.taskPlans[target.taskID] ?? TaskPlan(), workspace: target.workspace) == nil else { return false }
         if chatOnly != true {
             let oneShot = target.oneShot == true
             guard TaskPlanning.definitionDeliveryAllowed(config: config, oneShot: oneShot) else { return false }
             return target.matches(definition: config.clickyDefinitionsOfDone[target.taskID],
                                   enabled: oneShot || config.continueUntilDefinedDone)
                 && (oneShot || (config.taskPlans[target.taskID]?.autoBump == true
-                    && TaskWorkflow.autoBumpBlocker(plan: config.taskPlans[target.taskID] ?? TaskPlan()) == nil))
+                    && TaskWorkflow.autoBumpBlocker(plan: config.taskPlans[target.taskID] ?? TaskPlan(), workspace: target.workspace) == nil))
         }
         guard let target = completionTarget, target.reportFingerprint != nil else { return false }
         return config.backgroundTaskReview && config.backgroundTaskDelivery == .chatOnly && config.ollamaEnabled

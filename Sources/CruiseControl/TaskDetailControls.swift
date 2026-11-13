@@ -290,6 +290,7 @@ struct TaskDoneDefinitionEditor: View {
     let branchStatus: String?
     let onCreateBranch: () -> Void
     let onSave: () -> Void
+    var workspace: String? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var previewing = false
     @State private var importing = false
@@ -317,7 +318,7 @@ struct TaskDoneDefinitionEditor: View {
                 DoneWorkflowPolicyEditor(
                     plan: $plan, confirmedWorkspace: confirmedWorkspace, branches: branches,
                     newBranchName: $newBranchName, branchStatus: branchStatus, onCreateBranch: onCreateBranch,
-                    requiresBuildLocation: agentName != "VS Code")
+                    requiresBuildLocation: agentName != "VS Code", workspace: workspace)
                 if previewing {
                     ScrollView {
                         Text((try? AttributedString(markdown: definition)) ?? AttributedString(definition))
