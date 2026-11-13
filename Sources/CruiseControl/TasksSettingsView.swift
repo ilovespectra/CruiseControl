@@ -177,7 +177,7 @@ private enum TaskListFilter: String, CaseIterable, Identifiable {
         case .unassigned: "Unassigned project"
         case .reviewEnabled: "In Cruise review"
         case .autoBumpEnabled: "Auto-bump enabled"
-        case .closed: "Dismissed"
+        case .closed: "Closed / archived"
         }
     }
 }
@@ -303,6 +303,7 @@ struct TasksSettingsView: View {
     private func matchesFilter(_ item: CatalogTask, matching listFilter: TaskListFilter) -> Bool {
         let definition = store.config.clickyDefinitionsOfDone[item.id]
         let current = tasks.task(item.id)
+        if current == nil, item.localDisposition != nil { return listFilter == .closed }
         if current?.dismissed == true { return listFilter == .closed }
         let assessment = current.flatMap { tasks.currentAssessment(for: $0, definition: definition) }
         let status = item.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -1259,6 +1260,7 @@ private struct TaskProjectRow: View {
     @State private var bumpSendStatus: String?
     @State private var sendingLifecycleNotice = false
     @State private var lifecycleNoticeStatus: String?
+    @State private var confirmingSavedRecordDeletion = false
 
     private var details: ClickyAgentTask? { tasks.task(task.id) }
     private var stateLabel: String {
@@ -1519,8 +1521,31 @@ private struct TaskProjectRow: View {
                 .font(.caption2).foregroundStyle(.secondary)
             Spacer()
             if details == nil {
-                Text("Finish unavailable · no matching HeyClicky job")
-                    .font(.caption).foregroundStyle(.secondary)
+                Menu("Saved record") {
+                    if task.localDisposition != nil {
+                        Button("Restore to active history") {
+                            monitor.manageSavedTask(task.id, disposition: nil)
+                        }
+                    }
+                    Button("Archive locally") {
+                        monitor.manageSavedTask(task.id, disposition: .archived)
+                    }
+                    Button("Mark finished locally") {
+                        monitor.manageSavedTask(task.id, disposition: .finished)
+                    }
+                    Divider()
+                    Button("Delete saved record…", role: .destructive) {
+                        confirmingSavedRecordDeletion = true
+                    }
+                }
+                .confirmationDialog("Delete this saved Cruise record?", isPresented: $confirmingSavedRecordDeletion) {
+                    Button("Delete saved record", role: .destructive) {
+                        monitor.manageSavedTask(task.id, disposition: nil, delete: true)
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Removes only this unmatched entry from Cruise's catalog. HeyClicky history, reports, caches and project files are not deleted.")
+                }
             } else if details?.dismissed == true {
                 Text("Dismissed · history preserved").font(.caption).foregroundStyle(.secondary)
             } else {
@@ -1578,6 +1603,13 @@ private struct TaskProjectRow: View {
             if details == nil {
                 Text("This saved record is not matched to a current HeyClicky job.")
                     .font(.caption).foregroundStyle(.secondary)
+                if let disposition = task.localDisposition {
+                    Text(disposition == .archived ? "Archived locally · restore from Saved record." : "Finished locally · not a verified agent completion.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("Archive or finish locally to move it to Closed. No agent action is performed.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
 
             if let details {

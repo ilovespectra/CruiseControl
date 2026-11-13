@@ -17,8 +17,7 @@ node_modules/
 /generated-image-*.png
 /marketing/*.png
 /marketing/follow-up-evidence/
-/marketing/logos/all/*
-!/marketing/logos/all/generated-image-c7ed7adea134.png
+/marketing/logos/all/
 
 # Local credentials, signing identities, and maintainer-only state
 .env

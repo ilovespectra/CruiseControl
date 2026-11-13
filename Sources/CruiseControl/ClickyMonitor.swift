@@ -950,6 +950,20 @@ final class ClickyMonitor: ObservableObject {
         saveTaskCatalog(catalog)
     }
 
+    func manageSavedTask(_ id: String, disposition: SavedTaskDisposition?, delete: Bool = false) {
+        guard taskCatalogReadable else {
+            record("Saved task changes blocked: the task catalog could not be read.")
+            return
+        }
+        var catalog = taskCatalog
+        guard catalog.manageSavedRecord(id, disposition: disposition, delete: delete) else {
+            record("Saved task changes blocked: this record now matches a current HeyClicky job. Refresh tasks.")
+            return
+        }
+        saveTaskCatalog(catalog)
+        if let error = taskCatalogError { record(error) }
+    }
+
     func updateTaskCatalog(_ tasks: [ClickyAgentTask]) {
         guard taskCatalogReadable else { return }
         var catalog = taskCatalog

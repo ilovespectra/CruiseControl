@@ -20,6 +20,6 @@ For website or release-link changes, install Node.js and run:
 node --test Tests/site/*.test.mjs
 ```
 
-The landing page and documentation share `site/brand.css` and `site/theme.js`. Keep all four accents readable in light and dark appearance, retain System appearance and reduced-motion support, and do not use theme color as a substitute for a mode or safety label. Website artwork is cropped from the supplied originals in `marketing/logos/`. Preserve the gauge originals and current Rest sheet in `marketing/logos/all/generated-image-c7ed7adea134.png`; the per-color `rest.png` crops replace the obsolete Rest artwork. Exclude comparison labels from all website crops.
+The landing page and documentation share `site/brand.css` and `site/theme.js`. Keep all four accents readable in light and dark appearance, retain System appearance and reduced-motion support, and do not use theme color as a substitute for a mode or safety label. Website artwork is cropped from the supplied originals in `marketing/logos/`. Preserve the per-color gauge originals and `rest.png` crops; comparison sheets and local evidence are ignored. Exclude comparison labels from all website crops.
 
 Open a GitHub issue for bugs or feature proposals, or submit a pull request with a concise summary and test results. Update the [user documentation](https://cruise.kolektivkrog.si/docs.html) when behavior or safety guidance changes. Public release creation is maintainer-only; see [Publisher and release safeguards](DEVELOPER_CONSOLE.md).

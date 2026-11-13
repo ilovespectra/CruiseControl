@@ -120,7 +120,12 @@ public struct TaskProject: Codable, Equatable, Sendable {
     }
 }
 
+public enum SavedTaskDisposition: String, Codable, Sendable {
+    case archived, finished
+}
+
 public struct CatalogTask: Codable, Equatable, Identifiable, Sendable {
+    public var localDisposition: SavedTaskDisposition?
     public let id: String
     public var name: String
     public var status: String
@@ -169,6 +174,15 @@ public struct TaskCatalog: Codable, Equatable, Sendable {
         tasks[index].project = project
         tasks[index].projectAssigned = true
         tasks[index].inferredBy = nil
+    }
+
+    @discardableResult
+    public mutating func manageSavedRecord(_ id: String, disposition: SavedTaskDisposition?, delete: Bool = false) -> Bool {
+        guard let index = tasks.firstIndex(where: { $0.id == id }),
+              tasks[index].sourceUnavailable == true || tasks[index].sourceID == nil else { return false }
+        if delete { tasks.remove(at: index) }
+        else { tasks[index].localDisposition = disposition }
+        return true
     }
 
     public mutating func infer(_ project: TaskProject?, for id: String, fingerprint: String, model: String) {

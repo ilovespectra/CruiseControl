@@ -2,6 +2,8 @@
 
 Developer release UI: run `python3 scripts/dev-console.py --start` to open the persistent local console, or `python3 scripts/dev-console.py` for foreground operation. See [Developer console](DEVELOPER_CONSOLE.md) for build history, logs, owner-only drafts and macOS permission setup.
 
+Unmatched saved HeyClicky history has a **Saved record** menu: archive or finish locally (find it again under **Closed** and restore), or delete only the local catalog entry after confirmation. These actions never finish a live agent job or delete HeyClicky history, caches, reports, or project files. A current job must use the normal verified finish flow.
+
 <img src="site/assets/brand/blue-gauge.jpg" alt="Cruise Control gauge" width="96" height="96" />
 
 **A clear goal. A steady workflow.** A native Mac companion for HeyClicky and VS Code: organize agent tasks, define Done, review progress, and choose what happens next.
